@@ -17,7 +17,7 @@ tlinalg = { version = "0.1.0", path = "crates/tlinalg" }
 faer = { version = "0.24", default-features = false, features = ["std", "rayon"] }
 # Spelled exactly as tenferro pins it, so both resolve one strided-rs source and share
 # `RawStridedRef`.
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "25705339d45583f5eb77bdbde22f2349b48e3f95", version = "0.4.4" }
+strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "c12d96fa4cfef622bc1f15fd9940fd418fb686ac", version = "0.4.5" }
 num-complex = "0.4"
 rayon = "1.10"
 thiserror = "2"
