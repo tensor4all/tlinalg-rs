@@ -7,6 +7,11 @@ Tensor-free linear algebra for the Tensor4all stack. The name is `t` for *tensor
 the kernels and the batch/scheduling behaviour; the host owns tensors, allocation, dtype dispatch,
 placement, execution context and error wrapping.
 
+*Tensor-free* is that boundary stated as a property: no tensor type appears in the interface. Every
+entry point takes borrowed strided matrix batches plus a small vocabulary of its own (`Parallel`,
+`Scalar`, `Error`, `Op`), so a caller can hand it plain buffers, a host can adapt it to whatever
+interface the host defines, and neither provider has to know what a tensor is.
+
 ## Crates
 
 | Crate | Role |
