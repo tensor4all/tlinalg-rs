@@ -11,18 +11,20 @@
 use faer::diag::Diag;
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::evd::ComputeEigenvectors;
-use faer::{Mat, MatRef};
+use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef};
 use crate::scalar::ScalarEntity;
-use crate::util::{checked_product, push_mat};
+use crate::util::checked_product;
 use crate::{Error, FaerScalar, Op, Parallel, Result};
 
 /// Lane scratch for `n x n` Hermitian eigendecompositions.
 struct EighScratch<E: faer::traits::ComplexField> {
     values: Diag<E>,
-    vectors: Mat<E>,
+    /// Whether an item was already processed. `Diag::zeros` zeroes a fresh scratch once, so only a
+    /// reused one needs the values reset before the next decomposition.
+    reused: bool,
     mem: MemBuffer,
 }
 
@@ -34,13 +36,9 @@ impl<E: faer::traits::ComplexField> EighScratch<E> {
         } else {
             faer::linalg::evd::self_adjoint_evd_scratch::<E>(n, vectors, par, Default::default())
         };
-        let vector_cols = match vectors {
-            ComputeEigenvectors::Yes => n,
-            ComputeEigenvectors::No => 0,
-        };
         Self {
             values: Diag::zeros(n),
-            vectors: Mat::zeros(n, vector_cols),
+            reused: false,
             mem: MemBuffer::new(req),
         }
     }
@@ -50,17 +48,15 @@ impl<E: faer::traits::ComplexField> EighScratch<E> {
 fn decompose<E: faer::traits::ComplexField>(
     op: Op,
     mat: MatRef<'_, E>,
-    with_vectors: bool,
+    vectors: Option<MatMut<'_, E>>,
     scratch: &mut EighScratch<E>,
     par: faer::Par,
 ) -> Result<()> {
-    scratch.values.as_mut().fill(E::zero_impl());
-    let vectors = if with_vectors {
-        scratch.vectors.as_mut().fill(E::zero_impl());
-        Some(scratch.vectors.as_mut())
-    } else {
-        None
-    };
+    // A fresh scratch is already zeroed by `Diag::zeros`; only a reused one needs the reset.
+    if scratch.reused {
+        scratch.values.as_mut().fill(E::zero_impl());
+    }
+    scratch.reused = true;
     faer::linalg::evd::self_adjoint_evd(
         mat,
         scratch.values.as_mut(),
@@ -116,7 +112,7 @@ pub fn eigh_values<T: FaerScalar>(
             if n == 0 {
                 return Ok(());
             }
-            decompose(op, input.item(index), false, scratch, par)?;
+            decompose(op, input.item(index), None, scratch, par)?;
             for i in 0..n {
                 values.push(T::real_from_entity(scratch.values[i]));
             }
@@ -175,11 +171,14 @@ pub fn eigh<T: FaerScalar>(
             if n == 0 {
                 return Ok(());
             }
-            decompose(op, input.item(index), true, scratch, par)?;
+            // Initialize the caller's eigenvector output and hand it to faer directly, instead of
+            // decomposing into lane scratch and copying the whole matrix out afterwards.
+            let region = vectors.fill(v_len, |_| T::default());
+            let vmat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(region), n, n);
+            decompose(op, input.item(index), Some(vmat), scratch, par)?;
             for i in 0..n {
                 values.push(T::from_real(T::real_from_entity(scratch.values[i])));
             }
-            push_mat(vectors, scratch.vectors.as_ref());
             Ok(())
         },
     )

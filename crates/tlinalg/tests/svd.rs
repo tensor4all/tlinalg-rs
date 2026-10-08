@@ -284,3 +284,53 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
         );
     }
 }
+
+/// The full factor of a tall SVD is unitary over its whole square, not just its leading columns.
+///
+/// Reconstruction tests only read the leading `min(m, n)` columns, so this exercises the whole
+/// `m x m` direct-written `U`. faer's tall path is accurate for this input, so it does not force
+/// the QR repeat; it covers the direct full-factor write.
+#[test]
+fn full_tall_svd_has_a_unitary_u() {
+    let n = 160usize;
+    let m = 300usize;
+    let spectrum = tlinalg_testkit::clustered_spectrum(n);
+    let b: Vec<Complex64> = tlinalg_testkit::with_singular_values(&spectrum, 1);
+    // The clustered square matrix padded with zero rows: `m / n > 11 / 6` selects faer's tall path,
+    // whose divide-and-conquer attempt fails the reconstruction check and is repeated.
+    let mut a = vec![Complex64::new(0.0, 0.0); m * n];
+    for col in 0..n {
+        for row in 0..n {
+            a[row + col * m] = b[row + col * n];
+        }
+    }
+    let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
+    svd(
+        Op::Svd,
+        RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
+        true,
+        &mut u,
+        &mut s,
+        &mut vt,
+        Parallel::Sequential,
+    )
+    .unwrap();
+    assert_eq!(u.len(), m * m);
+    assert_eq!(vt.len(), n * n);
+    let mut worst = 0.0f64;
+    for j in 0..m {
+        for k in 0..m {
+            let mut acc = Complex64::new(0.0, 0.0);
+            for i in 0..m {
+                acc += u[i + j * m].conj() * u[i + k * m];
+            }
+            let want = if j == k {
+                Complex64::new(1.0, 0.0)
+            } else {
+                Complex64::new(0.0, 0.0)
+            };
+            worst = worst.max((acc - want).norm());
+        }
+    }
+    assert!(worst < 1e-10, "full U is not unitary: {worst:e}");
+}

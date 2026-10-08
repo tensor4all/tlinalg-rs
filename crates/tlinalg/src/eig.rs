@@ -169,6 +169,7 @@ mod lane_storage {
         pub(super) u: Mat<R>,
         pub(super) s_re: Diag<R>,
         pub(super) s_im: Diag<R>,
+        pub(super) reused: bool,
         pub(super) mem: MemBuffer,
     }
 
@@ -176,6 +177,7 @@ mod lane_storage {
     pub struct ComplexEigScratch<E: faer::traits::ComplexField> {
         pub(super) u: Mat<E>,
         pub(super) s: Diag<E>,
+        pub(super) reused: bool,
         pub(super) mem: MemBuffer,
     }
 }
@@ -192,6 +194,7 @@ macro_rules! impl_eig_real {
                     u: Mat::zeros(n, if vectors { n } else { 0 }),
                     s_re: Diag::zeros(n),
                     s_im: Diag::zeros(n),
+                    reused: false,
                     mem: evd_mem::<$real>(n, vectors, par),
                 }
             }
@@ -205,11 +208,23 @@ macro_rules! impl_eig_real {
                 par: faer::Par,
             ) -> Result<()> {
                 let n = mat.nrows();
-                let RealEigScratch { u, s_re, s_im, mem } = scratch;
-                s_re.as_mut().fill(0.0);
-                s_im.as_mut().fill(0.0);
+                let RealEigScratch {
+                    u,
+                    s_re,
+                    s_im,
+                    reused,
+                    mem,
+                } = scratch;
+                // A fresh scratch is already zeroed; only a reused one needs the reset.
+                if *reused {
+                    s_re.as_mut().fill(0.0);
+                    s_im.as_mut().fill(0.0);
+                    if vectors.is_some() {
+                        u.as_mut().fill(0.0);
+                    }
+                }
+                *reused = true;
                 let u_out = if vectors.is_some() {
-                    u.as_mut().fill(0.0);
                     Some(u.as_mut())
                 } else {
                     None
@@ -273,6 +288,7 @@ macro_rules! impl_eig_complex {
                 ComplexEigScratch {
                     u: Mat::zeros(n, if vectors { n } else { 0 }),
                     s: Diag::zeros(n),
+                    reused: false,
                     mem: evd_mem::<$entity>(n, vectors, par),
                 }
             }
@@ -287,10 +303,16 @@ macro_rules! impl_eig_complex {
             ) -> Result<()> {
                 let n = mat.nrows();
                 let zero = <$entity>::new(0.0, 0.0);
-                let ComplexEigScratch { u, s, mem } = scratch;
-                s.as_mut().fill(zero);
+                let ComplexEigScratch { u, s, reused, mem } = scratch;
+                // A fresh scratch is already zeroed; only a reused one needs the reset.
+                if *reused {
+                    s.as_mut().fill(zero);
+                    if vectors.is_some() {
+                        u.as_mut().fill(zero);
+                    }
+                }
+                *reused = true;
                 let u_out = if vectors.is_some() {
-                    u.as_mut().fill(zero);
                     Some(u.as_mut())
                 } else {
                     None

@@ -162,7 +162,9 @@ fn per_call_allocations_do_not_grow_with_the_batch() {
         assert_eq!(at_one, at_many, "{name}: allocations grow with the batch");
     }
     // Each count is at most the pre-extraction route's native allocations for the same call
-    // (rank_revealing_qr was 7, solve 5, full_piv_lu_solve 7).
+    // (rank_revealing_qr was 7, solve 5, full_piv_lu_solve 7). The direct `svd` `U` and `eigh`
+    // eigenvector outputs removed the two lane buffers that used to be copied out, so `eigh` and
+    // `svd` each dropped by one (`svd` also lost its values-only `U` buffer).
     let expected = [
         ("compact_factor", 3),
         ("cholesky", 2),
@@ -170,8 +172,8 @@ fn per_call_allocations_do_not_grow_with_the_batch() {
         ("solve", 5),
         ("full_piv_lu_solve", 7),
         ("qr", 5),
-        ("eigh", 3),
-        ("svd", 4),
+        ("eigh", 2),
+        ("svd", 3),
         ("packed_lu factor", 5),
         ("triangular_solve left", 0),
         ("triangular_solve right", 1),

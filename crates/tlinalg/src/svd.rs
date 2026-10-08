@@ -30,11 +30,11 @@
 use faer::diag::Diag;
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::svd::{ComputeSvdVectors, SvdParams};
-use faer::{Mat, MatRef};
+use faer::{Mat, MatMut, MatRef};
 
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, out, BatchedRef, Push};
+use crate::batch::{self, out, BatchedRef, Push, Sink};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, push_identity};
 use crate::{Error, FaerScalar, Op, Parallel, Result};
@@ -92,10 +92,12 @@ impl<E: faer::traits::ComplexField> Check<E> {
 
 /// One lane's faer storage for `m x n` decompositions.
 struct SvdScratch<E: faer::traits::ComplexField> {
-    u: Mat<E>,
     v: Mat<E>,
     s: Diag<E>,
     mem: MemBuffer,
+    /// Whether an item was already processed. `Diag::zeros` zeroes a fresh scratch once, so only a
+    /// reused one needs the singular values reset before the next decomposition.
+    reused: bool,
     /// Present when vectors are computed and the default parameters use divide and conquer.
     check: Option<Check<E>>,
 }
@@ -103,10 +105,10 @@ struct SvdScratch<E: faer::traits::ComplexField> {
 impl<E: faer::traits::ComplexField> SvdScratch<E> {
     fn new(m: usize, n: usize, vectors: ComputeSvdVectors, par: faer::Par) -> Self {
         let k = m.min(n);
-        let (u_cols, v_cols) = match vectors {
-            ComputeSvdVectors::Full => (m, n),
-            ComputeSvdVectors::Thin => (k, k),
-            ComputeSvdVectors::No => (0, 0),
+        let v_cols = match vectors {
+            ComputeSvdVectors::Full => n,
+            ComputeSvdVectors::Thin => k,
+            ComputeSvdVectors::No => 0,
         };
         let checked = !matches!(vectors, ComputeSvdVectors::No) && divides::<E>(k);
         // An empty matrix is never decomposed, so it needs no faer scratch. A checked
@@ -129,10 +131,10 @@ impl<E: faer::traits::ComplexField> SvdScratch<E> {
             }
         };
         Self {
-            u: Mat::zeros(m, u_cols),
             v: Mat::zeros(n, v_cols),
             s: Diag::zeros(k),
             mem: MemBuffer::new(req),
+            reused: false,
             check: checked.then(|| Check::new(m, n)),
         }
     }
@@ -189,10 +191,13 @@ fn svd_values_item<T: FaerScalar>(
     if k == 0 {
         return Ok(());
     }
-    scratch
-        .s
-        .as_mut()
-        .fill(<T::Entity as faer::traits::ComplexField>::zero_impl());
+    if scratch.reused {
+        scratch
+            .s
+            .as_mut()
+            .fill(<T::Entity as faer::traits::ComplexField>::zero_impl());
+    }
+    scratch.reused = true;
     faer::linalg::svd::svd(
         mat,
         scratch.s.as_mut(),
@@ -216,7 +221,7 @@ fn svd_item<T: FaerScalar>(
     op: Op,
     mat: MatRef<'_, T::Entity>,
     full: bool,
-    (u, s, vt): (&mut impl Push<T>, &mut impl Push<T>, &mut impl Push<T>),
+    (u, s, vt): (&mut Sink<'_, T>, &mut impl Push<T>, &mut impl Push<T>),
     scratch: &mut SvdScratch<T::Entity>,
     par: faer::Par,
 ) -> Result<()> {
@@ -230,12 +235,18 @@ fn svd_item<T: FaerScalar>(
         return Ok(());
     }
     let (u_cols, v_cols) = if full { (m, n) } else { (k, k) };
-    // The pre-extraction code handed faer freshly zeroed outputs; the lane buffers are reset to the
-    // same state so reuse cannot leak a previous item into this one.
     let zero = <T::Entity as faer::traits::ComplexField>::zero_impl();
-    scratch.u.as_mut().fill(zero);
-    scratch.v.as_mut().fill(zero);
-    scratch.s.as_mut().fill(zero);
+    // A fresh scratch is already zeroed; only a reused one needs the reset, so reuse cannot leak a
+    // previous item into this one.
+    if scratch.reused {
+        scratch.v.as_mut().fill(zero);
+        scratch.s.as_mut().fill(zero);
+    }
+    scratch.reused = true;
+    // Initialize the caller's `U` output and hand it to faer directly, instead of decomposing into
+    // lane scratch and copying the whole factor out afterwards.
+    let u_region = u.fill(m * u_cols, |_| T::default());
+    let mut u_mat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(u_region), m, u_cols);
     // The divide-and-conquer path of faer's default parameters can return inaccurate factors
     // without an error. A decomposition that can take it runs with the defaults first and is
     // repeated with the QR algorithm when faer reports an error or the factors do not reproduce
@@ -246,7 +257,7 @@ fn svd_item<T: FaerScalar>(
             faer::linalg::svd::svd(
                 mat,
                 scratch.s.as_mut(),
-                Some(scratch.u.as_mut()),
+                Some(u_mat.as_mut()),
                 Some(scratch.v.as_mut()),
                 par,
                 MemStack::new(&mut scratch.mem),
@@ -255,7 +266,7 @@ fn svd_item<T: FaerScalar>(
             .is_ok()
                 && reproduces(
                     mat,
-                    scratch.u.as_ref(),
+                    u_mat.as_ref(),
                     scratch.s.as_ref(),
                     scratch.v.as_ref(),
                     check,
@@ -268,14 +279,16 @@ fn svd_item<T: FaerScalar>(
         if scratch.check.is_some() {
             #[cfg(test)]
             tests::record_repeat();
-            scratch.u.as_mut().fill(zero);
+            // faer's tall path does not clear the top-right block of `U`, so the repeat must seed
+            // it with the same zeros the first attempt saw.
+            u_mat.as_mut().fill(zero);
             scratch.v.as_mut().fill(zero);
             scratch.s.as_mut().fill(zero);
         }
         faer::linalg::svd::svd(
             mat,
             scratch.s.as_mut(),
-            Some(scratch.u.as_mut()),
+            Some(u_mat.as_mut()),
             Some(scratch.v.as_mut()),
             par,
             MemStack::new(&mut scratch.mem),
@@ -284,13 +297,8 @@ fn svd_item<T: FaerScalar>(
         .map_err(|_| Error::NonConvergence { op })?;
     }
 
-    // Column-major `U`, `min(m, n)` real singular values, then column-major `Vᴴ`, pushed in the
-    // order the previous implementation produced them.
-    for col in 0..u_cols {
-        for row in 0..m {
-            u.push(T::from_entity(scratch.u[(row, col)]));
-        }
-    }
+    // `U` was written straight into the caller's output. Push the `min(m, n)` real singular values
+    // and the column-major `Vᴴ` in the order the previous implementation produced them.
     for index in 0..k {
         // A real singular value carried in the scalar type: zero imaginary part for the complex
         // scalars, which is the shape the pre-extraction callers consumed.
