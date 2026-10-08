@@ -44,11 +44,6 @@ fn reference_ratio(m: usize) -> f64 {
     }
 }
 
-/// The descriptor borrows its dimension and stride arrays, so they live in the caller.
-fn view<'a>(a: &'a [f64], dims: &'a [usize; 2], strides: &'a [isize; 2]) -> RawStridedRef<'a, f64> {
-    RawStridedRef::new(a, dims, strides, 0).unwrap()
-}
-
 /// The `m x 3` descriptor every route except the wide case uses.
 fn tall<'a>(
     a: &'a [f64],
