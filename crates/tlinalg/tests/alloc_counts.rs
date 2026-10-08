@@ -164,8 +164,10 @@ fn per_call_allocations_do_not_grow_with_the_batch() {
     // Each count is at most the pre-extraction route's native allocations for the same call
     // (rank_revealing_qr was 7, solve 5, full_piv_lu_solve 7).
     let expected = [
-        ("compact_factor", 3),
-        ("cholesky", 2),
+        // Borrowing the compact reflector column (#17) and factoring Cholesky in the output (#18)
+        // each remove one per-lane allocation; the rest are unchanged by this change.
+        ("compact_factor", 2),
+        ("cholesky", 1),
         ("rank_revealing_qr", 5),
         ("solve", 5),
         ("full_piv_lu_solve", 7),
@@ -174,7 +176,7 @@ fn per_call_allocations_do_not_grow_with_the_batch() {
         ("svd", 3),
         ("packed_lu factor", 5),
         ("triangular_solve left", 0),
-        ("triangular_solve right", 1),
+        ("triangular_solve right", 0),
     ];
     assert_eq!(one, expected);
 }

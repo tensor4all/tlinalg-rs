@@ -1,10 +1,20 @@
 # tlinalg-rs
 
-Tensor-free linear algebra for the Tensor4all stack.
+The linear-algebra layer of the Tensor4all stack: the SVD, QR, Cholesky, LU and eigensolves that
+tensor algorithms reduce to once a tensor has been unfolded into a batch of matrices. The name is `t`
+for *tensor* plus `linalg` for *linear algebra* — read "tee-lin-alg" — and the `t` is the same one
+that prefixes `tprims`.
 
 `tlinalg` is the numerical layer that tenferro's CPU linear algebra is being extracted into. It owns
 the kernels and the batch/scheduling behaviour; the host owns tensors, allocation, dtype dispatch,
 placement, execution context and error wrapping.
+
+*Tensor-free* describes the interface, not the subject. No tensor type appears in it: every entry
+point takes borrowed strided matrix batches — one call per batch over a rank-2+B descriptor — plus a
+small vocabulary of its own (`Parallel`, `Scalar`, `Error`, `Op`). That is what keeps the two
+providers siblings with no shared trait crate, lets a host adapt them to the interface the host
+defines, and lets the kernels be tested and measured on plain buffers. It is not a claim that this
+library is about matrices instead of tensors.
 
 ## Crates
 

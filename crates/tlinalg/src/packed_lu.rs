@@ -403,8 +403,18 @@ pub fn solve_prepared<T: FaerScalar>(
             detail: "packed LU, pivot, and batch buffers describe different batches",
         });
     }
+    // A fully broadcast pivot batch points every item at the same `n` entries, so validate that
+    // vector once instead of re-validating it per item. Any other layout validates every item; the
+    // one remembered pointer is not a deduplication cache. Validation still covers the whole
+    // logical batch before the driver mutates any output.
+    let mut validated: Option<*const i32> = None;
     for index in 0..batch {
-        validate_pivots(op, n, pivots.item(index))?;
+        let item = pivots.item(index);
+        if validated == Some(item.as_ptr()) {
+            continue;
+        }
+        validate_pivots(op, n, item)?;
+        validated = Some(item.as_ptr());
     }
     batch::run(
         op,

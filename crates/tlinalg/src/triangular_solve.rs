@@ -10,12 +10,10 @@
 //!
 //! * a left-side solve `A X = B` writes `B` straight into the item's output chunk (one copy) and
 //!   solves it there in place;
-//! * a right-side solve `X A = B` is the left-side solve of the transposed system, so `B` is
-//!   transposed into a lane-local buffer, solved, and transposed out into the output chunk. The
-//!   buffer is lane scratch, reused for every item of the lane (the pre-extraction host borrowed
-//!   two pooled buffers per item for this).
+//! * a right-side solve `X A = B` writes `B` into the output chunk and solves the transposed
+//!   system `Aᵀ Xᵀ = Bᵀ` on that chunk's transposed view, so no lane-local work matrix is needed.
 
-use faer::{Mat, MatMut, MatRef};
+use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, same_batch, BatchedRef, Sink};
@@ -68,15 +66,13 @@ fn solve_in_place<E: faer::traits::ComplexField>(
 /// Solve one system into the lane's output chunk.
 ///
 /// Left side: `B` is written straight into the item's output region (that write initialises it)
-/// and solved there in place — one copy of `B`, as the pre-batching route made into its pooled
-/// right-hand side. Right side: `Bᵀ` is solved in the lane's compact `n x b_rows` work matrix and
-/// transposed out.
+/// and solved there in place. Right side: `B` is written there too and the transposed system is
+/// solved on the region's transposed view.
 fn triangular_solve_item<T: FaerScalar>(
     a: MatRef<'_, T::Entity>,
     b: MatRef<'_, T::Entity>,
     flags: TriangularSolveFlags,
     x: &mut Sink<'_, T>,
-    work: &mut Mat<T::Entity>,
     par: faer::Par,
 ) {
     let TriangularSolveFlags {
@@ -93,14 +89,21 @@ fn triangular_solve_item<T: FaerScalar>(
         let rhs = MatMut::from_column_major_slice_mut(T::entity_slice_mut(region), b_rows, b_cols);
         solve_in_place(a, rhs, lower, transpose_a, unit_diagonal, par);
     } else {
-        // Right-side solve `X A = B` is the left-side solve of the transposed system, so the RHS is
-        // transposed in and out and the triangle/transpose flags flip once.
-        work.copy_from(b.transpose());
-        solve_in_place(a, work.as_mut(), lower, !transpose_a, unit_diagonal, par);
-        let solved = work.as_ref().transpose();
-        x.fill(b_rows * b_cols, |index| {
-            T::from_entity(solved[(index % b_rows, index / b_rows)])
+        // Right-side solve `X A = B` is the left-side solve of the transposed system. Write `B`
+        // into the output region and solve `Aᵀ Xᵀ = Bᵀ` on its transposed view in place; the
+        // storage then holds `X` in its original `b_rows x n` layout.
+        let region = x.fill(b_rows * b_cols, |index| {
+            T::from_entity(b[(index % b_rows, index / b_rows)])
         });
+        let rhs = MatMut::from_column_major_slice_mut(T::entity_slice_mut(region), b_rows, b_cols);
+        solve_in_place(
+            a,
+            rhs.transpose_mut(),
+            lower,
+            !transpose_a,
+            unit_diagonal,
+            par,
+        );
     }
 }
 
@@ -151,7 +154,7 @@ pub fn triangular_solve<T: FaerScalar>(
     same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
     let n = a.rows();
     let (b_rows, b_cols) = (b.rows(), b.cols());
-    let nrhs = if flags.left_side {
+    if flags.left_side {
         if b_rows != n {
             return Err(invalid(
                 op,
@@ -159,17 +162,13 @@ pub fn triangular_solve<T: FaerScalar>(
                 format!("right-hand side has {b_rows} rows, expected {n}"),
             ));
         }
-        b_cols
-    } else {
-        if b_cols != n {
-            return Err(invalid(
-                op,
-                "configuration",
-                format!("right-hand side has {b_cols} columns, expected {n}"),
-            ));
-        }
-        b_rows
-    };
+    } else if b_cols != n {
+        return Err(invalid(
+            op,
+            "configuration",
+            format!("right-hand side has {b_cols} columns, expected {n}"),
+        ));
+    }
     let item_len = crate::util::checked_product(op, "X", &[b_rows, b_cols])?;
     batch::run(
         op,
@@ -177,16 +176,9 @@ pub fn triangular_solve<T: FaerScalar>(
         par,
         Some(n.max(b_rows).max(b_cols)),
         &mut (out(x, item_len),),
-        // Only the right-side route needs a work matrix; an empty `Mat` does not allocate.
-        |_| {
-            if flags.left_side {
-                Mat::<T::Entity>::zeros(0, 0)
-            } else {
-                Mat::<T::Entity>::zeros(n, nrhs)
-            }
-        },
-        |index, (x,), work, par| {
-            triangular_solve_item::<T>(a.item(index), b.item(index), flags, x, work, par);
+        |_| (),
+        |index, (x,), (), par| {
+            triangular_solve_item::<T>(a.item(index), b.item(index), flags, x, par);
             Ok(())
         },
     )
