@@ -1,6 +1,7 @@
 # tlinalg-rs
 
-Tensor-free linear algebra for the Tensor4all stack.
+Tensor-free linear algebra for the Tensor4all stack. The name is `t` for *tensor* plus `linalg` for
+*linear algebra* — read "tee-lin-alg" — and the `t` is the same one that prefixes `tprims`.
 
 `tlinalg` is the numerical layer that tenferro's CPU linear algebra is being extracted into. It owns
 the kernels and the batch/scheduling behaviour; the host owns tensors, allocation, dtype dispatch,
