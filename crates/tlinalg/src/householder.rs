@@ -21,7 +21,7 @@
 //! coefficients `k` per item likewise.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::prelude::ReborrowMut;
+use faer::prelude::{IntoConst, ReborrowMut};
 use faer::{Conj, Mat, MatMut, MatRef};
 
 use crate::batch::{self, in_place, out, Push};
@@ -33,10 +33,9 @@ fn head_one<T: FaerScalar>() -> T::Entity {
     T::entity_from_real(T::parity(false).real_part())
 }
 
-/// One lane's storage for [`compact_factor`]: the reflector basis and its `tau`, plus the faer
-/// scratch, sized once for the widest reflector the lane's matrices have and reused by every one.
+/// One lane's storage for [`compact_factor`]: the reflector factor and the faer scratch, sized
+/// once for the widest reflector the lane's matrices have and reused by every one.
 struct CompactFactorScratch<E: faer::traits::ComplexField> {
-    basis: Mat<E>,
     factor: Mat<E>,
     mem: MemBuffer,
 }
@@ -54,7 +53,6 @@ impl<E: faer::traits::ComplexField> CompactFactorScratch<E> {
             (rows, cols - 1)
         };
         Self {
-            basis: Mat::zeros(basis_rows, 1),
             factor: Mat::zeros(1, 1),
             mem: MemBuffer::new(
                 faer::linalg::householder::apply_block_householder_on_the_left_in_place_scratch::<E>(
@@ -74,7 +72,7 @@ fn compact_factor_item<T: FaerScalar>(
     scratch: &mut CompactFactorScratch<T::Entity>,
     par: faer::Par,
 ) {
-    let CompactFactorScratch { basis, factor, mem } = scratch;
+    let CompactFactorScratch { factor, mem } = scratch;
     let k = rows.min(cols);
     let mut qr = MatMut::from_column_major_slice_mut(T::entity_slice_mut(data), rows, cols);
     for j in 0..k {
@@ -87,18 +85,20 @@ fn compact_factor_item<T: FaerScalar>(
         coeff.push(T::from_real(T::recip_real(info.tau)));
         if j + 1 < cols {
             let basis_rows = rows - j;
-            let mut basis = basis.as_mut().subrows_mut(0, basis_rows);
-            basis[(0, 0)] = head_one::<T>();
-            for row in 1..basis_rows {
-                basis[(row, 0)] = qr[(j + row, j)];
-            }
+            // Borrow the reflector column as the basis against the disjoint target columns: split
+            // the state at column `j + 1`, keep the head+column part immutable and apply to the
+            // rest. No copy and no unsafe overlap.
+            let (column_part, target) = qr.rb_mut().split_at_col_mut(j + 1);
+            let basis = column_part
+                .into_const()
+                .subcols(j, 1)
+                .subrows(j, basis_rows);
             factor[(0, 0)] = T::entity_from_real(info.tau);
             faer::linalg::householder::apply_block_householder_on_the_left_in_place_with_conj(
-                basis.as_ref(),
+                basis,
                 factor.as_ref(),
                 Conj::No,
-                qr.rb_mut()
-                    .submatrix_mut(j, j + 1, basis_rows, cols - j - 1),
+                target.subrows_mut(j, basis_rows),
                 par,
                 MemStack::new(mem),
             );

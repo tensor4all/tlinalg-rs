@@ -3,40 +3,43 @@
 //! Moved from `tenferro-linalg`'s faer backend (same project, MIT OR Apache-2.0).
 //!
 //! The factorization reads the **lower** triangle of each `A` and returns the lower-triangular `L`
-//! with `A = L Lᴴ`, column-major, zero above the diagonal. Faer's work matrix and scratch are lane
-//! scratch, reused for every item of the lane.
+//! with `A = L Lᴴ`, column-major, zero above the diagonal. The output chunk is the destructive
+//! work matrix and faer's stack scratch is lane scratch, reused for every item of the lane.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::{Mat, MatRef};
+use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, out, BatchedRef, Push};
-use crate::util::{checked_product, push_masked};
+use crate::batch::{self, out, BatchedRef, Sink};
+use crate::util::checked_product;
 use crate::{Error, FaerScalar, Op, Parallel, Result};
-
-struct CholeskyScratch<E: faer::traits::ComplexField> {
-    work: Mat<E>,
-    mem: MemBuffer,
-}
 
 fn cholesky_item<T: FaerScalar>(
     op: Op,
     mat: MatRef<'_, T::Entity>,
-    l: &mut impl Push<T>,
-    scratch: &mut CholeskyScratch<T::Entity>,
+    l: &mut Sink<'_, T>,
+    mem: &mut MemBuffer,
     par: faer::Par,
 ) -> Result<()> {
     let n = mat.nrows();
-    scratch.work.copy_from(mat);
+    // The output chunk is the destructible copy. Fill it with `mat` and factor in place;
+    // `cholesky_in_place` reads the lower triangle only, so the upper part is cleared afterwards.
+    // The bulk `copy_from` is the optimized copy path the staging matrix used to get.
+    let work = l.fill(n * n, |_| T::default());
+    MatMut::from_column_major_slice_mut(T::entity_slice_mut(work), n, n).copy_from(mat);
     faer::linalg::cholesky::llt::factor::cholesky_in_place(
-        scratch.work.as_mut(),
+        MatMut::from_column_major_slice_mut(T::entity_slice_mut(work), n, n),
         Default::default(),
         par,
-        MemStack::new(&mut scratch.mem),
+        MemStack::new(mem),
         Default::default(),
     )
     .map_err(|_| Error::NonConvergence { op })?;
-    push_masked(l, scratch.work.as_ref(), n, n, |row, col| row >= col);
+    // faer may leave scratch values in the strictly-upper triangle; clear it so the output is the
+    // documented lower-triangular `L` with zeros above, as `push_masked` used to write.
+    for col in 0..n {
+        work[col * n..col * n + col].fill(T::default());
+    }
     Ok(())
 }
 
@@ -80,16 +83,15 @@ pub fn cholesky<T: FaerScalar>(
         par,
         Some(n),
         &mut (out(l, l_len),),
-        |par| CholeskyScratch {
-            work: Mat::<T::Entity>::zeros(n, n),
-            mem: MemBuffer::new(
+        |par| {
+            MemBuffer::new(
                 faer::linalg::cholesky::llt::factor::cholesky_in_place_scratch::<T::Entity>(
                     n,
                     par,
                     Default::default(),
                 ),
-            ),
+            )
         },
-        |index, (l,), scratch, par| cholesky_item::<T>(op, input.item(index), l, scratch, par),
+        |index, (l,), mem, par| cholesky_item::<T>(op, input.item(index), l, mem, par),
     )
 }

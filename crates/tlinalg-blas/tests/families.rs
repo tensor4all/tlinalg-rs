@@ -82,7 +82,8 @@ fn check_cholesky<T: TestScalar>() {
     let mut ws = TestWorkspace::default();
     cholesky(Op::Cholesky, a.r(), &mut l, &mut ws).unwrap();
     assert_eq!(ws.outstanding(), 0, "the factor copy is released");
-    assert_eq!(ws.acquired, 1, "one copy for the whole batch");
+    // The caller's output is the destructive work matrix, so no workspace copy is acquired.
+    assert_eq!(ws.acquired, 0, "the output is the factor storage");
     for index in 0..BATCH {
         let li = widen(item(&l, n * n, index));
         for col in 0..n {

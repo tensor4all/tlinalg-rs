@@ -71,25 +71,107 @@ where
     }
     q.reserve(batch_len(op, q_len, count)?);
     r.reserve(batch_len(op, r_len, count)?);
-    let mut packed = workspace.acquire_capacity(matrix_len);
-    let mut offsets = input.layout.offsets();
-    let first = offsets.next().unwrap_or_default();
-    input.gather(first, &mut packed);
     let mut tau = workspace.acquire_zeroed(k);
     check_scratch(op, tau.len(), k)?;
+    let mut offsets = input.layout.offsets();
+    let first = offsets.next().unwrap_or_default();
+    // The first gather doubles as the buffer the workspace queries run on: the queries only need a
+    // valid `m x n` slice (`lwork = -1` reads no matrix contents), so the factorization below
+    // reuses it instead of gathering the same matrix a second time.
+    if q_len == matrix_len {
+        // Square/tall (`k == n`): the packed `m x n` matrix and the thin `m x k` Q have the same
+        // shape, so Q's own storage is the destructive work matrix from the start, and `?orgqr`
+        // leaves the answer in place. This is not a singleton route: it serves every batch.
+        let first_start = q.len();
+        input.gather(first, q);
+        let lwork = qr_queries::<T>(
+            op,
+            &mut q[first_start..first_start + matrix_len],
+            q_len,
+            (mi, ni, ki),
+            &mut tau,
+        )?;
+        let mut work = workspace.acquire_zeroed(lwork as usize);
+        check_scratch(op, work.len(), lwork as usize)?;
+        for (position, offset) in core::iter::once(first).chain(offsets).enumerate() {
+            let start = if position == 0 {
+                first_start
+            } else {
+                let start = q.len();
+                input.gather(offset, q);
+                start
+            };
+            qr_factor::<T>(
+                op,
+                &mut q[start..start + matrix_len],
+                q_len,
+                (m, k, n),
+                (mi, ni, ki),
+                &mut tau,
+                &mut work,
+                lwork,
+                r,
+            )?;
+        }
+        workspace.release(tau);
+        workspace.release(work);
+        return Ok(());
+    }
+    // Wide (`k == m < n`): the packed matrix is wider than the thin Q, so stage it in the
+    // workspace and copy the leading `m x k` block out as Q.
+    let mut packed = workspace.acquire_capacity(matrix_len);
+    packed.clear();
+    input.gather(first, &mut packed);
+    let lwork = qr_queries::<T>(op, &mut packed, q_len, (mi, ni, ki), &mut tau)?;
+    let mut work = workspace.acquire_zeroed(lwork as usize);
+    check_scratch(op, work.len(), lwork as usize)?;
+    // INVARIANT: the reduced `Q` occupies the first `m * k` entries of `packed`, `k <= n`. Every
+    // matrix shares the queried dimensions and scratch, and the scratch never aliases the input.
+    // LAPACK owns threading; the batch loop only prepares provider calls.
+    for (position, offset) in core::iter::once(first).chain(offsets).enumerate() {
+        if position > 0 {
+            packed.clear();
+            input.gather(offset, &mut packed);
+        }
+        qr_factor::<T>(
+            op,
+            &mut packed,
+            q_len,
+            (m, k, n),
+            (mi, ni, ki),
+            &mut tau,
+            &mut work,
+            lwork,
+            r,
+        )?;
+        q.extend_from_slice(&packed[..q_len]);
+    }
+    workspace.release(packed);
+    workspace.release(tau);
+    workspace.release(work);
+    Ok(())
+}
+
+/// Query `?geqrf` and `?orgqr` on the already-gathered first item and return the `lwork` both fit.
+fn qr_queries<T: LapackScalar>(
+    op: Op,
+    packed: &mut [T],
+    q_len: usize,
+    (mi, ni, ki): (i32, i32, i32),
+    tau: &mut [T],
+) -> Result<i32> {
     // A stack slot, as before the move: the queries write one value each.
     let mut query = [T::default()];
     let mut info = 0;
     // SAFETY: `packed` is a compact `m x n` matrix, `tau` has `k` entries, and `lwork = -1` writes
     // only the query slot.
     unsafe {
-        T::geqrf(mi, ni, &mut packed, mi, &mut tau, &mut query, -1, &mut info);
+        T::geqrf(mi, ni, packed, mi, tau, &mut query, -1, &mut info);
     }
     check_info(op, T::GEQRF, info)?;
     let factor_len = work_len(op, "QR workspace", T::work_query_len(query[0]))?;
     // SAFETY: `packed` is `q_len = m * k` long and the leading dimensions match the validated
-    // shape; `lwork = -1` reads no matrix contents and writes only the query slot, so this query
-    // does not depend on `packed` holding the `?geqrf` reflectors the loop below fills.
+    // shape; `lwork = -1` reads no matrix contents and writes only the query slot.
     unsafe {
         T::orgqr(
             mi,
@@ -97,57 +179,51 @@ where
             ki,
             &mut packed[..q_len],
             mi,
-            &tau,
+            tau,
             &mut query,
             -1,
             &mut info,
         );
     }
     check_info(op, T::ORGQR, info)?;
-    let lwork = factor_len.max(work_len(op, "QR workspace", T::work_query_len(query[0]))?);
-    let mut work = workspace.acquire_zeroed(lwork as usize);
-    check_scratch(op, work.len(), lwork as usize)?;
-    // INVARIANT: the reduced `Q` occupies the first `m * k` entries of `packed`, `k <= n`. Every
-    // matrix shares the queried dimensions and scratch, and the scratch never aliases the input.
-    // LAPACK owns threading; the batch loop only prepares provider calls.
-    for offset in core::iter::once(first).chain(offsets) {
-        packed.clear();
-        input.gather(offset, &mut packed);
-        // SAFETY: as for the queries, with the queried workspace length.
-        unsafe {
-            T::geqrf(
-                mi,
-                ni,
-                &mut packed,
-                mi,
-                &mut tau,
-                &mut work,
-                lwork,
-                &mut info,
-            );
-        }
-        check_info(op, T::GEQRF, info)?;
-        push_leading_upper(&packed, m, k, n, r);
-        // SAFETY: as for the queries, with the queried workspace length.
-        unsafe {
-            T::orgqr(
-                mi,
-                ki,
-                ki,
-                &mut packed[..q_len],
-                mi,
-                &tau,
-                &mut work,
-                lwork,
-                &mut info,
-            );
-        }
-        check_info(op, T::ORGQR, info)?;
-        q.extend_from_slice(&packed[..q_len]);
+    Ok(factor_len.max(work_len(op, "QR workspace", T::work_query_len(query[0]))?))
+}
+
+/// Factor one gathered `m x n` item in place and push its thin `Q` and `R`.
+#[allow(clippy::too_many_arguments)]
+fn qr_factor<T: LapackScalar>(
+    op: Op,
+    packed: &mut [T],
+    q_len: usize,
+    (m, k, n): (usize, usize, usize),
+    (mi, ni, ki): (i32, i32, i32),
+    tau: &mut [T],
+    work: &mut [T],
+    lwork: i32,
+    r: &mut Vec<T>,
+) -> Result<()> {
+    let mut info = 0;
+    // SAFETY: as for the queries, with the queried workspace length.
+    unsafe {
+        T::geqrf(mi, ni, packed, mi, tau, work, lwork, &mut info);
     }
-    workspace.release(packed);
-    workspace.release(tau);
-    workspace.release(work);
+    check_info(op, T::GEQRF, info)?;
+    push_leading_upper(packed, m, k, n, r);
+    // SAFETY: as for the queries, with the queried workspace length.
+    unsafe {
+        T::orgqr(
+            mi,
+            ki,
+            ki,
+            &mut packed[..q_len],
+            mi,
+            tau,
+            work,
+            lwork,
+            &mut info,
+        );
+    }
+    check_info(op, T::ORGQR, info)?;
     Ok(())
 }
 
@@ -247,90 +323,148 @@ where
     out.q.reserve(batch_len(op, q_len, count)?);
     out.r.reserve(batch_len(op, r_len, count)?);
     out.permutation.reserve(batch_len(op, n, count)?);
-    let mut qr = workspace.acquire_capacity(matrix_len);
+    let RankRevealingQrOutputs { q, r, permutation } = out;
     let mut tau = vec![T::default(); k];
     let mut jpvt = vec![0_i32; n];
     // Reused per item by the permutation check.
     let mut seen = vec![false; n];
     let mut scratch: Option<RrqrScratch<T, T::Real>> = None;
-    for offset in input.layout.offsets() {
-        qr.clear();
-        input.gather(offset, &mut qr);
-        if qr.iter().any(|&value| !value.is_finite()) {
-            return Err(Error::NonFinite {
+    if q_len == matrix_len {
+        // Square/tall: the packed matrix and the thin Q have the same shape, so `?geqp3` runs on
+        // Q's own storage and `?orgqr` finishes it in place. This serves every batch.
+        for offset in input.layout.offsets() {
+            let start = q.len();
+            input.gather(offset, q);
+            rrqr_factor_item::<T, W>(
                 op,
-                role: NonFiniteRole::Input,
-            });
-        }
-        if qr.iter().all(|&value| value.magnitude() == 0.0) {
-            let start = out.q.len();
-            out.q.resize(start + q_len, T::default());
-            for diagonal in 0..k {
-                out.q[start + diagonal + diagonal * m] = T::one();
-            }
-            out.r.resize(out.r.len() + r_len, T::default());
-            out.permutation.extend((0..n).map(|column| column as i64));
-            continue;
-        }
-        jpvt.fill(0);
-        if scratch.is_none() {
-            scratch = Some(rrqr_scratch(
-                op, mi, ni, ki, &mut qr, &mut jpvt, &mut tau, workspace,
-            )?);
-        }
-        let Some(RrqrScratch {
-            geqp3_lwork,
-            orgqr_lwork,
-            work,
-            rwork,
-        }) = scratch.as_mut()
-        else {
-            unreachable!("the scratch was just built");
-        };
-        let mut info = 0;
-        // SAFETY: the dimensions and workspaces were validated by the queries on this shape.
-        unsafe {
-            T::geqp3(
-                mi,
-                ni,
-                &mut qr,
-                mi,
-                &mut jpvt,
+                (m, k, n),
+                (mi, ni, ki),
+                &mut q[start..start + matrix_len],
                 &mut tau,
-                work,
-                *geqp3_lwork,
-                rwork,
-                &mut info,
-            );
+                &mut jpvt,
+                &mut seen,
+                &mut scratch,
+                r,
+                permutation,
+                workspace,
+            )?;
         }
-        check_info(op, T::GEQP3, info)?;
-        push_leading_upper(&qr, m, k, n, out.r);
-        let start = out.q.len();
-        out.q.extend_from_slice(&qr[..q_len]);
-        // SAFETY: the `m x k` block holds `k` reflectors with `tau`; the query sized `work`.
-        unsafe {
-            T::orgqr(
-                mi,
-                ki,
-                ki,
-                &mut out.q[start..],
-                mi,
-                &tau,
-                work,
-                *orgqr_lwork,
-                &mut info,
-            );
+    } else {
+        // Wide (`k == m < n`): stage the packed matrix in the workspace and copy the thin Q out.
+        let mut qr = workspace.acquire_capacity(matrix_len);
+        for offset in input.layout.offsets() {
+            qr.clear();
+            input.gather(offset, &mut qr);
+            rrqr_factor_item::<T, W>(
+                op,
+                (m, k, n),
+                (mi, ni, ki),
+                &mut qr,
+                &mut tau,
+                &mut jpvt,
+                &mut seen,
+                &mut scratch,
+                r,
+                permutation,
+                workspace,
+            )?;
+            q.extend_from_slice(&qr[..q_len]);
         }
-        check_info(op, T::ORGQR, info)?;
-        normalize_into(op, &jpvt, &mut seen, out.permutation)?;
+        workspace.release(qr);
     }
-    workspace.release(qr);
     if let Some(RrqrScratch { work, rwork, .. }) = scratch {
         workspace.release(work);
         if T::COMPLEX {
             workspace.release(rwork);
         }
     }
+    Ok(())
+}
+
+/// Factor one gathered `m x n` item of [`rank_revealing_qr`] in place and push its `R` and
+/// permutation. The all-zero case writes the leading `m x k` identity into `packed`.
+#[allow(clippy::too_many_arguments)]
+fn rrqr_factor_item<T, W>(
+    op: Op,
+    (m, k, n): (usize, usize, usize),
+    (mi, ni, ki): (i32, i32, i32),
+    packed: &mut [T],
+    tau: &mut [T],
+    jpvt: &mut [i32],
+    seen: &mut [bool],
+    scratch: &mut Option<RrqrScratch<T, T::Real>>,
+    r: &mut Vec<T>,
+    permutation: &mut Vec<i64>,
+    workspace: &mut W,
+) -> Result<()>
+where
+    T: LapackScalar,
+    W: Workspace<T> + Workspace<T::Real>,
+{
+    let q_len = m * k;
+    let r_len = k * n;
+    if packed.iter().any(|&value| !value.is_finite()) {
+        return Err(Error::NonFinite {
+            op,
+            role: NonFiniteRole::Input,
+        });
+    }
+    if packed.iter().all(|&value| value.magnitude() == 0.0) {
+        packed.fill(T::default());
+        for diagonal in 0..k {
+            packed[diagonal + diagonal * m] = T::one();
+        }
+        r.resize(r.len() + r_len, T::default());
+        permutation.extend((0..n).map(|column| column as i64));
+        return Ok(());
+    }
+    jpvt.fill(0);
+    if scratch.is_none() {
+        *scratch = Some(rrqr_scratch(op, mi, ni, ki, packed, jpvt, tau, workspace)?);
+    }
+    let Some(RrqrScratch {
+        geqp3_lwork,
+        orgqr_lwork,
+        work,
+        rwork,
+    }) = scratch.as_mut()
+    else {
+        unreachable!("the scratch was just built");
+    };
+    let mut info = 0;
+    // SAFETY: the dimensions and workspaces were validated by the queries on this shape.
+    unsafe {
+        T::geqp3(
+            mi,
+            ni,
+            packed,
+            mi,
+            jpvt,
+            tau,
+            work,
+            *geqp3_lwork,
+            rwork,
+            &mut info,
+        );
+    }
+    check_info(op, T::GEQP3, info)?;
+    push_leading_upper(packed, m, k, n, r);
+    // SAFETY: the `m x k` block holds `k` reflectors with `tau`; the query sized `work`.
+    unsafe {
+        T::orgqr(
+            mi,
+            ki,
+            ki,
+            &mut packed[..q_len],
+            mi,
+            tau,
+            work,
+            *orgqr_lwork,
+            &mut info,
+        );
+    }
+    check_info(op, T::ORGQR, info)?;
+    normalize_into(op, jpvt, seen, permutation)?;
     Ok(())
 }
 
