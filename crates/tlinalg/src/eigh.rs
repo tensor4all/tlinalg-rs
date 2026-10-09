@@ -24,6 +24,8 @@ use crate::{Error, FaerScalar, Op, Parallel, Result};
 struct EighScratch<E: faer::traits::ComplexField> {
     values: Diag<E>,
     mem: MemBuffer,
+    /// Whether an earlier item has written `values`, so the next one has to be reset first.
+    reused: bool,
 }
 
 impl<E: faer::traits::ComplexField> EighScratch<E> {
@@ -37,6 +39,7 @@ impl<E: faer::traits::ComplexField> EighScratch<E> {
         Self {
             values: Diag::zeros(n),
             mem: MemBuffer::new(req),
+            reused: false,
         }
     }
 }
@@ -49,7 +52,11 @@ fn decompose<E: faer::traits::ComplexField>(
     scratch: &mut EighScratch<E>,
     par: faer::Par,
 ) -> Result<()> {
-    scratch.values.as_mut().fill(E::zero_impl());
+    // `Diag::zeros` already zeroed this; only a scratch that an earlier item wrote needs resetting.
+    if scratch.reused {
+        scratch.values.as_mut().fill(E::zero_impl());
+    }
+    scratch.reused = true;
     faer::linalg::evd::self_adjoint_evd(
         mat,
         scratch.values.as_mut(),
