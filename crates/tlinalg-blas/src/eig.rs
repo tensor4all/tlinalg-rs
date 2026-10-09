@@ -223,10 +223,10 @@ fn push_real_pairs<T: LapackScalar>(
     mut vectors: Option<&mut Vec<T::Complex>>,
 ) {
     let zero = <T::Real>::default();
-    let start = vectors.as_deref().map_or(0, Vec::len);
-    if let Some(vectors) = vectors.as_deref_mut() {
-        vectors.resize(start + n * n, T::Complex::default());
-    }
+    // Each column is assembled in this buffer and appended, in column order, so no entry is ever
+    // written twice: the previous shape grew the output with `n * n` zeros and then overwrote
+    // every one of them.
+    let mut column: Vec<T::Complex> = Vec::with_capacity(n);
     let mut col = 0;
     while col < n {
         let re = w[col].real_part();
@@ -240,9 +240,9 @@ fn push_real_pairs<T: LapackScalar>(
             values.push(T::complex_from_parts(re, zero));
             if let (Some(vectors), Some(vr)) = (vectors.as_deref_mut(), vr) {
                 for row in 0..n {
-                    vectors[start + row + col * n] =
-                        T::complex_from_parts(vr[row + col * n].real_part(), zero);
+                    column.push(T::complex_from_parts(vr[row + col * n].real_part(), zero));
                 }
+                vectors.append(&mut column);
             }
             col += 1;
         } else {
@@ -253,9 +253,15 @@ fn push_real_pairs<T: LapackScalar>(
                 for row in 0..n {
                     let first = vr[row + col * n].real_part();
                     let second = vr[row + (col + 1) * n].real_part();
-                    vectors[start + row + col * n] = T::complex_from_parts(first, second);
-                    vectors[start + row + (col + 1) * n] = T::complex_from_parts(first, -second);
+                    column.push(T::complex_from_parts(first, second));
                 }
+                vectors.append(&mut column);
+                for row in 0..n {
+                    let first = vr[row + col * n].real_part();
+                    let second = vr[row + (col + 1) * n].real_part();
+                    column.push(T::complex_from_parts(first, -second));
+                }
+                vectors.append(&mut column);
             }
             col += 2;
         }

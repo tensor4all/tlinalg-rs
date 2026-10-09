@@ -231,23 +231,21 @@ fn qr_reconstructs_the_matrix() {
     }
 }
 
-/// The wide case is left as an open question rather than an assertion.
+/// The wide route, which the suite's grids do not otherwise reach.
 ///
-/// A faer-level test of the same fixture passes before and after the fix (the fix's author checked
-/// it), while this route still loses the `1e-10` and `1e-6` structure, and neither the fork fix nor
-/// forcing the SVD away from the QR changes it. So either the loss is not the unpivoted skip or this
-/// check is wrong, and until that is settled the case is not evidence either way. It is ignored, not
-/// deleted, so the question stays visible.
+/// This case is coverage, not a regression: the perturbations here are `1e-10` and `1e-6` against a
+/// skip threshold of about `1.8e-14` at three rows, so they are far above it and the old code was
+/// accurate here too. The tall case above is the one that reproduced the defect.
 #[test]
-#[ignore = "open question: the observed loss in the wide route is not reproduced at the faer level"]
 fn wide_qr_reconstructs_the_transpose() {
     let m = 1000;
     let a = fixture(m);
     // The same fixture transposed: a 3 x m matrix, column-major, with the defect in the same column.
+    // `A^T` is 3 rows by m columns, column-major: `t[i + 3 * j] = A(j, i) = a[j + m * i]`.
     let mut transposed = vec![0.0_f64; 3 * m];
-    for j in 0..3 {
-        for i in 0..m {
-            transposed[j + 3 * i] = a[i + m * j];
+    for i in 0..3 {
+        for j in 0..m {
+            transposed[i + 3 * j] = a[j + m * i];
         }
     }
     let (mut q, mut r) = (Vec::new(), Vec::new());
@@ -259,11 +257,11 @@ fn wide_qr_reconstructs_the_transpose() {
         Parallel::Sequential,
     )
     .unwrap();
-    // Both are 3 x m column-major, so an entry is [row i][column j] = j + 3 * i.
+    // `Q` is 3 x 3 and `R` is 3 x m, both column-major: `rec[i + 3 * j] = sum_k Q(i,k) R(k,j)`.
     let mut reconstructed = vec![0.0_f64; 3 * m];
-    for j in 0..m {
-        for i in 0..3 {
-            reconstructed[j + 3 * i] = (0..3).map(|k| q[i + 3 * k] * r[k + 3 * j]).sum();
+    for i in 0..3 {
+        for j in 0..m {
+            reconstructed[i + 3 * j] = (0..3).map(|k| q[i + 3 * k] * r[k + 3 * j]).sum();
         }
     }
     let error = relative_error(&transposed, &reconstructed);

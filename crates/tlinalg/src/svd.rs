@@ -97,6 +97,8 @@ struct SvdScratch<E: faer::traits::ComplexField> {
     mem: MemBuffer,
     /// Present when vectors are computed and the default parameters use divide and conquer.
     check: Option<Check<E>>,
+    /// Whether an earlier item has written these buffers, so the next one has to be reset first.
+    reused: bool,
 }
 
 impl<E: faer::traits::ComplexField> SvdScratch<E> {
@@ -132,6 +134,7 @@ impl<E: faer::traits::ComplexField> SvdScratch<E> {
             s: Diag::zeros(k),
             mem: MemBuffer::new(req),
             check: checked.then(|| Check::new(m, n)),
+            reused: false,
         }
     }
 }
@@ -232,8 +235,13 @@ fn svd_item<T: FaerScalar>(
     // the lane buffers, so reuse cannot leak a previous item into this one.
     let zero = <T::Entity as faer::traits::ComplexField>::zero_impl();
     let u_region = T::entity_slice_mut(u.fill(m * u_cols, |_| T::default()));
-    scratch.v.as_mut().fill(zero);
-    scratch.s.as_mut().fill(zero);
+    // The lane buffers are zeroed when the scratch is built, so the first item of that scratch is
+    // only repeating the constructor's work; later items have to be reset.
+    if scratch.reused {
+        scratch.v.as_mut().fill(zero);
+        scratch.s.as_mut().fill(zero);
+    }
+    scratch.reused = true;
     // The divide-and-conquer path of faer's default parameters can return inaccurate factors
     // without an error. A decomposition that can take it runs with the defaults first and is
     // repeated with the QR algorithm when faer reports an error or the factors do not reproduce

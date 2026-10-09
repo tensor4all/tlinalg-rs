@@ -177,6 +177,8 @@ mod lane_storage {
         pub(super) u: Mat<E>,
         pub(super) s: Diag<E>,
         pub(super) mem: MemBuffer,
+        /// Whether an earlier item has written `u` and `s`, so the next one has to be reset first.
+        pub(super) reused: bool,
     }
 }
 
@@ -274,6 +276,7 @@ macro_rules! impl_eig_complex {
                     u: Mat::zeros(n, if vectors { n } else { 0 }),
                     s: Diag::zeros(n),
                     mem: evd_mem::<$entity>(n, vectors, par),
+                    reused: false,
                 }
             }
 
@@ -287,10 +290,17 @@ macro_rules! impl_eig_complex {
             ) -> Result<()> {
                 let n = mat.nrows();
                 let zero = <$entity>::new(0.0, 0.0);
-                let ComplexEigScratch { u, s, mem } = scratch;
-                s.as_mut().fill(zero);
+                let ComplexEigScratch { u, s, mem, reused } = scratch;
+                // `Diag::zeros`/`Mat::zeros` already zeroed these; only a scratch that an earlier
+                // item wrote needs resetting.
+                if *reused {
+                    s.as_mut().fill(zero);
+                    if vectors.is_some() {
+                        u.as_mut().fill(zero);
+                    }
+                }
+                *reused = true;
                 let u_out = if vectors.is_some() {
-                    u.as_mut().fill(zero);
                     Some(u.as_mut())
                 } else {
                     None
