@@ -1275,7 +1275,7 @@ dependencies = [
 [[package]]
 name = "strided-traits"
 version = "0.4.6"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=12ff2de906f4d894a4329f7dbf195b0f874f846e#12ff2de906f4d894a4329f7dbf195b0f874f846e"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6d106e9d565984bdf5592bd6ffe991d3e534538#6d106e9d565984bdf5592bd6ffe991d3e5345383"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1284,7 +1284,7 @@ dependencies = [
 [[package]]
 name = "strided-view"
 version = "0.4.6"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=12ff2de906f4d894a4329f7dbf195b0f874f846e#12ff2de906f4d894a4329f7dbf195b0f874f846e"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6d106e9d565984bdf5592bd6ffe991d3e534538#6d106e9d565984bdf5592bd6ffe991d3e5345383"
 dependencies = [
  "num-complex",
  "num-traits",
