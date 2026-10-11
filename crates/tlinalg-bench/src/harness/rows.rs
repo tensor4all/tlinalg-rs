@@ -1859,11 +1859,65 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 },
                 &mut self.ws,
             ),
-            "svd_thin" | "svd_full" | "svd_values" => {
-                return call::<T>(family, c, Parallel::Sequential, true)
+            // The prepared input and workspace, like every other row here. `call_lapack` rebuilt
+            // both per invocation, which timed the fixture and the workspace allocation rather
+            // than the vendor call. The singular values and `eig`'s outputs are `T::Real` and
+            // `T::Complex`; the vendor names those through its own public projection, so they can
+            // be prepared too -- they are still local here, which is a known follow-up, not a
+            // claim that they cannot be. `u`/`vt` below are `Vec<T>` and do use `out`/`out2`.
+            "svd_thin" | "svd_full" => {
+                let mut s = Vec::new();
+                tlinalg_blas::svd::svd(
+                    tlinalg_blas::Op::Svd,
+                    if family == "svd_full" {
+                        tlinalg_blas::svd::SvdMode::Full
+                    } else {
+                        tlinalg_blas::svd::SvdMode::Thin
+                    },
+                    self.op.view(),
+                    tlinalg_blas::svd::SvdOutputs {
+                        s: &mut s,
+                        u: &mut self.out,
+                        vt: &mut self.out2,
+                    },
+                    &mut self.ws,
+                )
+            }
+            "svd_values" => {
+                let mut s = Vec::new();
+                tlinalg_blas::svd::svd(
+                    tlinalg_blas::Op::SvdValues,
+                    tlinalg_blas::svd::SvdMode::Values,
+                    self.op.view(),
+                    tlinalg_blas::svd::SvdOutputs {
+                        s: &mut s,
+                        u: &mut self.out,
+                        vt: &mut self.out2,
+                    },
+                    &mut self.ws,
+                )
             }
             "eigh" | "eigvalsh" => unreachable!(),
-            "eig" | "eigvals" => return call::<T>(family, c, Parallel::Sequential, true),
+            "eig" => {
+                let (mut w, mut v) = (Vec::new(), Vec::new());
+                tlinalg_blas::eig::eig(
+                    tlinalg_blas::Op::Eig,
+                    self.op.view(),
+                    &mut w,
+                    Some(&mut v),
+                    &mut self.ws,
+                )
+            }
+            "eigvals" => {
+                let mut w = Vec::new();
+                tlinalg_blas::eig::eig(
+                    tlinalg_blas::Op::Eig,
+                    self.op.view(),
+                    &mut w,
+                    None,
+                    &mut self.ws,
+                )
+            }
             "full_piv_lu" => tlinalg_blas::full_piv_lu::full_piv_lu(
                 tlinalg_blas::Op::FullPivLu,
                 self.a.view(),
