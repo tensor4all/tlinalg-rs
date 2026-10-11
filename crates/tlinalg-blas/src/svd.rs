@@ -122,7 +122,12 @@ fn complex_rwork_len(op: Op, jobz: u8, m: usize, n: usize) -> Result<usize> {
     let mn = m.min(n);
     let mx = m.max(n);
     if jobz == b'N' {
-        return checked_product(op, "real workspace", &[5, mn.max(1)]);
+        // `SRC/zgesdd.f` documents `5*mn` for `JOBZ = 'N'` and adds "(LAPACK <= 3.6 needs 7*mn)".
+        // Accelerate ships the 3.2.1 interface, whose `?gesdd` writes past `5*mn` from just wider
+        // than square up to about `1.6*mn` (`DBDSQR`), corrupting the heap. The two extra reals per
+        // singular value are cheaper than a second sizing rule, so ask for the pre-3.7 length
+        // everywhere.
+        return checked_product(op, "real workspace", &[7, mn.max(1)]);
     }
     let threshold = checked_product(op, "workspace crossover", &[10, mn])?;
     let square_term = checked_product(op, "real workspace square term", &[5, mn, mn])?;
@@ -354,3 +359,6 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
