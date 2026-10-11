@@ -2003,13 +2003,30 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 &mut self.out3,
                 par,
             ),
-            "svd_values" => return call::<T>("svd_values", c, par, false),
+            // These rows take the *prepared* input, like every other family here. Their values
+            // are returned in the real or complex type rather than in `T`, so the output vectors
+            // stay local to the call; the input is the expensive fixture (`hpd` builds it with an
+            // n^3 product), and rebuilding it inside the timed region measured the fixture rather
+            // than the solver.
+            "svd_values" => {
+                let mut s = Vec::new();
+                tlinalg::svd::svd_values(Op::SvdValues, self.op.view(), &mut s, par)
+            }
             "eigh" => {
                 tlinalg::eigh::eigh(Op::Eigh, self.op.view(), &mut self.out2, &mut self.out, par)
             }
-            "eigvalsh" => return call::<T>("eigvalsh", c, par, false),
-            "eig" => return call::<T>("eig", c, par, false),
-            "eigvals" => return call::<T>("eigvals", c, par, false),
+            "eigvalsh" => {
+                let mut w = Vec::new();
+                tlinalg::eigh::eigh_values(Op::EighValues, self.op.view(), &mut w, par)
+            }
+            "eig" => {
+                let (mut w, mut v) = (Vec::new(), Vec::new());
+                tlinalg::eig::eig(Op::Eig, self.op.view(), &mut w, &mut v, par)
+            }
+            "eigvals" => {
+                let mut w = Vec::new();
+                tlinalg::eig::eig_values(Op::EigValues, self.op.view(), &mut w, par)
+            }
             "full_piv_lu" => tlinalg::full_piv_lu::full_piv_lu(
                 Op::FullPivLu,
                 self.a.view(),
