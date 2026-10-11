@@ -8,7 +8,7 @@ which machines, the run manifests, the published reports and their staleness —
 [tensor4all/tlinalg-benchmark](https://github.com/tensor4all/tlinalg-benchmark), which builds
 `tlbench` out of a pinned checkout of this repository. The harness stays here because it must be
 built out of the same checkout as the library it measures, so that a result's recorded commit
-describes both. This split is the one `tprims-rs`/`tprims-benchmark` already use.
+describes both. This split is the one `tcontract-rs`/`tcontract-benchmark` already use.
 
 | | |
 |---|---|
