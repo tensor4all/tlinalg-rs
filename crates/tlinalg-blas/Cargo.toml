@@ -21,6 +21,11 @@ link-openblas = ["dep:blas-src", "dep:lapack-src"]
 # measured checkout and executes the binary directly, so it must not need a loader search path
 # (`openblas-src` is a shared library by default and says so in its build output).
 link-openblas-static = ["link-openblas", "dep:openblas-src", "openblas-src/static"]
+# The installed Intel oneAPI MKL, found through `MKLROOT` by `build.rs`. Not the `blas-src`
+# route: that one downloads its own MKL tree, and this crate already activates the OpenBLAS
+# source on the same dependencies, which Cargo's additive features would leave enabled.
+# `link-mkl` and `link-openblas*` are mutually exclusive; the harness refuses the combination.
+link-mkl = []
 
 [dependencies]
 lapack = { workspace = true }
