@@ -148,6 +148,9 @@ fn info(threads: Option<usize>) {
     if cfg!(feature = "link-openblas-static") {
         features.push("link-openblas-static")
     }
+    if cfg!(feature = "link-mkl") {
+        features.push("link-mkl")
+    }
     println!("compiled.features={}", features.join(","));
 }
 
@@ -172,6 +175,12 @@ pub fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Before the identity is read, and before any numerical call: MKL's interface layer is an ABI
+    // the environment can otherwise choose for it.
+    if let Err(e) = crate::vendor::prepare() {
+        eprintln!("{e}");
+        return ExitCode::from(2);
+    }
     if a.command == "info" {
         info(a.threads);
         return ExitCode::SUCCESS;
@@ -183,7 +192,10 @@ pub fn main() -> ExitCode {
     }
     let env = Env::with_threads(NonZeroUsize::new(threads).unwrap());
     if a.command == "verify" && !crate::vendor::LINKED {
-        eprintln!("lapack-openblas skipped: vendor feature is not compiled in");
+        eprintln!(
+            "{} skipped: vendor feature is not compiled in",
+            crate::vendor::LAPACK_ROW
+        );
     }
     let cases: Vec<Case> = a
         .shapes

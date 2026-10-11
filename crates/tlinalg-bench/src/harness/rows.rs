@@ -2,7 +2,11 @@
 
 use crate::harness::cases::{applicable, Case};
 use crate::harness::timing;
-#[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+#[cfg(any(
+    feature = "link-openblas",
+    feature = "link-openblas-static",
+    feature = "link-mkl"
+))]
 use crate::RecyclingWorkspace;
 use crate::{Batch, BenchScalar, Env};
 use num_complex::Complex64;
@@ -307,7 +311,11 @@ pub fn call<T: BenchScalar>(
     Ok(())
 }
 
-#[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+#[cfg(any(
+    feature = "link-openblas",
+    feature = "link-openblas-static",
+    feature = "link-mkl"
+))]
 fn call_lapack<T: BenchScalar>(family: &str, c: Case) -> Result<(), String> {
     let a = Batch::<T>::general(c.m, c.n, c.batch);
     let b = Batch::<T>::general(c.m, 4, c.batch);
@@ -584,7 +592,11 @@ fn call_lapack<T: BenchScalar>(family: &str, c: Case) -> Result<(), String> {
     }
     Ok(())
 }
-#[cfg(not(any(feature = "link-openblas", feature = "link-openblas-static")))]
+#[cfg(not(any(
+    feature = "link-openblas",
+    feature = "link-openblas-static",
+    feature = "link-mkl"
+)))]
 fn call_lapack<T: BenchScalar>(_family: &str, _c: Case) -> Result<(), String> {
     // The signature has to match the linked variant's, which the caller uses with a turbofish.
     let _ = core::marker::PhantomData::<T>;
@@ -646,13 +658,21 @@ pub(crate) trait EigBuffers: BenchScalar {
         vectors: Option<&mut Vec<Complex64>>,
     ) -> Result<(), String>;
     fn faer_eig_values(a: &Batch<Self>, values: &mut Vec<Complex64>) -> Result<(), String>;
-    #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+    #[cfg(any(
+        feature = "link-openblas",
+        feature = "link-openblas-static",
+        feature = "link-mkl"
+    ))]
     fn lapack_eig(
         a: &Batch<Self>,
         values: &mut Vec<Complex64>,
         vectors: Option<&mut Vec<Complex64>>,
     ) -> Result<(), String>;
-    #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+    #[cfg(any(
+        feature = "link-openblas",
+        feature = "link-openblas-static",
+        feature = "link-mkl"
+    ))]
     fn lapack_eig_values(a: &Batch<Self>, values: &mut Vec<Complex64>) -> Result<(), String>;
 }
 
@@ -678,7 +698,11 @@ macro_rules! impl_eig_buffers {
                 tlinalg::eig::eig_values(Op::EigValues, a.view(), values, Parallel::Sequential)
                     .map_err(|e| e.to_string())
             }
-            #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+            #[cfg(any(
+                feature = "link-openblas",
+                feature = "link-openblas-static",
+                feature = "link-mkl"
+            ))]
             fn lapack_eig(
                 a: &Batch<Self>,
                 values: &mut Vec<Complex64>,
@@ -701,7 +725,11 @@ macro_rules! impl_eig_buffers {
                 }
                 Ok(())
             }
-            #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+            #[cfg(any(
+                feature = "link-openblas",
+                feature = "link-openblas-static",
+                feature = "link-mkl"
+            ))]
             fn lapack_eig_values(
                 a: &Batch<Self>,
                 values: &mut Vec<Complex64>,
@@ -741,7 +769,11 @@ macro_rules! impl_lapack_eigh {
                 values: &mut Vec<f64>,
                 vectors: Option<&mut Vec<Self>>,
             ) -> Result<(), String> {
-                #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+                #[cfg(any(
+                    feature = "link-openblas",
+                    feature = "link-openblas-static",
+                    feature = "link-mkl"
+                ))]
                 {
                     let mut ws = RecyclingWorkspace::default();
                     return tlinalg_blas::eigh::eigh(
@@ -753,7 +785,11 @@ macro_rules! impl_lapack_eigh {
                     )
                     .map_err(|e| e.to_string());
                 }
-                #[cfg(not(any(feature = "link-openblas", feature = "link-openblas-static")))]
+                #[cfg(not(any(
+                    feature = "link-openblas",
+                    feature = "link-openblas-static",
+                    feature = "link-mkl"
+                )))]
                 {
                     let _ = (a, values, vectors);
                     Err("lapack vendor not linked".into())
@@ -766,7 +802,11 @@ impl_lapack_eigh!(f64);
 impl_lapack_eigh!(Complex64);
 pub(crate) trait RealValues: BenchScalar {
     fn faer_values(a: &Batch<Self>) -> Result<Vec<f64>, String>;
-    #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+    #[cfg(any(
+        feature = "link-openblas",
+        feature = "link-openblas-static",
+        feature = "link-mkl"
+    ))]
     fn lapack_values(a: &Batch<Self>) -> Result<Vec<f64>, String>;
 }
 macro_rules! impl_real_values {
@@ -778,7 +818,11 @@ macro_rules! impl_real_values {
                     .map_err(|e| e.to_string())?;
                 Ok(w)
             }
-            #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+            #[cfg(any(
+                feature = "link-openblas",
+                feature = "link-openblas-static",
+                feature = "link-mkl"
+            ))]
             fn lapack_values(a: &Batch<Self>) -> Result<Vec<f64>, String> {
                 let mut ws = RecyclingWorkspace::default();
                 let mut w = Vec::new();
@@ -806,7 +850,11 @@ pub fn output_call<T: BenchScalar>(
         Batch::<T>::general(c.m, c.n, c.batch)
     };
     if lapack {
-        #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+        #[cfg(any(
+            feature = "link-openblas",
+            feature = "link-openblas-static",
+            feature = "link-mkl"
+        ))]
         {
             let mut ws = RecyclingWorkspace::default();
             return match family {
@@ -902,7 +950,11 @@ pub fn output_call<T: BenchScalar>(
                 }
             };
         }
-        #[cfg(not(any(feature = "link-openblas", feature = "link-openblas-static")))]
+        #[cfg(not(any(
+            feature = "link-openblas",
+            feature = "link-openblas-static",
+            feature = "link-mkl"
+        )))]
         {
             return Err("lapack vendor not linked".into());
         }
@@ -1010,7 +1062,11 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
         Batch::<T>::general(c.m, c.n, c.batch)
     };
     if lapack {
-        #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+        #[cfg(any(
+            feature = "link-openblas",
+            feature = "link-openblas-static",
+            feature = "link-mkl"
+        ))]
         {
             let mut ws = RecyclingWorkspace::default();
             macro_rules! packed {
@@ -1301,7 +1357,11 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 _ => Err(format!("unknown family {family}")),
             };
         }
-        #[cfg(not(any(feature = "link-openblas", feature = "link-openblas-static")))]
+        #[cfg(not(any(
+            feature = "link-openblas",
+            feature = "link-openblas-static",
+            feature = "link-mkl"
+        )))]
         {
             return Err("lapack vendor not linked".into());
         }
@@ -1596,7 +1656,11 @@ struct Prepared<T: BenchScalar> {
     perm: Vec<i64>,
     target: Vec<T>,
     target_initial: Vec<T>,
-    #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+    #[cfg(any(
+        feature = "link-openblas",
+        feature = "link-openblas-static",
+        feature = "link-mkl"
+    ))]
     ws: RecyclingWorkspace,
 }
 
@@ -1630,7 +1694,11 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
             perm: vec![0; c.n * c.batch],
             target: target_initial.clone(),
             target_initial,
-            #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+            #[cfg(any(
+                feature = "link-openblas",
+                feature = "link-openblas-static",
+                feature = "link-mkl"
+            ))]
             ws: RecyclingWorkspace::default(),
         }
     }
@@ -1693,7 +1761,11 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
         }
     }
 
-    #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+    #[cfg(any(
+        feature = "link-openblas",
+        feature = "link-openblas-static",
+        feature = "link-mkl"
+    ))]
     fn lapack(&mut self, family: &str, c: Case) -> Result<(), String> {
         if family == "eigh" {
             return <T as LapackEigh>::lapack_eigh(
@@ -2002,9 +2074,9 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
 ) -> Vec<Record> {
     let mut rows = Vec::new();
     if !applicable(family, c) {
-        for row in ["faer-1lane", "faer-pool", "lapack-openblas"] {
+        for row in ["faer-1lane", "faer-pool", crate::vendor::LAPACK_ROW] {
             if row == "faer-pool" && env.threads() == 1
-                || row == "lapack-openblas" && !crate::vendor::LINKED
+                || row == crate::vendor::LAPACK_ROW && !crate::vendor::LINKED
             {
                 continue;
             }
@@ -2090,17 +2162,25 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
                 crate::vendor::require_threads(env.threads())
             },
             || {
-                #[cfg(any(feature = "link-openblas", feature = "link-openblas-static"))]
+                #[cfg(any(
+                    feature = "link-openblas",
+                    feature = "link-openblas-static",
+                    feature = "link-mkl"
+                ))]
                 {
                     prepared.borrow_mut().lapack(family, c)
                 }
-                #[cfg(not(any(feature = "link-openblas", feature = "link-openblas-static")))]
+                #[cfg(not(any(
+                    feature = "link-openblas",
+                    feature = "link-openblas-static",
+                    feature = "link-mkl"
+                )))]
                 {
                     call::<T>(family, c, Parallel::Sequential, true)
                 }
             },
         );
-        rows.push(record("lapack-openblas", result));
+        rows.push(record(crate::vendor::LAPACK_ROW, result));
     }
     rows
 }

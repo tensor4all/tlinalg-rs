@@ -16,6 +16,10 @@ link-openblas = ["tlinalg-blas/link-openblas"]
 # The same vendor, linked statically, so the built harness can be executed directly with no
 # loader search path to arrange. The benchmark campaign measures this configuration.
 link-openblas-static = ["tlinalg-blas/link-openblas-static"]
+# The same, against the installed Intel oneAPI MKL. One vendor per binary: this arm is built and
+# recorded as its own run. `tlbench` is what this feature is for; the Criterion bench targets keep
+# their OpenBLAS-only gate.
+link-mkl = ["tlinalg-blas/link-mkl"]
 
 [dependencies]
 tlinalg = { workspace = true }
