@@ -151,6 +151,15 @@ fn triangular(left_side: bool, batch: usize) -> usize {
     })
 }
 
+// The blocked compact Householder path is deliberately not pinned here. Its trailing update goes
+// through faer's GEMM, and how many buffers that allocates is the backend's business: on
+// `x86_64-linux` a blocking shape costs the same two allocations per call from batch 1 to 64
+// (measured for 32x32 through 512x512), while on `aarch64-darwin` the same call allocates about
+// twelve buffers *per item* (14 for batch 1 against 770 for batch 64 at 64x48) inside `nano-gemm`'s
+// packing. Those are not this crate's allocations, and a count that differs by target is not a
+// regression this file could report. The unblocked shapes above stay pinned because the driver and
+// the lane scratch are what they measure.
+
 /// The driver itself allocates nothing on one lane; what remains is each family's faer lane
 /// scratch, built once per call and independent of the batch size.
 #[test]

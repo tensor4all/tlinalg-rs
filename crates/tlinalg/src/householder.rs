@@ -21,7 +21,7 @@
 //! coefficients `k` per item likewise.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::prelude::{IntoConst, ReborrowMut};
+use faer::prelude::{IntoConst, Reborrow, ReborrowMut};
 use faer::{Conj, Mat, MatMut, MatRef};
 
 use crate::batch::{self, in_place, out, Push};
@@ -33,33 +33,103 @@ fn head_one<T: FaerScalar>() -> T::Entity {
     T::entity_from_real(T::parity(false).real_part())
 }
 
-/// One lane's storage for [`compact_factor`]: the reflector factor and the faer scratch, sized
-/// once for the widest reflector the lane's matrices have and reused by every one.
+/// faer's own recommendation, capped for this kernel: the recommendation assumes faer's recursively
+/// blocked panel, and the panel here is factored one reflector at a time, so its width is what a
+/// pooled row scales against. Measured at `householder_factor` 4096x256 b1 c64 (512x512 b1),
+/// 1T / 8T pool: faer's own 48 gives 57.9 / 31.4 (17.3 / 5.95), 16 gives 53.6 / 19.6 (16.5 /
+/// 4.41), and recursing the panel was slower still (the factor each level builds is another
+/// `O(rows * block^2)`). `ponytail:` the cap is the price of the unblocked panel.
+const COMPACT_BLOCK_SIZE_CAP: usize = 16;
+
+/// The compact-WY block size for a `rows x cols` reflector panel.
+///
+/// It is `1` at the shapes where blocking does not pay, where the loop below degrades to the
+/// unblocked one.
+fn compact_block_size<E: faer::traits::ComplexField>(rows: usize, cols: usize) -> usize {
+    faer::linalg::qr::no_pivoting::factor::recommended_block_size::<E>(rows, cols)
+        .clamp(1, COMPACT_BLOCK_SIZE_CAP)
+}
+
+/// One lane's storage for [`compact_factor`]: the block compact-WY factor, the reflector panel's
+/// own scratch, and the faer scratch for the trailing update, sized once for the widest shape the
+/// lane's matrices have and reused by every one.
 struct CompactFactorScratch<E: faer::traits::ComplexField> {
     factor: Mat<E>,
     mem: MemBuffer,
 }
 
 impl<E: faer::traits::ComplexField> CompactFactorScratch<E> {
-    /// Size the storage for every reflector of a `rows x cols` matrix.
+    /// Size the storage for a `rows x cols` matrix blocked by [`compact_block_size`].
     ///
-    /// Reflector `j` applies a `(rows - j) x 1` block to `cols - j - 1` columns, and faer's
-    /// workspace request is `1 * (cols - j - 1)`, so the first reflector's shapes bound every later
-    /// one.
+    /// A `bs`-wide panel applies a `(rows - j) x bs` block to `cols - j - bs` columns, and faer's
+    /// workspace request is a `bs x (cols - j - bs)` temporary, so `bs x cols` bounds every block.
     fn new(rows: usize, cols: usize, _par: faer::Par) -> Self {
+        let block = compact_block_size::<E>(rows, cols);
         let (basis_rows, targets) = if rows.min(cols) == 0 {
             (0, 0)
         } else {
-            (rows, cols - 1)
+            (rows, cols)
         };
         Self {
-            factor: Mat::zeros(1, 1),
+            factor: Mat::zeros(block, block),
             mem: MemBuffer::new(
-                faer::linalg::householder::apply_block_householder_on_the_left_in_place_scratch::<E>(
-                    basis_rows, 1, targets,
+                faer::linalg::householder::apply_block_householder_transpose_on_the_left_in_place_scratch::<E>(
+                    basis_rows, block, targets,
                 ),
             ),
         }
+    }
+}
+
+/// Factor a `bs`-wide panel of `qr` starting at column `start`, storing the reflectors in place.
+///
+/// Reflector `j` is applied to the rest of the panel only: the trailing columns take the whole
+/// block at once, through the compact-WY factor [`upgrade_householder_factor`] builds from the
+/// coefficients the panel left in `factor`'s diagonal.
+fn compact_factor_panel<T: FaerScalar>(
+    qr: &mut MatMut<'_, T::Entity>,
+    factor: &mut Mat<T::Entity>,
+    mem: &mut MemBuffer,
+    start: usize,
+    bs: usize,
+    coeff: &mut impl Push<T>,
+    par: faer::Par,
+) {
+    let rows = qr.nrows();
+    for j in start..start + bs {
+        let mut column = qr.rb_mut().col_mut(j).subrows_mut(j, rows - j);
+        let (mut head, tail) = column.rb_mut().split_at_row_mut(1);
+        let info = faer::linalg::householder::make_householder_in_place(&mut head[0], tail);
+        let beta = head[0];
+        head[0] = head_one::<T>();
+        let inside = j - start;
+        factor[(inside, inside)] = T::entity_from_real(info.tau);
+        // Faer stores H = I - vv^H/tau; compact state stores 1/tau.
+        coeff.push(T::from_real(T::recip_real(info.tau)));
+        if j + 1 < start + bs {
+            let basis_rows = rows - j;
+            // Borrow the reflector column as the basis against the disjoint target columns: split
+            // the state at column `j + 1`, keep the head+column part immutable and apply to the
+            // rest of the panel. No copy and no unsafe overlap.
+            let (column_part, target) = qr.rb_mut().split_at_col_mut(j + 1);
+            let basis = column_part
+                .into_const()
+                .subcols(j, 1)
+                .subrows(j, basis_rows);
+            let target = target
+                .subrows_mut(j, basis_rows)
+                .subcols_mut(0, start + bs - j - 1);
+            let tile = factor.rb().subrows(inside, 1).subcols(inside, 1);
+            faer::linalg::householder::apply_block_householder_on_the_left_in_place_with_conj(
+                basis,
+                tile,
+                Conj::No,
+                target,
+                par,
+                MemStack::new(mem),
+            );
+        }
+        qr[(j, j)] = beta;
     }
 }
 
@@ -73,37 +143,42 @@ fn compact_factor_item<T: FaerScalar>(
     par: faer::Par,
 ) {
     let CompactFactorScratch { factor, mem } = scratch;
+    let block = factor.nrows();
     let k = rows.min(cols);
     let mut qr = MatMut::from_column_major_slice_mut(T::entity_slice_mut(data), rows, cols);
-    for j in 0..k {
-        let mut column = qr.rb_mut().col_mut(j).subrows_mut(j, rows - j);
-        let (mut head, tail) = column.rb_mut().split_at_row_mut(1);
-        let info = faer::linalg::householder::make_householder_in_place(&mut head[0], tail);
-        let beta = head[0];
-        head[0] = head_one::<T>();
-        // Faer stores H = I - vv^H/tau; compact state stores 1/tau.
-        coeff.push(T::from_real(T::recip_real(info.tau)));
-        if j + 1 < cols {
-            let basis_rows = rows - j;
-            // Borrow the reflector column as the basis against the disjoint target columns: split
-            // the state at column `j + 1`, keep the head+column part immutable and apply to the
-            // rest. No copy and no unsafe overlap.
-            let (column_part, target) = qr.rb_mut().split_at_col_mut(j + 1);
-            let basis = column_part
+    let mut start = 0;
+    while start < k {
+        let bs = block.min(k - start);
+        compact_factor_panel::<T>(&mut qr, factor, mem, start, bs, coeff, par);
+        if start + bs < cols {
+            // Apply the panel's whole reflector sequence to the trailing columns at once, as the
+            // compact-WY factor of the block. QR applies `H_0` first and `H_(bs-1)` last, so the
+            // trailing columns take `H_(bs-1) ... H_0` -- the adjoint of `I - V T^-1 V^H`, which
+            // is the transpose form faer's own blocked QR uses.
+            let (panel, mut trailing) = qr.rb_mut().split_at_col_mut(start + bs);
+            let basis = panel
                 .into_const()
-                .subcols(j, 1)
-                .subrows(j, basis_rows);
-            factor[(0, 0)] = T::entity_from_real(info.tau);
-            faer::linalg::householder::apply_block_householder_on_the_left_in_place_with_conj(
+                .subrows(start, rows - start)
+                .subcols(start, bs);
+            faer::linalg::householder::upgrade_householder_factor(
+                factor.rb_mut().subrows_mut(0, bs).subcols_mut(0, bs),
                 basis,
-                factor.as_ref(),
-                Conj::No,
-                target.subrows_mut(j, basis_rows),
+                bs,
+                1,
+                par,
+            );
+            let factor_tile = factor.rb().subrows(0, bs).subcols(0, bs);
+            let target = trailing.rb_mut().subrows_mut(start, rows - start);
+            faer::linalg::householder::apply_block_householder_transpose_on_the_left_in_place_with_conj(
+                basis,
+                factor_tile,
+                Conj::Yes,
+                target,
                 par,
                 MemStack::new(mem),
             );
         }
-        qr[(j, j)] = beta;
+        start += bs;
     }
 }
 
@@ -239,6 +314,7 @@ pub fn apply_reflectors<T: FaerScalar>(
         });
     }
     let apply = rows != 0 && cols != 0 && k != 0;
+    let block = compact_block_size::<T::Entity>(rows, a_cols).min(k).max(1);
     batch::run(
         op,
         batch,
@@ -249,11 +325,11 @@ pub fn apply_reflectors<T: FaerScalar>(
             let req = if !apply {
                 faer::dyn_stack::StackReq::EMPTY
             } else if transpose {
-                faer::linalg::householder::apply_block_householder_sequence_transpose_on_the_left_in_place_scratch::<T::Entity>(rows, 1, cols)
+                faer::linalg::householder::apply_block_householder_sequence_transpose_on_the_left_in_place_scratch::<T::Entity>(rows, block, cols)
             } else {
-                faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<T::Entity>(rows, 1, cols)
+                faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<T::Entity>(rows, block, cols)
             };
-            (MemBuffer::new(req), Mat::<T::Entity>::zeros(1, k))
+            (MemBuffer::new(req), Mat::<T::Entity>::zeros(block, k))
         },
         |index, (c,), (mem, factors), par| {
             if !apply {
@@ -263,9 +339,26 @@ pub fn apply_reflectors<T: FaerScalar>(
             let coeff = &coeff[index * k..(index + 1) * k];
             let basis =
                 MatRef::from_column_major_slice(T::entity_slice(a), rows, a_cols).subcols(0, k);
-            // Rebuild faer's denominator form transiently from the state coefficients.
-            for (col, value) in coeff.iter().enumerate() {
-                factors[(0, col)] = T::entity_from_real(T::recip_real(value.real_part()));
+            // Rebuild faer's denominator form transiently from the state coefficients, and upgrade
+            // each `block`-wide run of them into the compact-WY factor the sequence apply expects:
+            // the per-reflector taus become the block's `T`, so the apply is one blocked update
+            // instead of one rank-one update per reflector.
+            let mut start = 0;
+            while start < k {
+                let bs = block.min(k - start);
+                let mut tile = factors.rb_mut().subrows_mut(0, bs).subcols_mut(start, bs);
+                for inside in 0..bs {
+                    let tau = T::recip_real(coeff[start + inside].real_part());
+                    tile[(inside, inside)] = T::entity_from_real(tau);
+                }
+                faer::linalg::householder::upgrade_householder_factor(
+                    tile,
+                    basis.subrows(start, rows - start).subcols(start, bs),
+                    bs,
+                    1,
+                    par,
+                );
+                start += bs;
             }
             let matrix =
                 MatMut::from_column_major_slice_mut(T::entity_slice_mut(c.item(index)), rows, cols);
