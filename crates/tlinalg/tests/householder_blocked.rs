@@ -1,9 +1,9 @@
 //! The compact Householder kernels against the convention they publish, at shapes that block.
 //!
 //! `compact_factor` and `apply_reflectors` now run their reflectors a panel at a time through faer's
-//! compact-WY form. The rest of the suite only uses fixtures small enough that faer recommends a
-//! block size of 1 (its recommendation is 1 at or below `rows * cols == 256`), so it never reaches
-//! the block path; this file keeps shapes that do, including a partial last block, and checks the
+//! compact-WY form. The rest of the suite only uses fixtures small enough not to be blocked (the
+//! kernel's threshold is `rows * cols <= 48 * 48`), so it never reaches the block path; this file
+//! keeps shapes that do, including a partial last block, and checks the
 //! stored state against a reference that applies reflectors one at a time straight from the
 //! documented `H = I - v vᴴ / τ` and `coeff = 1/τ`.
 //!
@@ -125,7 +125,7 @@ fn reference_apply(
 
 /// Shapes whose faer-recommended block size is above one, including a partial last block, plus the
 /// unblocked case, so both the block path and its absence are covered.
-const SHAPES: [(usize, usize); 5] = [(64, 48), (48, 64), (37, 29), (130, 130), (5, 3)];
+const SHAPES: [(usize, usize); 5] = [(64, 48), (48, 64), (71, 43), (130, 130), (5, 3)];
 
 fn factor_matches_the_reference<T: TestScalar + tlinalg::FaerScalar>() {
     let (batch, par) = (3, Parallel::Sequential);
