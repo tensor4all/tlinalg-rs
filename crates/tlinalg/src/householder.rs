@@ -33,6 +33,13 @@ fn head_one<T: FaerScalar>() -> T::Entity {
     T::entity_from_real(T::parity(false).real_part())
 }
 
+/// At or below this size a matrix is not blocked at all: faer's own `QrParams::blocking_threshold`,
+/// the same shape rule faer applies before it sub-blocks a panel. Below it the compact-WY factor
+/// costs more than the level-3 trailing update it buys, and the campaign's `medium` 32x32 cells
+/// (where faer recommends a block of 4) read 1.4x slower at 1T and lose the OpenBLAS comparison they
+/// used to win.
+const COMPACT_BLOCKING_THRESHOLD: usize = 48 * 48;
+
 /// faer's own recommendation, capped for this kernel: the recommendation assumes faer's recursively
 /// blocked panel, and the panel here is factored one reflector at a time, so its width is what a
 /// pooled row scales against. Measured at `householder_factor` 4096x256 b1 c64 (512x512 b1),
@@ -46,6 +53,9 @@ const COMPACT_BLOCK_SIZE_CAP: usize = 16;
 /// It is `1` at the shapes where blocking does not pay, where the loop below degrades to the
 /// unblocked one.
 fn compact_block_size<E: faer::traits::ComplexField>(rows: usize, cols: usize) -> usize {
+    if rows.saturating_mul(cols) <= COMPACT_BLOCKING_THRESHOLD {
+        return 1;
+    }
     faer::linalg::qr::no_pivoting::factor::recommended_block_size::<E>(rows, cols)
         .clamp(1, COMPACT_BLOCK_SIZE_CAP)
 }
