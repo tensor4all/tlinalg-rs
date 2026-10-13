@@ -1275,7 +1275,7 @@ dependencies = [
 [[package]]
 name = "strided-traits"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1284,7 +1284,7 @@ dependencies = [
 [[package]]
 name = "strided-view"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1467,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "num-complex",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "num-complex",
  "strided-view",
