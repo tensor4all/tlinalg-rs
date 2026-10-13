@@ -1,0 +1,32 @@
+[package]
+name = "tlinalg-capi"
+description = "libtlinalg_capi: the caller-owned-output C ABI of the tlinalg kernels, as a shared, static and Rust library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+readme = "README.md"
+
+[lib]
+# `tlinalg_capi`, not `tlinalg`: the provider already owns the Rust crate name
+# `tlinalg`, and two crates of the same name would be an E0464 duplicate for any
+# consumer that links both (this crate's own tests do). The C artifact name
+# follows the Rust lib name.
+name = "tlinalg_capi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+num-complex = { workspace = true }
+strided-view = { workspace = true }
+tlinalg = { workspace = true }
+
+[dev-dependencies]
+strided-view = { workspace = true }
+tlinalg = { workspace = true }
+tlinalg-testkit = { workspace = true }
+
+[lints]
+workspace = true
