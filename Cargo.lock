@@ -1348,7 +1348,7 @@ dependencies = [
 [[package]]
 name = "t4a-faer"
 version = "0.24.4"
-source = "git+https://github.com/tensor4all/faer.git?rev=d6a20b0c099766ebcbb3a48eb9516ecbf2ae0a3c#d6a20b0c099766ebcbb3a48eb9516ecbf2ae0a3c"
+source = "git+https://github.com/tensor4all/faer.git?rev=67c642111e2a11fccbb581403a8d88e8ab6f94c8#67c642111e2a11fccbb581403a8d88e8ab6f94c8"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1370,7 +1370,7 @@ dependencies = [
 [[package]]
 name = "t4a-faer-traits"
 version = "0.24.0"
-source = "git+https://github.com/tensor4all/faer.git?rev=d6a20b0c099766ebcbb3a48eb9516ecbf2ae0a3c#d6a20b0c099766ebcbb3a48eb9516ecbf2ae0a3c"
+source = "git+https://github.com/tensor4all/faer.git?rev=67c642111e2a11fccbb581403a8d88e8ab6f94c8#67c642111e2a11fccbb581403a8d88e8ab6f94c8"
 dependencies = [
  "bytemuck",
  "dyn-stack",
