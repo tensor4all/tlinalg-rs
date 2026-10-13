@@ -1496,6 +1496,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tlinalg-capi"
+version = "0.2.0"
+dependencies = [
+ "num-complex",
+ "strided-view",
+ "tlinalg",
+ "tlinalg-testkit",
+]
+
+[[package]]
 name = "tlinalg-parity"
 version = "0.2.0"
 dependencies = [

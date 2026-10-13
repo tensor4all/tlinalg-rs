@@ -78,6 +78,9 @@ jobs:
         with:
           key: ${{ steps.runner.outputs.key }}
           save-if: ${{ github.event_name == 'push' }}
+      # The C ABI test links the built library, so build the cdylib first (the same
+      # prerequisite tcontract-capi documents for its own C test).
+      - run: cargo build --profile ci -p tlinalg-capi
       - run: cargo test --workspace --profile ci --features tlinalg-blas/link-openblas,tlinalg-parity/link-openblas
       # The injected symbol set exports ?gesvd but not ?gesdd, so the other driver has to be
       # exercised too; OpenBLAS provides both symbols.
@@ -109,6 +112,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
+      # As on the Linux lane: the C ABI test links the built library.
+      - run: cargo build --profile ci -p tlinalg-capi
       - run: cargo test --workspace --profile ci
 
   doc:

@@ -1,0 +1,14 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: tlinalg_capi
+Description: Caller-owned-output C ABI over the tlinalg linear-algebra kernels
+URL: https://github.com/tensor4all/tlinalg-rs
+Version: @VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -ltlinalg_capi
+# Only the static archive needs these: it bundles the Rust standard library. The
+# cdylib carries its own DT_NEEDED entries and a consumer needs none of this.
+Libs.private: -lpthread -ldl -lm
