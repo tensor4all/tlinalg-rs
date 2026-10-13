@@ -13,20 +13,19 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-authors = ["Hiroshi Shinaoka <h.shinaoka@gmail.com>", "tensor4all contributors"]
 repository = "https://github.com/tensor4all/tlinalg-rs"
-publish = false
+publish = true
 
 [workspace.dependencies]
 tlinalg = { version = "0.1.0", path = "crates/tlinalg" }
 tlinalg-blas = { version = "0.1.0", path = "crates/tlinalg-blas" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
-# tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
-# tlinalg-rs#28 (faer's QR dropped nearly dependent columns), which upstream 0.24.4 does not have.
-# The dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the
-# crates' `faer = { workspace = true }` are unchanged. Switch to a version once the fork publishes
-# the fix.
-faer = { package = "t4a-faer", git = "https://github.com/tensor4all/faer.git", rev = "d16929be4582c6b3679f5ec17223227bbfc289c9", default-features = false, features = ["std", "rayon"] }
+# tensor4all's fork of faer. `0.24.5` carries the unpivoted-QR fix for tlinalg-rs#28 (faer's QR
+# dropped nearly dependent columns); it is `d16929bc` plus its version bump, so the published
+# `src/**` is the revision this crate was pinned to when the fix was a git revision. The
+# dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the crates'
+# `faer = { workspace = true }` are unchanged.
+faer = { package = "t4a-faer", version = "=0.24.5", default-features = false, features = ["std", "rayon"] }
 # Published strided-view release; hosts use this exact source to share `RawStridedRef` types.
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "4373ba0bcb4bdc02f4c03a8a2d4896b84a47dd7c", version = "=0.4.8" }
 num-complex = "0.4"
