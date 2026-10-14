@@ -10,9 +10,13 @@
  *      buffer's element capacity. A buffer shorter than the query reports is
  *      rejected before anything is written.
  *
- * Threads: v1 is sequential (`tlinalg::Parallel::Sequential`). Borrowing a host
- * executor is an explicit non-goal of this version and follows
- * tensor4all/tcontract-rs#112; there is no pool vocabulary in this header.
+ * Threads: every `_into` takes an `intptr_t exec`, a TAPP executor handle from
+ * tcontract-capi (<tapp.h>) - the same vocabulary the contraction side of this
+ * stack uses - and runs on that executor's pool with its budget. Zero means a
+ * sequential call. A host that owns one pool creates it once with
+ * tcontract_pool_create_rayon, lends it with tcontract_tapp_executor_borrow_pool,
+ * and passes that executor here; this library creates no pool and never infers a
+ * width from the environment.
  *
  * Conventions the operations carry:
  *   - SVD returns U, non-increasing singular values and V^H (not V); the `full`
@@ -154,7 +158,7 @@ tlinalg_status tlinalg_svd_sizes(const tlinalg_strided *input, int32_t full,
 /* Write U, S, V^H into caller-owned buffers. `s` is in the SCALAR type of
    `dtype` (complex values carry a zero imaginary part). `data_len` is the number
    of elements in `data`. */
-tlinalg_status tlinalg_svd_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_svd_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                 const void *data, size_t data_len, int32_t full,
                                 void *u, size_t u_len, void *s, size_t s_len,
                                 void *vt, size_t vt_len,
@@ -166,7 +170,7 @@ tlinalg_status tlinalg_svd_values_sizes(const tlinalg_strided *input,
                                         tlinalg_svd_values_out *out);
 
 /* Write the singular values; `s` is in the REAL scalar of `dtype`. */
-tlinalg_status tlinalg_svd_values_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_svd_values_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                        const void *data, size_t data_len,
                                        void *s, size_t s_len,
                                        void *workspace, size_t workspace_len);
@@ -176,7 +180,7 @@ tlinalg_status tlinalg_svd_values_into(const tlinalg_strided *input, tlinalg_dty
 tlinalg_status tlinalg_eigh_sizes(const tlinalg_strided *input, tlinalg_eigh_out *out);
 
 /* Write the eigenvalues (scalar type) and column-major eigenvectors. */
-tlinalg_status tlinalg_eigh_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_eigh_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                  const void *data, size_t data_len,
                                  void *values, size_t values_len,
                                  void *vectors, size_t vectors_len,
@@ -186,7 +190,7 @@ tlinalg_status tlinalg_eigh_values_sizes(const tlinalg_strided *input,
                                          tlinalg_eigh_values_out *out);
 
 /* Write the real eigenvalues only. */
-tlinalg_status tlinalg_eigh_values_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_eigh_values_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                         const void *data, size_t data_len,
                                         void *values, size_t values_len,
                                         void *workspace, size_t workspace_len);
@@ -196,7 +200,7 @@ tlinalg_status tlinalg_eigh_values_into(const tlinalg_strided *input, tlinalg_dt
 tlinalg_status tlinalg_cholesky_sizes(const tlinalg_strided *input,
                                       tlinalg_cholesky_out *out);
 
-tlinalg_status tlinalg_cholesky_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_cholesky_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                      const void *data, size_t data_len,
                                      void *l, size_t l_len,
                                      void *workspace, size_t workspace_len);
@@ -205,7 +209,7 @@ tlinalg_status tlinalg_cholesky_into(const tlinalg_strided *input, tlinalg_dtype
 
 tlinalg_status tlinalg_lu_sizes(const tlinalg_strided *input, tlinalg_lu_out *out);
 
-tlinalg_status tlinalg_lu_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_lu_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                const void *data, size_t data_len,
                                void *p, size_t p_len, void *l, size_t l_len,
                                void *u, size_t u_len, void *parity, size_t parity_len,
@@ -216,7 +220,7 @@ tlinalg_status tlinalg_lu_into(const tlinalg_strided *input, tlinalg_dtype dtype
 tlinalg_status tlinalg_full_piv_lu_sizes(const tlinalg_strided *input,
                                          tlinalg_full_piv_lu_out *out);
 
-tlinalg_status tlinalg_full_piv_lu_into(const tlinalg_strided *input, tlinalg_dtype dtype,
+tlinalg_status tlinalg_full_piv_lu_into(const tlinalg_strided *input, tlinalg_dtype dtype, intptr_t exec,
                                         const void *data, size_t data_len,
                                         void *p, size_t p_len, void *l, size_t l_len,
                                         void *u, size_t u_len, void *q, size_t q_len,

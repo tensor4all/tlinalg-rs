@@ -11,6 +11,7 @@ use num_complex::{Complex32, Complex64};
 use tlinalg::{full_piv_lu, FaerScalar, Op, Parallel};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
+use crate::executor::with_executor;
 use crate::output::{check_output, copy_output, validate_capacity};
 use crate::sizes::{batch_of, product, require_square, tlinalg_full_piv_lu_out};
 use crate::status::{ffi, invalid, map_error, tlinalg_status, FfiError};
@@ -42,6 +43,7 @@ fn full_piv_lu_into_typed<T: FaerScalar>(
     q: *mut c_void,
     parity: *mut c_void,
     sizes: &tlinalg_full_piv_lu_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut pp, mut ll, mut uu, mut qq, mut par) =
@@ -56,7 +58,7 @@ fn full_piv_lu_into_typed<T: FaerScalar>(
                 q: &mut qq,
                 parity: &mut par,
             },
-            Parallel::Sequential,
+            parallel,
         )
         .map_err(map_error)?;
         let (p_total, l_total, u_total, q_total, par_total) = sizes.totals()?;
@@ -105,6 +107,7 @@ pub unsafe extern "C" fn tlinalg_full_piv_lu_sizes(
 pub unsafe extern "C" fn tlinalg_full_piv_lu_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     p: *mut c_void,
@@ -129,19 +132,19 @@ pub unsafe extern "C" fn tlinalg_full_piv_lu_into(
         validate_capacity("u", u, u_len, u_total)?;
         validate_capacity("q", q, q_len, q_total)?;
         validate_capacity("parity", parity, parity_len, par_total)?;
-        match dtype {
-            TlinalgDtype::F32 => {
-                full_piv_lu_into_typed::<f32>(input, data, data_len, p, l, u, q, parity, &sizes)
-            }
-            TlinalgDtype::F64 => {
-                full_piv_lu_into_typed::<f64>(input, data, data_len, p, l, u, q, parity, &sizes)
-            }
+        with_executor(exec, |parallel| match dtype {
+            TlinalgDtype::F32 => full_piv_lu_into_typed::<f32>(
+                input, data, data_len, p, l, u, q, parity, &sizes, parallel,
+            ),
+            TlinalgDtype::F64 => full_piv_lu_into_typed::<f64>(
+                input, data, data_len, p, l, u, q, parity, &sizes, parallel,
+            ),
             TlinalgDtype::C32 => full_piv_lu_into_typed::<Complex32>(
-                input, data, data_len, p, l, u, q, parity, &sizes,
+                input, data, data_len, p, l, u, q, parity, &sizes, parallel,
             ),
             TlinalgDtype::C64 => full_piv_lu_into_typed::<Complex64>(
-                input, data, data_len, p, l, u, q, parity, &sizes,
+                input, data, data_len, p, l, u, q, parity, &sizes, parallel,
             ),
-        }
+        })
     })
 }

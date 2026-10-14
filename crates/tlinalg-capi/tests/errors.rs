@@ -27,6 +27,7 @@ fn too_short_buffer_is_rejected_before_any_write() {
         tlinalg_svd_into(
             &desc,
             TLINALG_F64,
+            0,
             a.as_ptr().cast::<c_void>(),
             a.len(),
             0,
@@ -51,6 +52,7 @@ fn too_short_buffer_is_rejected_before_any_write() {
         tlinalg_svd_into(
             &desc,
             TLINALG_F64,
+            0,
             a.as_ptr().cast::<c_void>(),
             a.len(),
             0,
@@ -80,6 +82,7 @@ fn singular_cholesky_reports_the_provider_classification() {
         tlinalg_cholesky_into(
             &desc,
             TLINALG_F64,
+            0,
             a.as_ptr().cast::<c_void>(),
             a.len(),
             l.as_mut_ptr().cast::<c_void>(),
@@ -128,6 +131,7 @@ fn non_square_input_is_a_shape_error() {
             tlinalg_eigh_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 std::ptr::null_mut(),
@@ -157,6 +161,7 @@ fn a_descriptor_reaching_outside_the_buffer_is_a_shape_error() {
         tlinalg_svd_into(
             &desc,
             TLINALG_F64,
+            0,
             a.as_ptr().cast::<c_void>(),
             a.len(),
             0,
@@ -207,6 +212,7 @@ fn null_pointers_are_invalid_arguments() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 std::ptr::null(),
                 a.len(),
                 0,
@@ -229,6 +235,7 @@ fn null_pointers_are_invalid_arguments() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 0,
@@ -256,6 +263,7 @@ fn reserved_and_unknown_dtype_tags_are_rejected() {
         tlinalg_svd_into(
             &desc,
             dtype,
+            0,
             a.as_ptr().cast::<c_void>(),
             a.len(),
             0,
@@ -337,6 +345,7 @@ fn a_batch_larger_than_one_queries_and_writes_the_same_totals() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 0,

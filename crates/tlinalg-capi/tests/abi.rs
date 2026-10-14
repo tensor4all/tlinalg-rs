@@ -98,6 +98,7 @@ mod c_abi {
         pub fn tlinalg_svd_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             full: i32,
@@ -118,6 +119,7 @@ mod c_abi {
         pub fn tlinalg_svd_values_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             s: *mut c_void,
@@ -134,6 +136,7 @@ mod c_abi {
         pub fn tlinalg_eigh_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             values: *mut c_void,
@@ -151,6 +154,7 @@ mod c_abi {
         pub fn tlinalg_eigh_values_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             values: *mut c_void,
@@ -166,6 +170,7 @@ mod c_abi {
         pub fn tlinalg_cholesky_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             l: *mut c_void,
@@ -179,6 +184,7 @@ mod c_abi {
         pub fn tlinalg_lu_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             p: *mut c_void,
@@ -201,6 +207,7 @@ mod c_abi {
         pub fn tlinalg_full_piv_lu_into(
             input: *const tlinalg_strided,
             dtype: i32,
+            exec: isize,
             data: *const c_void,
             data_len: usize,
             p: *mut c_void,
@@ -309,6 +316,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_svd_into(
                 &d,
                 F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 4,
                 0,
@@ -339,6 +347,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_svd_values_into(
                 &d,
                 F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 4,
                 ss.as_mut_ptr().cast::<c_void>(),
@@ -365,6 +374,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_eigh_into(
                 &d,
                 F64,
+                0,
                 sym.as_ptr().cast::<c_void>(),
                 4,
                 ev.as_mut_ptr().cast::<c_void>(),
@@ -391,6 +401,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_eigh_values_into(
                 &d,
                 F64,
+                0,
                 sym.as_ptr().cast::<c_void>(),
                 4,
                 evv.as_mut_ptr().cast::<c_void>(),
@@ -416,6 +427,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_cholesky_into(
                 &d,
                 F64,
+                0,
                 hpd.as_ptr().cast::<c_void>(),
                 4,
                 l.as_mut_ptr().cast::<c_void>(),
@@ -444,6 +456,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_lu_into(
                 &d,
                 F64,
+                0,
                 hpd.as_ptr().cast::<c_void>(),
                 4,
                 p.as_mut_ptr().cast::<c_void>(),
@@ -484,6 +497,7 @@ fn every_entry_point_links_and_runs() {
             tlinalg_full_piv_lu_into(
                 &d,
                 F64,
+                0,
                 hpd.as_ptr().cast::<c_void>(),
                 4,
                 fp.as_mut_ptr().cast::<c_void>(),
