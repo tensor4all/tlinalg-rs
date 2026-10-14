@@ -28,7 +28,7 @@ tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # The dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the
 # crates' `faer = { workspace = true }` are unchanged. Switch to a version once the fork publishes
 # the fix.
-faer = { package = "t4a-faer", version = "=0.24.5", default-features = false, features = ["std", "rayon"] }
+faer = { package = "t4a-faer", git = "https://github.com/tensor4all/faer.git", rev = "04542faea04f910917d355edfd4e7ce0be3f95fd", default-features = false, features = ["std", "rayon"] }
 # Published strided-view release; hosts use this exact source to share `RawStridedRef` types.
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49dd63aac7af12a9a3e7de90cffb0337f26025c8", version = "=0.5.0" }
 # The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
