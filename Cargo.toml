@@ -34,7 +34,7 @@ strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49
 # The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
 # the TAPP executor handle's pool and budget, which tcontract-capi owns (publish = false,
 # so this is a git-only dependency).
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "3998f0613e91c5fd8baa505167000fed43198abe" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "9587c34c03861a88cefeac8c9112991951674a8b" }
 num-complex = "0.4"
 rayon = "1.10"
 thiserror = "2"
