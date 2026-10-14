@@ -11,6 +11,7 @@ use num_complex::{Complex32, Complex64};
 use tlinalg::{cholesky, FaerScalar, Op, Parallel};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
+use crate::executor::with_executor;
 use crate::output::{check_output, copy_output, validate_capacity};
 use crate::sizes::{batch_of, product, require_square, tlinalg_cholesky_out};
 use crate::status::{ffi, invalid, map_error, tlinalg_status, FfiError};
@@ -32,11 +33,11 @@ fn cholesky_into_typed<T: FaerScalar>(
     data_len: usize,
     l: *mut c_void,
     sizes: &tlinalg_cholesky_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut ll = Vec::new();
-        cholesky::cholesky(Op::Cholesky, input, &mut ll, Parallel::Sequential)
-            .map_err(map_error)?;
+        cholesky::cholesky(Op::Cholesky, input, &mut ll, parallel).map_err(map_error)?;
         check_output(&ll, l, sizes.total()?, "l")?;
         copy_output(&ll, l);
         Ok(())
@@ -73,6 +74,7 @@ pub unsafe extern "C" fn tlinalg_cholesky_sizes(
 pub unsafe extern "C" fn tlinalg_cholesky_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     l: *mut c_void,
@@ -84,11 +86,19 @@ pub unsafe extern "C" fn tlinalg_cholesky_into(
         let dtype = TlinalgDtype::from_tag(dtype)?;
         let sizes = cholesky_sizes(input)?;
         validate_capacity("l", l, l_len, sizes.total()?)?;
-        match dtype {
-            TlinalgDtype::F32 => cholesky_into_typed::<f32>(input, data, data_len, l, &sizes),
-            TlinalgDtype::F64 => cholesky_into_typed::<f64>(input, data, data_len, l, &sizes),
-            TlinalgDtype::C32 => cholesky_into_typed::<Complex32>(input, data, data_len, l, &sizes),
-            TlinalgDtype::C64 => cholesky_into_typed::<Complex64>(input, data, data_len, l, &sizes),
-        }
+        with_executor(exec, |parallel| match dtype {
+            TlinalgDtype::F32 => {
+                cholesky_into_typed::<f32>(input, data, data_len, l, &sizes, parallel)
+            }
+            TlinalgDtype::F64 => {
+                cholesky_into_typed::<f64>(input, data, data_len, l, &sizes, parallel)
+            }
+            TlinalgDtype::C32 => {
+                cholesky_into_typed::<Complex32>(input, data, data_len, l, &sizes, parallel)
+            }
+            TlinalgDtype::C64 => {
+                cholesky_into_typed::<Complex64>(input, data, data_len, l, &sizes, parallel)
+            }
+        })
     })
 }

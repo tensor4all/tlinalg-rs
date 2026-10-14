@@ -12,6 +12,7 @@ use num_complex::{Complex32, Complex64};
 use tlinalg::{svd, FaerScalar, Op, Parallel};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
+use crate::executor::with_executor;
 use crate::output::{check_output, copy_output, validate_capacity};
 use crate::sizes::{batch_of, product, tlinalg_svd_out, tlinalg_svd_values_out};
 use crate::status::{ffi, invalid, map_error, tlinalg_status, FfiError};
@@ -60,20 +61,12 @@ fn svd_into_typed<T: FaerScalar>(
     s: *mut c_void,
     vt: *mut c_void,
     sizes: &tlinalg_svd_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     let op = if full { Op::SvdFull } else { Op::Svd };
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut uu, mut ss, mut vv) = (Vec::new(), Vec::new(), Vec::new());
-        svd::svd(
-            op,
-            input,
-            full,
-            &mut uu,
-            &mut ss,
-            &mut vv,
-            Parallel::Sequential,
-        )
-        .map_err(map_error)?;
+        svd::svd(op, input, full, &mut uu, &mut ss, &mut vv, parallel).map_err(map_error)?;
         let (u_total, s_total, vt_total) = sizes.totals()?;
         check_output(&uu, u, u_total, "u")?;
         check_output(&ss, s, s_total, "s")?;
@@ -91,10 +84,11 @@ fn svd_values_into_typed<T: FaerScalar>(
     data_len: usize,
     s: *mut c_void,
     sizes: &tlinalg_svd_values_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut ss = Vec::new();
-        svd::svd_values(Op::SvdValues, input, &mut ss, Parallel::Sequential).map_err(map_error)?;
+        svd::svd_values(Op::SvdValues, input, &mut ss, parallel).map_err(map_error)?;
         check_output(&ss, s, sizes.total()?, "s")?;
         copy_output(&ss, s);
         Ok(())
@@ -136,6 +130,7 @@ pub unsafe extern "C" fn tlinalg_svd_sizes(
 pub unsafe extern "C" fn tlinalg_svd_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     full: i32,
@@ -156,20 +151,20 @@ pub unsafe extern "C" fn tlinalg_svd_into(
         validate_capacity("u", u, u_len, u_total)?;
         validate_capacity("s", s, s_len, s_total)?;
         validate_capacity("vt", vt, vt_len, vt_total)?;
-        match dtype {
+        with_executor(exec, |parallel| match dtype {
             TlinalgDtype::F32 => {
-                svd_into_typed::<f32>(input, data, data_len, full, u, s, vt, &sizes)
+                svd_into_typed::<f32>(input, data, data_len, full, u, s, vt, &sizes, parallel)
             }
             TlinalgDtype::F64 => {
-                svd_into_typed::<f64>(input, data, data_len, full, u, s, vt, &sizes)
+                svd_into_typed::<f64>(input, data, data_len, full, u, s, vt, &sizes, parallel)
             }
             TlinalgDtype::C32 => {
-                svd_into_typed::<Complex32>(input, data, data_len, full, u, s, vt, &sizes)
+                svd_into_typed::<Complex32>(input, data, data_len, full, u, s, vt, &sizes, parallel)
             }
             TlinalgDtype::C64 => {
-                svd_into_typed::<Complex64>(input, data, data_len, full, u, s, vt, &sizes)
+                svd_into_typed::<Complex64>(input, data, data_len, full, u, s, vt, &sizes, parallel)
             }
-        }
+        })
     })
 }
 
@@ -205,6 +200,7 @@ pub unsafe extern "C" fn tlinalg_svd_values_sizes(
 pub unsafe extern "C" fn tlinalg_svd_values_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     s: *mut c_void,
@@ -216,15 +212,19 @@ pub unsafe extern "C" fn tlinalg_svd_values_into(
         let dtype = TlinalgDtype::from_tag(dtype)?;
         let sizes = svd_values_sizes(input)?;
         validate_capacity("s", s, s_len, sizes.total()?)?;
-        match dtype {
-            TlinalgDtype::F32 => svd_values_into_typed::<f32>(input, data, data_len, s, &sizes),
-            TlinalgDtype::F64 => svd_values_into_typed::<f64>(input, data, data_len, s, &sizes),
+        with_executor(exec, |parallel| match dtype {
+            TlinalgDtype::F32 => {
+                svd_values_into_typed::<f32>(input, data, data_len, s, &sizes, parallel)
+            }
+            TlinalgDtype::F64 => {
+                svd_values_into_typed::<f64>(input, data, data_len, s, &sizes, parallel)
+            }
             TlinalgDtype::C32 => {
-                svd_values_into_typed::<Complex32>(input, data, data_len, s, &sizes)
+                svd_values_into_typed::<Complex32>(input, data, data_len, s, &sizes, parallel)
             }
             TlinalgDtype::C64 => {
-                svd_values_into_typed::<Complex64>(input, data, data_len, s, &sizes)
+                svd_values_into_typed::<Complex64>(input, data, data_len, s, &sizes, parallel)
             }
-        }
+        })
     })
 }

@@ -78,6 +78,7 @@ fn svd_f64_full_and_economy_batched() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 i32::from(full),
@@ -136,6 +137,7 @@ fn svd_values_f64_matches_tlinalg() {
             tlinalg_svd_values_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 s.as_mut_ptr().cast::<c_void>(),
@@ -187,6 +189,7 @@ fn eigh_f64_matches_tlinalg() {
             tlinalg_eigh_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 v.as_mut_ptr().cast::<c_void>(),
@@ -240,6 +243,7 @@ fn eigh_values_f64_matches_tlinalg() {
             tlinalg_eigh_values_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 v.as_mut_ptr().cast::<c_void>(),
@@ -291,6 +295,7 @@ fn cholesky_f64_matches_tlinalg() {
             tlinalg_cholesky_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 l.as_mut_ptr().cast::<c_void>(),
@@ -361,6 +366,7 @@ fn lu_f64_rectangular_batched() {
             tlinalg_lu_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 p.as_mut_ptr().cast::<c_void>(),
@@ -437,6 +443,7 @@ fn full_piv_lu_f64_matches_tlinalg() {
             tlinalg_full_piv_lu_into(
                 &desc,
                 TLINALG_F64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 p.as_mut_ptr().cast::<c_void>(),
@@ -523,6 +530,7 @@ fn svd_c64_full_and_economy_batched() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 i32::from(full),
@@ -579,6 +587,7 @@ fn svd_values_c64_writes_real_scalars() {
             tlinalg_svd_values_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 s.as_mut_ptr().cast::<c_void>(),
@@ -634,6 +643,7 @@ fn eigh_c64_matches_tlinalg() {
             tlinalg_eigh_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 v.as_mut_ptr().cast::<c_void>(),
@@ -676,6 +686,7 @@ fn eigh_values_c64_writes_real_scalars() {
             tlinalg_eigh_values_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 v.as_mut_ptr().cast::<c_void>(),
@@ -726,6 +737,7 @@ fn cholesky_c64_matches_tlinalg() {
             tlinalg_cholesky_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 l.as_mut_ptr().cast::<c_void>(),
@@ -786,6 +798,7 @@ fn lu_c64_matches_tlinalg() {
             tlinalg_lu_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 p.as_mut_ptr().cast::<c_void>(),
@@ -847,6 +860,7 @@ fn full_piv_lu_c64_matches_tlinalg() {
             tlinalg_full_piv_lu_into(
                 &desc,
                 TLINALG_C64,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 p.as_mut_ptr().cast::<c_void>(),
@@ -907,6 +921,7 @@ fn svd_f32_dispatch_matches_tlinalg() {
             tlinalg_svd_into(
                 &desc,
                 TLINALG_F32,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 0,
@@ -958,6 +973,7 @@ fn eigh_values_c32_dispatch_matches_tlinalg() {
             tlinalg_eigh_values_into(
                 &desc,
                 TLINALG_C32,
+                0,
                 a.as_ptr().cast::<c_void>(),
                 a.len(),
                 v.as_mut_ptr().cast::<c_void>(),

@@ -35,9 +35,13 @@
 //!
 //! # Threads
 //!
-//! v1 is sequential: every call uses `tlinalg::Parallel::Sequential`. Borrowing a host executor is
-//! an explicit non-goal here and follows tensor4all/tcontract-rs#112; this crate defines no pool
-//! vocabulary and does not depend on tcontract-rs.
+//! `exec` is a TAPP executor handle from tcontract-capi (`<tapp.h>`), the same
+//! vocabulary the contraction side of this stack uses: a host that owns one pool
+//! creates it with `tcontract_pool_create_rayon`, lends it with
+//! `tcontract_tapp_executor_borrow_pool`, and every call here runs on it with the
+//! executor's budget. Zero means a sequential call. This crate never creates a
+//! pool and never infers a width from the environment; only this C-API glue
+//! depends on tcontract-rs, never `tlinalg` itself.
 //!
 //! # Example
 //!
@@ -69,6 +73,7 @@
 //!     let status = tlinalg_svd_into(
 //!         &desc,
 //!         TLINALG_F64,
+//!         0, // a sequential call
 //!         a.as_ptr().cast::<c_void>(),
 //!         a.len(),
 //!         0,
@@ -91,6 +96,7 @@
 pub mod cholesky;
 pub mod descriptor;
 pub mod eigh;
+mod executor;
 pub mod full_piv_lu;
 pub mod lu;
 pub mod sizes;

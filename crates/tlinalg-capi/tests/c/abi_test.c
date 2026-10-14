@@ -28,14 +28,14 @@ int main(void) {
     CHECK(tlinalg_svd_sizes(&in, 0, &sizes) == TLINALG_OK, "svd sizes");
     CHECK(sizes.batch == 1 && sizes.u == 4 && sizes.s == 2 && sizes.vt == 4,
           "svd size values");
-    CHECK(tlinalg_svd_into(&in, TLINALG_F64, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
+    CHECK(tlinalg_svd_into(&in, TLINALG_F64, 0, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
               TLINALG_OK,
           "svd into");
     CHECK(fabs(s[0] - 3.0) < 1e-12 && fabs(s[1] - 1.0) < 1e-12, "svd values");
 
     /* A buffer one element short is rejected before any write. */
     double guard[4] = {7.0, 7.0, 7.0, 7.0};
-    CHECK(tlinalg_svd_into(&in, TLINALG_F64, a, 4, 0, guard, 3, s, 2, vt, 4, NULL, 0) ==
+    CHECK(tlinalg_svd_into(&in, TLINALG_F64, 0, a, 4, 0, guard, 3, s, 2, vt, 4, NULL, 0) ==
               TLINALG_ERR_SHAPE,
           "too-short u rejected");
     CHECK(guard[0] == 7.0 && guard[1] == 7.0 && guard[2] == 7.0 && guard[3] == 7.0,
@@ -44,15 +44,15 @@ int main(void) {
     /* A singular (not positive-definite) Cholesky is rejected. */
     double singular[4] = {1.0, 1.0, 1.0, 1.0};
     double l[4];
-    CHECK(tlinalg_cholesky_into(&in, TLINALG_F64, singular, 4, l, 4, NULL, 0) ==
+    CHECK(tlinalg_cholesky_into(&in, TLINALG_F64, 0, singular, 4, l, 4, NULL, 0) ==
               TLINALG_ERR_NONCONVERGENCE,
           "singular cholesky");
 
     /* Reserved and unknown dtype tags. */
-    CHECK(tlinalg_svd_into(&in, TLINALG_F16, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
+    CHECK(tlinalg_svd_into(&in, TLINALG_F16, 0, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
               TLINALG_ERR_UNSUPPORTED,
           "f16 unsupported");
-    CHECK(tlinalg_svd_into(&in, 99, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
+    CHECK(tlinalg_svd_into(&in, 99, 0, a, 4, 0, u, 4, s, 2, vt, 4, NULL, 0) ==
               TLINALG_ERR_INVALID_ARGUMENT,
           "unknown dtype");
 

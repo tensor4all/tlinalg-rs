@@ -11,6 +11,7 @@ use num_complex::{Complex32, Complex64};
 use tlinalg::{eigh, FaerScalar, Op, Parallel};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
+use crate::executor::with_executor;
 use crate::output::{check_output, copy_output, validate_capacity};
 use crate::sizes::{batch_of, product, require_square, tlinalg_eigh_out, tlinalg_eigh_values_out};
 use crate::status::{ffi, invalid, map_error, tlinalg_status, FfiError};
@@ -46,10 +47,11 @@ fn eigh_into_typed<T: FaerScalar>(
     values: *mut c_void,
     vectors: *mut c_void,
     sizes: &tlinalg_eigh_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut vv, mut ww) = (Vec::new(), Vec::new());
-        eigh::eigh(Op::Eigh, input, &mut vv, &mut ww, Parallel::Sequential).map_err(map_error)?;
+        eigh::eigh(Op::Eigh, input, &mut vv, &mut ww, parallel).map_err(map_error)?;
         let (values_total, vectors_total) = sizes.totals()?;
         check_output(&vv, values, values_total, "values")?;
         check_output(&ww, vectors, vectors_total, "vectors")?;
@@ -65,11 +67,11 @@ fn eigh_values_into_typed<T: FaerScalar>(
     data_len: usize,
     values: *mut c_void,
     sizes: &tlinalg_eigh_values_out,
+    parallel: Parallel<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut vv = Vec::new();
-        eigh::eigh_values(Op::EighValues, input, &mut vv, Parallel::Sequential)
-            .map_err(map_error)?;
+        eigh::eigh_values(Op::EighValues, input, &mut vv, parallel).map_err(map_error)?;
         check_output(&vv, values, sizes.total()?, "values")?;
         copy_output(&vv, values);
         Ok(())
@@ -107,6 +109,7 @@ pub unsafe extern "C" fn tlinalg_eigh_sizes(
 pub unsafe extern "C" fn tlinalg_eigh_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     values: *mut c_void,
@@ -122,20 +125,20 @@ pub unsafe extern "C" fn tlinalg_eigh_into(
         let (values_total, vectors_total) = sizes.totals()?;
         validate_capacity("values", values, values_len, values_total)?;
         validate_capacity("vectors", vectors, vectors_len, vectors_total)?;
-        match dtype {
+        with_executor(exec, |parallel| match dtype {
             TlinalgDtype::F32 => {
-                eigh_into_typed::<f32>(input, data, data_len, values, vectors, &sizes)
+                eigh_into_typed::<f32>(input, data, data_len, values, vectors, &sizes, parallel)
             }
             TlinalgDtype::F64 => {
-                eigh_into_typed::<f64>(input, data, data_len, values, vectors, &sizes)
+                eigh_into_typed::<f64>(input, data, data_len, values, vectors, &sizes, parallel)
             }
-            TlinalgDtype::C32 => {
-                eigh_into_typed::<Complex32>(input, data, data_len, values, vectors, &sizes)
-            }
-            TlinalgDtype::C64 => {
-                eigh_into_typed::<Complex64>(input, data, data_len, values, vectors, &sizes)
-            }
-        }
+            TlinalgDtype::C32 => eigh_into_typed::<Complex32>(
+                input, data, data_len, values, vectors, &sizes, parallel,
+            ),
+            TlinalgDtype::C64 => eigh_into_typed::<Complex64>(
+                input, data, data_len, values, vectors, &sizes, parallel,
+            ),
+        })
     })
 }
 
@@ -171,6 +174,7 @@ pub unsafe extern "C" fn tlinalg_eigh_values_sizes(
 pub unsafe extern "C" fn tlinalg_eigh_values_into(
     input: *const tlinalg_strided,
     dtype: i32,
+    exec: isize,
     data: *const c_void,
     data_len: usize,
     values: *mut c_void,
@@ -182,19 +186,19 @@ pub unsafe extern "C" fn tlinalg_eigh_values_into(
         let dtype = TlinalgDtype::from_tag(dtype)?;
         let sizes = eigh_values_sizes(input)?;
         validate_capacity("values", values, values_len, sizes.total()?)?;
-        match dtype {
+        with_executor(exec, |parallel| match dtype {
             TlinalgDtype::F32 => {
-                eigh_values_into_typed::<f32>(input, data, data_len, values, &sizes)
+                eigh_values_into_typed::<f32>(input, data, data_len, values, &sizes, parallel)
             }
             TlinalgDtype::F64 => {
-                eigh_values_into_typed::<f64>(input, data, data_len, values, &sizes)
+                eigh_values_into_typed::<f64>(input, data, data_len, values, &sizes, parallel)
             }
             TlinalgDtype::C32 => {
-                eigh_values_into_typed::<Complex32>(input, data, data_len, values, &sizes)
+                eigh_values_into_typed::<Complex32>(input, data, data_len, values, &sizes, parallel)
             }
             TlinalgDtype::C64 => {
-                eigh_values_into_typed::<Complex64>(input, data, data_len, values, &sizes)
+                eigh_values_into_typed::<Complex64>(input, data, data_len, values, &sizes, parallel)
             }
-        }
+        })
     })
 }
