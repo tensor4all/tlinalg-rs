@@ -27,7 +27,9 @@ pub struct Record {
     pub row: String,
     /// Declared thread budget.
     pub threads: usize,
-    /// Best timing.
+    /// Every measured call, in the order it happened.
+    pub samples_ms: Vec<f64>,
+    /// Best or median of `samples_ms`, per the requested statistic.
     pub total_ms: f64,
     /// Timing divided by batch.
     pub per_item_us: f64,
@@ -35,12 +37,26 @@ pub struct Record {
     pub status: String,
     /// Diagnostic note.
     pub note: String,
+    /// Threads the harness's own pool ran with, observed in this process.
+    pub rayon_threads: usize,
+    /// Threads the vendor library reported for this row.
+    pub vendor_threads: usize,
 }
 
 impl Record {
     pub fn csv(&self) -> String {
+        // The chronological calls are a JSON list, quoted because it contains commas; the campaign's
+        // evidence check parses them back.
+        let samples = format!(
+            "[{}]",
+            self.samples_ms
+                .iter()
+                .map(|v| format!("{v:.6}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         format!(
-            "{},{},{},{},{},{},{},{},{:.6},{:.6},{},{}",
+            "{},{},{},{},{},{},{},{},{:.6},{:.6},{},{},\"{}\",{},{}",
             self.regime,
             self.family,
             self.dtype,
@@ -52,7 +68,10 @@ impl Record {
             self.total_ms,
             self.per_item_us,
             self.status,
-            self.note.replace(',', ";")
+            self.note.replace(',', ";"),
+            samples,
+            self.rayon_threads,
+            self.vendor_threads
         )
     }
 }
@@ -1432,6 +1451,33 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
     }
 }
 
+/// The provider rows a case measures, with whether the shape applies at all.
+///
+/// The campaign's verification census must name exactly the cells its timing run will emit, so both
+/// paths ask this one function: `faer-1lane` always, `faer-pool` only when more than one thread is
+/// in force, and the vendor row only when a vendor library is linked.
+pub(crate) fn plan(family: &str, c: Case, env: &Env) -> Vec<(String, bool, String)> {
+    let mut rows = Vec::new();
+    for row in ["faer-1lane", "faer-pool", crate::vendor::LAPACK_ROW] {
+        if row == "faer-pool" && env.threads() == 1
+            || row == crate::vendor::LAPACK_ROW && !crate::vendor::LINKED
+        {
+            continue;
+        }
+        let applies = applicable(family, c);
+        rows.push((
+            row.to_owned(),
+            applies,
+            if applies {
+                String::new()
+            } else {
+                "shape not applicable".to_owned()
+            },
+        ));
+    }
+    rows
+}
+
 /// Measure all requested provider rows for a case.
 pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
     family: &str,
@@ -1440,15 +1486,11 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
     reps: usize,
     prime_ms: u64,
     regime: &str,
+    statistic: timing::Statistic,
 ) -> Vec<Record> {
     let mut rows = Vec::new();
     if !applicable(family, c) {
-        for row in ["faer-1lane", "faer-pool", crate::vendor::LAPACK_ROW] {
-            if row == "faer-pool" && env.threads() == 1
-                || row == crate::vendor::LAPACK_ROW && !crate::vendor::LINKED
-            {
-                continue;
-            }
+        for (row, _, note) in plan(family, c, env) {
             rows.push(Record {
                 regime: regime.into(),
                 family: family.into(),
@@ -1456,12 +1498,15 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
                 m: c.m,
                 n: c.n,
                 batch: c.batch,
-                row: row.into(),
+                row,
                 threads: env.threads(),
+                samples_ms: Vec::new(),
                 total_ms: 0.,
                 per_item_us: 0.,
                 status: "skipped".into(),
-                note: "shape not applicable".into(),
+                note,
+                rayon_threads: env.threads(),
+                vendor_threads: env.threads(),
             });
         }
         return rows;
@@ -1476,10 +1521,13 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
             batch: c.batch,
             row: row.into(),
             threads: env.threads(),
-            total_ms: t.best_ms,
-            per_item_us: t.best_ms * 1000. / c.batch as f64,
+            per_item_us: t.total_ms * 1000. / c.batch as f64,
+            total_ms: t.total_ms,
+            samples_ms: t.samples_ms,
             status: "ok".into(),
             note: String::new(),
+            rayon_threads: env.threads(),
+            vendor_threads: env.threads(),
         },
         Err(e) => Record {
             regime: regime.into(),
@@ -1490,10 +1538,13 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
             batch: c.batch,
             row: row.into(),
             threads: env.threads(),
+            samples_ms: Vec::new(),
             total_ms: 0.,
             per_item_us: 0.,
             status: "failed".into(),
             note: e,
+            rayon_threads: env.threads(),
+            vendor_threads: env.threads(),
         },
     };
     let prepared = RefCell::new(Prepared::<T>::new(c, family));
@@ -1503,6 +1554,7 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
     let result = timing::measure(
         prime_ms,
         reps,
+        statistic,
         || {
             prepared.borrow_mut().reset(family);
             crate::vendor::require_threads(env.threads())
@@ -1514,6 +1566,7 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
         let result = timing::measure(
             prime_ms,
             reps,
+            statistic,
             || {
                 prepared.borrow_mut().reset(family);
                 crate::vendor::require_threads(env.threads())
@@ -1526,6 +1579,7 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
         let result = timing::measure(
             prime_ms,
             reps,
+            statistic,
             || {
                 prepared.borrow_mut().reset(family);
                 crate::vendor::require_threads(env.threads())
