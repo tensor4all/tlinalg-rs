@@ -216,18 +216,22 @@ fn arrange(records: &mut Vec<rows::Record>, rows: &[String], rotate_rows: usize)
     });
 }
 
-/// The verification census for one case: the same cells the timing run will emit, with their status.
-fn census(
-    family: &str,
-    case: Case,
-    dtype: &str,
-    regime: &str,
-    env: &Env,
-    threads: usize,
-    rows: &[String],
+/// What every census row of a process shares: the regime label, the environment, the declared rows
+/// and the rotation this process start uses.
+struct Census<'a> {
+    regime: &'a str,
+    env: &'a Env,
+    rows: &'a [String],
     rotate_rows: usize,
-    ok: bool,
-) -> Vec<rows::Record> {
+}
+
+/// The verification census for one case: the same cells the timing run will emit, with their status.
+fn census(ctx: &Census<'_>, family: &str, case: Case, dtype: &str, ok: bool) -> Vec<rows::Record> {
+    let regime = ctx.regime;
+    let env = ctx.env;
+    let rows = ctx.rows;
+    let rotate_rows = ctx.rotate_rows;
+    let threads = env.threads();
     let mut records: Vec<rows::Record> = rows::plan(family, case, env)
         .into_iter()
         .map(|(row, applies, note)| rows::Record {
@@ -297,6 +301,12 @@ pub fn main() -> ExitCode {
         .collect();
     let mut records = Vec::new();
     let mut census_records = Vec::new();
+    let census_ctx = Census {
+        regime: &a.regime,
+        env: &env,
+        rows: &a.rows,
+        rotate_rows: a.rotate_rows,
+    };
     let mut ok = true;
     for dtype in a.dtypes {
         for family in &a.families {
@@ -310,17 +320,7 @@ pub fn main() -> ExitCode {
                                 std::slice::from_ref(&case),
                                 &env,
                             );
-                            census_records.extend(census(
-                                family,
-                                case,
-                                "f64",
-                                &a.regime,
-                                &env,
-                                threads,
-                                &a.rows,
-                                a.rotate_rows,
-                                clean,
-                            ));
+                            census_records.extend(census(&census_ctx, family, case, "f64", clean));
                             ok &= clean
                         } else {
                             let mut measured = rows::measure_case::<f64>(
@@ -343,17 +343,7 @@ pub fn main() -> ExitCode {
                                 std::slice::from_ref(&case),
                                 &env,
                             );
-                            census_records.extend(census(
-                                family,
-                                case,
-                                "c64",
-                                &a.regime,
-                                &env,
-                                threads,
-                                &a.rows,
-                                a.rotate_rows,
-                                clean,
-                            ));
+                            census_records.extend(census(&census_ctx, family, case, "c64", clean));
                             ok &= clean
                         } else {
                             let mut measured = rows::measure_case::<num_complex::Complex64>(
