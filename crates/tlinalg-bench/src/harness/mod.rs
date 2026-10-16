@@ -11,7 +11,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: tlbench info | verify --threads N --n LIST [--batch LIST] [--dtype LIST] [--family LIST] | run --threads N --n LIST [--batch LIST] [--dtype LIST] [--family LIST] [--regime LABEL] [--reps M] [--prime-ms MS] [--csv PATH]";
+const USAGE: &str = "usage: tlbench info | verify --threads N --n LIST [--batch LIST] [--dtype LIST] [--family LIST] [--regime LABEL] [--rows ROWS] [--rotate-rows K] [--csv PATH] | run --threads N --n LIST [--batch LIST] [--dtype LIST] [--family LIST] [--regime LABEL] [--rows ROWS] [--rotate-rows K] [--reps M] [--prime-ms MS] [--statistic best|median] [--csv PATH]";
 
 #[derive(Clone, Copy)]
 enum Dtype {
@@ -38,6 +38,12 @@ struct Args {
     reps: usize,
     prime_ms: u64,
     csv: Option<String>,
+    /// Provider rows this run emits, in the order the campaign declares them. Empty means every row.
+    rows: Vec<String>,
+    /// Which call of a row's chronological samples the row reports.
+    statistic: timing::Statistic,
+    /// Cyclic rotation of `rows`, applied per case, so a comparison is position-balanced.
+    rotate_rows: usize,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -60,6 +66,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
             reps: 5,
             prime_ms: 500,
             csv: None,
+            rows: Vec::new(),
+            statistic: timing::Statistic::Best,
+            rotate_rows: 0,
         });
     }
     if command != "run" && command != "verify" {
@@ -76,6 +85,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
         reps: 5,
         prime_ms: 500,
         csv: None,
+        rows: Vec::new(),
+        statistic: timing::Statistic::Best,
+        rotate_rows: 0,
     };
     let mut i = 2;
     while i < args.len() {
@@ -116,6 +128,20 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--regime" => a.regime = value(&mut i)?,
             "--reps" => a.reps = value(&mut i)?.parse().map_err(|_| USAGE.to_owned())?,
             "--prime-ms" => a.prime_ms = value(&mut i)?.parse().map_err(|_| USAGE.to_owned())?,
+            "--rows" => {
+                a.rows = value(&mut i)?.split(',').map(str::to_owned).collect();
+                a.rows.retain(|r| !r.is_empty());
+            }
+            "--rotate-rows" => {
+                a.rotate_rows = value(&mut i)?.parse().map_err(|_| USAGE.to_owned())?
+            }
+            "--statistic" => {
+                a.statistic = match value(&mut i)?.as_str() {
+                    "best" => timing::Statistic::Best,
+                    "median" => timing::Statistic::Median,
+                    _ => return Err("--statistic must be best or median".into()),
+                }
+            }
             "--csv" => a.csv = Some(value(&mut i)?),
             _ => return Err(USAGE.into()),
         }
@@ -154,15 +180,82 @@ fn info(threads: Option<usize>) {
     println!("compiled.features={}", features.join(","));
 }
 
+const CSV_HEADER: &str =
+    "regime,family,dtype,m,n,batch,row,threads,total_ms,per_item_us,status,note,\
+samples_ms,rayon_threads,vendor_threads";
+
 fn write_csv(path: &str, records: &[rows::Record]) -> Result<(), String> {
-    let mut text = String::from(
-        "regime,family,dtype,m,n,batch,row,threads,total_ms,per_item_us,status,note\n",
-    );
+    let mut text = String::from(CSV_HEADER);
+    text.push('\n');
     for r in records {
         text.push_str(&r.csv());
         text.push('\n')
     }
     std::fs::write(Path::new(path), text).map_err(|e| e.to_string())
+}
+
+/// Keep the rows this run declares and put them in the rotated order the campaign expects.
+///
+/// The evidence check compares each case's row order with the rotation recorded for that process
+/// start, so the harness has to emit the declared order rather than whatever order it measured in.
+fn arrange(records: &mut Vec<rows::Record>, rows: &[String], rotate_rows: usize) {
+    if rows.is_empty() {
+        return;
+    }
+    let rotation = rotate_rows % rows.len();
+    let wanted: Vec<&String> = rows[rotation..]
+        .iter()
+        .chain(rows[..rotation].iter())
+        .collect();
+    records.retain(|r| rows.contains(&r.row));
+    records.sort_by_key(|r| {
+        wanted
+            .iter()
+            .position(|w| **w == r.row)
+            .unwrap_or(usize::MAX)
+    });
+}
+
+/// The verification census for one case: the same cells the timing run will emit, with their status.
+fn census(
+    family: &str,
+    case: Case,
+    dtype: &str,
+    regime: &str,
+    env: &Env,
+    threads: usize,
+    rows: &[String],
+    rotate_rows: usize,
+    ok: bool,
+) -> Vec<rows::Record> {
+    let mut records: Vec<rows::Record> = rows::plan(family, case, env)
+        .into_iter()
+        .map(|(row, applies, note)| rows::Record {
+            regime: regime.into(),
+            family: family.into(),
+            dtype: dtype.into(),
+            m: case.m,
+            n: case.n,
+            batch: case.batch,
+            row,
+            threads,
+            samples_ms: Vec::new(),
+            total_ms: 0.,
+            per_item_us: 0.,
+            status: if applies && ok {
+                "ok".into()
+            } else if applies {
+                "failed".into()
+            } else {
+                "skipped".into()
+            },
+            note,
+            rayon_threads: threads,
+            vendor_threads: threads,
+        })
+        .collect();
+    arrange(&mut records, rows, rotate_rows);
+    records
 }
 
 /// Execute the command line and return a process exit code.
@@ -203,6 +296,7 @@ pub fn main() -> ExitCode {
         .flat_map(|&(m, n)| a.batches.iter().map(move |&batch| Case { m, n, batch }))
         .collect();
     let mut records = Vec::new();
+    let mut census_records = Vec::new();
     let mut ok = true;
     for dtype in a.dtypes {
         for family in &a.families {
@@ -211,28 +305,68 @@ pub fn main() -> ExitCode {
                 match dtype {
                     Dtype::F64 => {
                         if a.command == "verify" {
-                            ok &= verify::verify::<f64>(
+                            let clean = verify::verify::<f64>(
                                 std::slice::from_ref(family),
                                 std::slice::from_ref(&case),
                                 &env,
-                            )
-                        } else {
-                            records.extend(rows::measure_case::<f64>(
-                                family, case, &env, a.reps, a.prime_ms, &a.regime,
+                            );
+                            census_records.extend(census(
+                                family,
+                                case,
+                                "f64",
+                                &a.regime,
+                                &env,
+                                threads,
+                                &a.rows,
+                                a.rotate_rows,
+                                clean,
                             ));
+                            ok &= clean
+                        } else {
+                            let mut measured = rows::measure_case::<f64>(
+                                family,
+                                case,
+                                &env,
+                                a.reps,
+                                a.prime_ms,
+                                &a.regime,
+                                a.statistic,
+                            );
+                            arrange(&mut measured, &a.rows, a.rotate_rows);
+                            records.extend(measured);
                         }
                     }
                     Dtype::C64 => {
                         if a.command == "verify" {
-                            ok &= verify::verify::<num_complex::Complex64>(
+                            let clean = verify::verify::<num_complex::Complex64>(
                                 std::slice::from_ref(family),
                                 std::slice::from_ref(&case),
                                 &env,
-                            )
-                        } else {
-                            records.extend(rows::measure_case::<num_complex::Complex64>(
-                                family, case, &env, a.reps, a.prime_ms, &a.regime,
+                            );
+                            census_records.extend(census(
+                                family,
+                                case,
+                                "c64",
+                                &a.regime,
+                                &env,
+                                threads,
+                                &a.rows,
+                                a.rotate_rows,
+                                clean,
                             ));
+                            ok &= clean
+                        } else {
+                            let mut measured = rows::measure_case::<num_complex::Complex64>(
+                                family,
+                                case,
+                                &env,
+                                a.reps,
+                                a.prime_ms,
+                                &a.regime,
+                                a.statistic,
+                            );
+                            arrange(&mut measured, &a.rows, a.rotate_rows);
+                            records.extend(measured);
                         }
                     }
                 }
@@ -240,6 +374,14 @@ pub fn main() -> ExitCode {
         }
     }
     if a.command == "verify" {
+        // The campaign's evidence check reads this census: one row per cell the run will emit,
+        // including the declared skips, with the same rotation the run uses.
+        if let Some(path) = a.csv {
+            if let Err(e) = write_csv(&path, &census_records) {
+                eprintln!("{e}");
+                return ExitCode::from(2);
+            }
+        }
         if ok {
             println!("all comparisons within tolerance");
             return ExitCode::SUCCESS;
