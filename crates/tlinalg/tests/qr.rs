@@ -6,9 +6,10 @@ use common::single::{apply_reflectors, compact_factor, qr, rank_revealing_qr};
 use common::*;
 use num_complex::Complex64;
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::qr::magnitude;
 use tlinalg::FaerScalar;
-use tlinalg::{Error, Op, Parallel};
+use tlinalg::{Error, Op};
 
 fn assert_orthonormal_columns(q: &[Complex64], m: usize, k: usize, tol: f64) {
     let gram = matmul(&adjoint(q, m, k), q, k, m, k);
@@ -40,7 +41,7 @@ fn qr_reconstructs<T: TestScalar + FaerScalar>() {
             RawStridedRef::new(&storage, &dims, &strides, offset).unwrap(),
             &mut q,
             &mut r,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let k = m.min(n);
@@ -64,7 +65,7 @@ fn rrqr_reconstructs<T: TestScalar + FaerScalar>() {
             RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
             &mut q,
             &mut r,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let k = m.min(n);
@@ -102,7 +103,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             rows,
             cols,
             &mut coeff,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let k = rows.min(cols);
@@ -123,7 +124,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             rows,
             k,
             false,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let q = widen(&q);
@@ -154,7 +155,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             cols,
             k,
             true,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         assert_close(&widen(&qha), &r, T::TOL, "Qᴴ A");
@@ -172,7 +173,7 @@ fn householder_rejects_bad_dimensions() {
             2,
             2,
             &mut Vec::new(),
-            Parallel::Sequential
+            Exec::serial()
         ),
         Err(Error::InvalidArgument { .. })
     ));
@@ -188,27 +189,19 @@ fn householder_rejects_bad_dimensions() {
             2,
             3,
             false,
-            Parallel::Sequential
+            Exec::serial()
         ),
         Err(Error::InvalidArgument { .. })
     ));
     // Empty inputs are no-ops.
     let mut coeff = vec![1.0_f64];
-    compact_factor(
-        Op::HouseholderQr,
-        &mut [],
-        0,
-        3,
-        &mut coeff,
-        Parallel::Sequential,
-    )
-    .unwrap();
+    compact_factor(Op::HouseholderQr, &mut [], 0, 3, &mut coeff, Exec::serial()).unwrap();
     assert!(coeff.is_empty());
 }
 
 #[test]
 fn rank_revealing_qr_returns_the_identity_for_an_all_zero_item() {
-    use tlinalg::Parallel;
+    use tcontract_exec::Exec;
     // Item 0 is zero, item 1 is not: the zero item is not factored, the other is.
     let (m, n) = (3, 4);
     let mut a = vec![0.0_f64; m * n];
@@ -220,7 +213,7 @@ fn rank_revealing_qr_returns_the_identity_for_an_all_zero_item() {
         &mut q,
         &mut r,
         &mut perm,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     let k = m.min(n);

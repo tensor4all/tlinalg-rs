@@ -1,6 +1,6 @@
 //! Numerical agreement between the C ABI and `tlinalg` itself, per operation.
 //!
-//! The ABI calls the provider with `Parallel::Sequential`, so the same input through the C entry
+//! The ABI calls the provider with `Exec::serial()`, so the same input through the C entry
 //! point and through the Rust entry point must produce the same numbers. Each test also checks that
 //! the size query agrees with what the writing call fills, per item and in total.
 
@@ -12,7 +12,8 @@ use common::{
     assert_close_c64, assert_close_f32, assert_close_f64, compact_dims, last_error, Layout,
 };
 use strided_view::RawStridedRef;
-use tlinalg::{cholesky, eigh, full_piv_lu, lu, svd, Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::{cholesky, eigh, full_piv_lu, lu, svd, Op};
 use tlinalg_capi::*;
 use tlinalg_testkit::{Complex32, Complex64};
 
@@ -58,7 +59,7 @@ fn svd_f64_full_and_economy_batched() {
             &mut eu,
             &mut es,
             &mut evt,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
 
@@ -126,7 +127,7 @@ fn svd_values_f64_matches_tlinalg() {
         Op::SvdValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut es,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.s * sizes.batch, es.len());
@@ -177,7 +178,7 @@ fn eigh_f64_matches_tlinalg() {
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
         &mut ew,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.values * sizes.batch, ev.len());
@@ -232,7 +233,7 @@ fn eigh_values_f64_matches_tlinalg() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.values * sizes.batch, ev.len());
@@ -284,7 +285,7 @@ fn cholesky_f64_matches_tlinalg() {
         Op::Cholesky,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut el,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.l * sizes.batch, el.len());
@@ -347,7 +348,7 @@ fn lu_f64_rectangular_batched() {
             u: &mut eu,
             parity: &mut epar,
         },
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.p * sizes.batch, ep.len());
@@ -427,7 +428,7 @@ fn full_piv_lu_f64_matches_tlinalg() {
             q: &mut eq,
             parity: &mut epar,
         },
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -515,7 +516,7 @@ fn svd_c64_full_and_economy_batched() {
             &mut eu,
             &mut es,
             &mut evt,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         // `svd` writes the singular values in the scalar type, zero imaginary part.
@@ -575,7 +576,7 @@ fn svd_values_c64_writes_real_scalars() {
         Op::SvdValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut es,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.s * sizes.batch, es.len());
@@ -629,7 +630,7 @@ fn eigh_c64_matches_tlinalg() {
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
         &mut ew,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert!(ev.iter().all(|z| z.im == 0.0));
@@ -676,7 +677,7 @@ fn eigh_values_c64_writes_real_scalars() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -727,7 +728,7 @@ fn cholesky_c64_matches_tlinalg() {
         Op::Cholesky,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut el,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -783,7 +784,7 @@ fn lu_c64_matches_tlinalg() {
             u: &mut eu,
             parity: &mut epar,
         },
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -844,7 +845,7 @@ fn full_piv_lu_c64_matches_tlinalg() {
             q: &mut eq,
             parity: &mut epar,
         },
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -907,7 +908,7 @@ fn svd_f32_dispatch_matches_tlinalg() {
         &mut eu,
         &mut es,
         &mut evt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -963,7 +964,7 @@ fn eigh_values_c32_dispatch_matches_tlinalg() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 

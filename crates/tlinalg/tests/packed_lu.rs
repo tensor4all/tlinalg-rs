@@ -7,10 +7,11 @@
 
 use num_complex::{Complex32, Complex64};
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::packed_lu::{
     factor as factor_chunk, factor_solve as factor_solve_chunk, solve_prepared,
 };
-use tlinalg::{Error, FaerScalar, Op, Parallel};
+use tlinalg::{Error, FaerScalar, Op};
 
 // The prepared-solve shim builds descriptors from the tests' compact buffers.
 
@@ -24,7 +25,7 @@ fn solve_prepared_chunk<T: FaerScalar>(
     output: &mut [T],
     transpose_a: bool,
     conjugate_a: bool,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> tlinalg::Result<()> {
     let batch = if n == 0 { 0 } else { packed_lu.len() / (n * n) };
     let lu_dims = [n, n, batch];
@@ -171,7 +172,7 @@ fn factor_one(a: &[f64], n: usize) -> (Vec<f64>, Vec<i32>, f64) {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     (packed, pivots, parity[0])
@@ -214,7 +215,7 @@ fn factor_chunk_rejects_buffers_that_describe_different_batches() {
         &mut lu,
         &mut pivots,
         &mut parity,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -240,7 +241,7 @@ fn empty_batches_and_empty_rhs_are_accepted() {
         &mut no_matrices,
         &mut pivots,
         &mut parity,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -256,7 +257,7 @@ fn empty_batches_and_empty_rhs_are_accepted() {
         &mut packed,
         &mut pivots,
         &mut no_rhs,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 }
@@ -282,7 +283,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut out,
         false,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     for (got, want) in out.iter().zip(x_true.iter()) {
@@ -307,7 +308,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut out,
         true,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     for (got, want) in out.iter().zip(x_true.iter()) {
@@ -327,7 +328,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut rhs,
         false,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     for (got, want) in rhs[..n].iter().zip(x_true.iter()) {
@@ -356,7 +357,7 @@ fn factor_solve_matches_factor_then_solve() {
         &mut expected,
         false,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -370,7 +371,7 @@ fn factor_solve_matches_factor_then_solve() {
         &mut fused,
         &mut pivots,
         &mut solved,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -398,7 +399,7 @@ fn factor_solve_reports_singular_only_when_a_rhs_is_present() {
         &mut packed,
         &mut pivots,
         &mut no_rhs,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -412,7 +413,7 @@ fn factor_solve_reports_singular_only_when_a_rhs_is_present() {
         &mut packed,
         &mut pivots,
         &mut rhs,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -444,7 +445,7 @@ fn an_uneven_chunk_partition_matches_the_same_matrices_taken_alone() {
             chunk,
             &mut pivots[offset * n..(offset + count) * n],
             &mut parity[offset..offset + count],
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
     }
@@ -477,7 +478,7 @@ fn invalid_pivots_are_rejected_before_any_write() {
         &mut output,
         false,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -503,7 +504,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -526,7 +527,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed_c,
         &mut pivots_c,
         &mut parity_c,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -551,7 +552,7 @@ fn real_and_complex_scalars_factor_and_solve() {
             &mut out,
             transpose,
             conjugate,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         for (got, want) in out.iter().zip(x_true.iter()) {
@@ -577,7 +578,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 }

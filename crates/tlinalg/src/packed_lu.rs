@@ -29,8 +29,9 @@ use faer::{Conj, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, in_place, same_batch, BatchAxes, BatchedRef};
-use crate::util::{checked_product, invalid};
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, invalid, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// Reusable per-lane state for factoring a run of `m x n` matrices.
 ///
@@ -153,11 +154,12 @@ fn check_batches(op: Op, buffers: [(usize, usize); 3], batch: usize) -> Result<(
 /// # Examples
 ///
 /// ```
-/// use tlinalg::{packed_lu::factor, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{packed_lu::factor, Op};
 ///
 /// let mut lu = [1.0_f64, 3.0, 2.0, 4.0];
 /// let (mut pivots, mut parity) = ([0_i32; 2], [0.0_f64; 1]);
-/// factor(Op::LuFactor, 2, 2, &mut lu, &mut pivots, &mut parity, Parallel::Sequential).unwrap();
+/// factor(Op::LuFactor, 2, 2, &mut lu, &mut pivots, &mut parity, Exec::serial()).unwrap();
 /// assert_eq!((pivots, parity), ([2, 2], [-1.0]));
 /// ```
 // INVARIANT: shape, the three in-place batch buffers, token are distinct operands.
@@ -169,7 +171,7 @@ pub fn factor<T: FaerScalar>(
     lu: &mut [T],
     pivots: &mut [i32],
     parity: &mut [T],
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     let k = m.min(n);
     let matrix_len = checked_product(op, "matrix shape", &[m, n])?;
@@ -179,14 +181,21 @@ pub fn factor<T: FaerScalar>(
         [(matrix_len, lu.len()), (k, pivots.len()), (1, parity.len())],
         batch,
     )?;
+    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
+    let item_muladds =
+        weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0);
+    // Resolve the route even when there is nothing to factor, so a forced strategy this route
+    // cannot honor is refused rather than silently accepted (tlinalg-rs#57/#58).
+    batch::check_route(op, exec, batch, item_muladds)?;
     if matrix_len == 0 || batch == 0 {
         return Ok(());
     }
     batch::run(
         op,
         batch,
-        par,
+        exec,
         None,
+        item_muladds,
         &mut (
             in_place(lu, matrix_len, "packed LU"),
             in_place(pivots, k, "pivots"),
@@ -363,7 +372,8 @@ impl<'a> BatchedPivots<'a> {
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{packed_lu::solve_prepared, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{packed_lu::solve_prepared, Op};
 ///
 /// // A = diag(2, 4) is its own packed factor with identity pivots.
 /// let lu = [2.0_f64, 0.0, 0.0, 4.0];
@@ -373,7 +383,7 @@ impl<'a> BatchedPivots<'a> {
 ///     Op::LuSolvePrepared,
 ///     RawStridedRef::new(&lu, &[2, 2], &[1, 2], 0).unwrap(),
 ///     RawStridedRef::new(&pivots, &[2], &[1], 0).unwrap(),
-///     1, &mut x, false, false, Parallel::Sequential,
+///     1, &mut x, false, false, Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
@@ -387,16 +397,19 @@ pub fn solve_prepared<T: FaerScalar>(
     output: &mut [T],
     transpose_a: bool,
     conjugate_a: bool,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     let lu = BatchedRef::square(op, "packed LU", packed_lu)?;
     let n = lu.rows();
     let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
+    // A prepared solve is the triangular solves alone; the factorization happened in `factor`.
+    let item_muladds = weighted_muladds::<T>(n as f64 * n as f64 * nrhs as f64);
+    let batch = lu.batch();
+    batch::check_route(op, exec, batch, item_muladds)?;
     if rhs_len == 0 {
         return Ok(());
     }
     let pivots = BatchedPivots::new(op, n, &lu, pivots)?;
-    let batch = lu.batch();
     if output.len() != checked_product(op, "rhs batch", &[rhs_len, batch])? {
         return Err(Error::Inconsistent {
             op,
@@ -419,8 +432,9 @@ pub fn solve_prepared<T: FaerScalar>(
     batch::run(
         op,
         batch,
-        par,
+        exec,
         None,
+        item_muladds,
         &mut (in_place(output, rhs_len, "rhs batch"),),
         |_| (),
         |index, (output,), (), par| {
@@ -454,12 +468,13 @@ pub fn solve_prepared<T: FaerScalar>(
 /// # Examples
 ///
 /// ```
-/// use tlinalg::{packed_lu::factor_solve, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{packed_lu::factor_solve, Op};
 ///
 /// let mut lu = [2.0_f64, 0.0, 0.0, 4.0];
 /// let mut pivots = [0_i32; 2];
 /// let mut x = [2.0_f64, 8.0];
-/// factor_solve(Op::LuFactorSolve, 2, 1, &mut lu, &mut pivots, &mut x, Parallel::Sequential).unwrap();
+/// factor_solve(Op::LuFactorSolve, 2, 1, &mut lu, &mut pivots, &mut x, Exec::serial()).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
 // INVARIANT: shape, the three in-place batch buffers, token are distinct operands.
@@ -471,14 +486,18 @@ pub fn factor_solve<T: FaerScalar>(
     packed_lu: &mut [T],
     pivots: &mut [i32],
     output: &mut [T],
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     let matrix_len = checked_product(op, "matrix", &[n, n])?;
     let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
+    let batch = packed_lu.len() / matrix_len.max(1);
+    // A fused route factors and then solves, so its estimate is the factor plus the solve.
+    let nf = n as f64;
+    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
+    batch::check_route(op, exec, batch, item_muladds)?;
     if matrix_len == 0 {
         return Ok(());
     }
-    let batch = packed_lu.len() / matrix_len;
     check_batches(
         op,
         [
@@ -492,8 +511,9 @@ pub fn factor_solve<T: FaerScalar>(
     batch::run(
         op,
         batch,
-        par,
+        exec,
         None,
+        item_muladds,
         &mut (
             in_place(packed_lu, matrix_len, "packed LU"),
             in_place(pivots, n, "pivots"),

@@ -6,8 +6,9 @@
 //! regression shows up as a number.
 
 use strided_view::{RawStridedMut, RawStridedRef};
+use tcontract_exec::Exec;
 use tlinalg::triangular_solve::{triangular_solve, TriangularSolveFlags};
-use tlinalg::{Op, Parallel};
+use tlinalg::Op;
 use tlinalg_testkit::alloc::{steady, Counting};
 
 #[global_allocator]
@@ -33,7 +34,7 @@ fn family_counts(batch: usize) -> [(&'static str, usize); 11] {
     let a = batch_of(n, batch);
     let (dims, strides) = ([n, n, batch], [1, n as isize, (n * n) as isize]);
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
-    let seq = Parallel::Sequential;
+    let seq = Exec::serial();
     let cap = n * n * batch;
     let (mut v1, mut v2, mut v3) = (
         Vec::with_capacity(cap),
@@ -145,7 +146,7 @@ fn triangular(left_side: bool, batch: usize) -> usize {
             b_view,
             flags,
             &mut x,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
     })

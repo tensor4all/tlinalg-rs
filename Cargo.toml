@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -19,22 +19,31 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.2.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.2.0", path = "crates/tlinalg-blas" }
-tlinalg-capi = { version = "0.2.0", path = "crates/tlinalg-capi" }
+tlinalg = { version = "0.3.0", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.3.0", path = "crates/tlinalg-blas" }
+tlinalg-capi = { version = "0.3.0", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
 # tlinalg-rs#28 (faer's QR dropped nearly dependent columns), which upstream 0.24.4 does not have.
 # The dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the
-# crates' `faer = { workspace = true }` are unchanged. Switch to a version once the fork publishes
-# the fix.
-faer = { package = "t4a-faer", git = "https://github.com/tensor4all/faer.git", rev = "04542faea04f910917d355edfd4e7ce0be3f95fd", default-features = false, features = ["std", "rayon"] }
-# Published strided-view release; hosts use this exact source to share `RawStridedRef` types.
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49dd63aac7af12a9a3e7de90cffb0337f26025c8", version = "=0.5.0" }
+# crates' `faer = { workspace = true }` are unchanged. `version` pins the published fork revision
+# for `cargo package`/publish (the git revision is the same 0.24.4 fork state).
+faer = { package = "t4a-faer", git = "https://github.com/tensor4all/faer.git", rev = "04542faea04f910917d355edfd4e7ce0be3f95fd", version = "=0.24.4", default-features = false, features = ["std", "rayon"] }
+# Published strided-view 0.6.0, the release this chain pins (stride/metadata and the
+# `RawStridedRef` surface tlinalg consumes are unchanged). Hosts use this exact source to share
+# `RawStridedRef` types.
+strided-view = { version = "=0.6.0" }
+# The batch-lane vocabulary and the `Exec` token every entry point now takes. Pinned to the
+# tcontract 0.3.0 release revision so it is *one source* with the git-only `tcontract-capi`
+# below: a registry copy would be a distinct package and its `Exec` would not be the same type
+# the C API forwards. `version` keeps the manifest publishable — `cargo package` resolves the
+# registry release instead of the git source.
+tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "3239c86de62262586854c9dc4fc18095b00916df", version = "=0.3.0" }
 # The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
-# the TAPP executor handle's pool and budget, which tcontract-capi owns (publish = false,
-# so this is a git-only dependency).
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "9587c34c03861a88cefeac8c9112991951674a8b" }
+# the TAPP executor handle's guarded `Exec`, which the 0.3.0 tcontract-capi owns (publish = false,
+# so this is a git-only dependency). One revision for exec and capi, or the forwarded `Exec` is a
+# different type than the one `tlinalg` takes.
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "3239c86de62262586854c9dc4fc18095b00916df" }
 num-complex = "0.4"
 rayon = "1.10"
 thiserror = "2"

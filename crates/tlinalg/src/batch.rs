@@ -23,11 +23,12 @@ use std::sync::Mutex;
 
 use faer::{MatMut, MatRef};
 use strided_view::{RawStridedMut, RawStridedRef};
+use tcontract_exec::batch::{BatchQuery, BatchStrategy};
+use tcontract_exec::{Exec, ExecError};
 
-use crate::lane::LanePlan;
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid};
-use crate::{with_parallel, Error, Op, Parallel, Result};
+use crate::{Error, Op, Result};
 
 /// The batch count of a descriptor's trailing dimensions.
 fn batch_count(op: Op, batch_dims: &[usize]) -> Result<usize> {
@@ -477,10 +478,15 @@ impl<U> Chunk<'_, U> {
     }
 }
 
-/// Lane `lane`'s range of a `len`-element buffer split into pieces of `piece` elements.
-fn lane_range(len: usize, piece: usize, lane: usize) -> core::ops::Range<usize> {
-    let start = lane.saturating_mul(piece).min(len);
-    start..start.saturating_add(piece).min(len)
+/// Lane `lane`'s half-open item range when `batch` items are split into `lanes` nonempty
+/// contiguous ranges. `lanes <= batch`, so every range is nonempty. Computed from the quotient and
+/// remainder so `lane * batch` cannot overflow for a huge valid batch.
+fn lane_bounds(batch: usize, lanes: usize, lane: usize) -> (usize, usize) {
+    let base = batch / lanes;
+    let extra = batch % lanes;
+    let first = lane * base + lane.min(extra);
+    let last = first + base + usize::from(lane < extra);
+    (first, last)
 }
 
 /// The outputs of one batched call, handed out per lane.
@@ -505,13 +511,13 @@ pub(crate) trait Outputs {
     /// derived from the returned handles has been dropped.
     unsafe fn parts(&mut self, batch: usize) -> Self::Parts;
 
-    /// Lane `lane`'s view: items `lane * chunk .. min((lane + 1) * chunk, batch)`.
+    /// Lane `lane`'s view: items `first..last`.
     ///
     /// # Safety
     ///
-    /// `parts` came from [`Outputs::parts`] for this `batch`, and no two live views share a lane
-    /// index (distinct indices give disjoint views).
-    unsafe fn lane(parts: &Self::Parts, batch: usize, chunk: usize, lane: usize) -> Self::Lane;
+    /// `parts` came from [`Outputs::parts`] for this `batch`, and no two live views are given
+    /// overlapping `first..last` ranges (the driver partitions `0..batch` into disjoint ranges).
+    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Self::Lane;
 
     /// Whether a lane wrote every element it owns.
     fn lane_complete(lane: &Self::Lane) -> bool;
@@ -554,13 +560,14 @@ impl<'a, U: Send> Outputs for Out<'a, U> {
         )
     }
 
-    unsafe fn lane(parts: &Self::Parts, batch: usize, chunk: usize, lane: usize) -> Sink<'a, U> {
+    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Sink<'a, U> {
         let (ptr, item_len) = *parts;
-        let range = lane_range(item_len * batch, chunk * item_len, lane);
+        let (start, end) = (first * item_len, last * item_len);
         // SAFETY: `prepare` cleared the vector and reserved `item_len * batch`, so its spare
-        // capacity starting at `ptr` covers that many elements and `range` lies inside it; the
-        // vector is not touched until the lanes are gone, and distinct lanes get disjoint ranges.
-        let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(range.start), range.len()) };
+        // capacity starting at `ptr` covers that many elements and `start..end` lies inside it;
+        // the vector is not touched until the lanes are gone, and distinct `first..last` ranges
+        // are disjoint.
+        let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(start), end - start) };
         Sink { buf, pos: 0 }
     }
 
@@ -619,17 +626,17 @@ impl<'a, U: Send> Outputs for InPlace<'a, U> {
         )
     }
 
-    unsafe fn lane(parts: &Self::Parts, _: usize, chunk: usize, lane: usize) -> Chunk<'a, U> {
-        let (ptr, len, item_len) = *parts;
-        let range = lane_range(len, chunk * item_len, lane);
-        // SAFETY: the slice is exclusively borrowed for `'a` and holds `len` elements, `range` lies
-        // inside it, it is not touched until the lanes are gone, and distinct lanes get disjoint
-        // ranges.
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(range.start), range.len()) };
+    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Chunk<'a, U> {
+        let (ptr, _len, item_len) = *parts;
+        let (start, end) = (first * item_len, last * item_len);
+        // SAFETY: the slice is exclusively borrowed for `'a` and holds `len` elements, `start..end`
+        // lies inside it, it is not touched until the lanes are gone, and distinct `first..last`
+        // ranges are disjoint.
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(start), end - start) };
         Chunk {
             slice,
             item_len,
-            first: lane * chunk,
+            first,
         }
     }
 
@@ -651,7 +658,7 @@ impl Outputs for () {
 
     unsafe fn parts(&mut self, _: usize) {}
 
-    unsafe fn lane(_: &(), _: usize, _: usize, _: usize) {}
+    unsafe fn lane(_: &(), _: usize, _: usize) {}
 
     fn lane_complete(_: &()) -> bool {
         true
@@ -678,12 +685,11 @@ macro_rules! impl_outputs_tuple {
 
             unsafe fn lane(
                 parts: &Self::Parts,
-                batch: usize,
-                chunk: usize,
-                lane: usize,
+                first: usize,
+                last: usize,
             ) -> Self::Lane {
                 // SAFETY: forwarded; the caller's guarantee covers every component.
-                ($(unsafe { $name::lane(&parts.$index, batch, chunk, lane) },)+)
+                ($(unsafe { $name::lane(&parts.$index, first, last) },)+)
             }
 
             fn lane_complete(lane: &Self::Lane) -> bool {
@@ -704,23 +710,131 @@ impl_outputs_tuple!(A 0, B 1, C 2);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3, E 4);
 
-/// Run the batch with library-owned Auto policy and one caller-owned resource.
+/// The pre-0.3 Auto cutoff: ordinary families fan out on a pool only while the largest item
+/// extent is at most this. Packed LU keeps its no-cutoff exception (`None`).
 ///
-/// `Some(max_item_dim)` applies the ordinary size cutoff; `None` is packed LU's exception.
-/// One lane runs in order using the effective requested faer count hint. Multiple contiguous
-/// lanes use the supplied pool's `in_place_scope`, always with sequential children; their count
-/// never exceeds effective requested width. Sequential/effective width one stays on the caller.
+/// tlinalg-rs#58 / tcontract-rs#123 step 1 keep this local Auto in 0.3.0; the switch to the shared
+/// work model (with the sweep as evidence) lands in step 3.
+const AUTO_FAN_OUT_MAX_ITEM_DIM: usize = 64;
+
+/// The legacy Auto item measure: `order`, or `order.max(rhs)` when the RHS/reflector target extent
+/// is counted.
 ///
-/// `make_scratch` builds one lane's scratch, reused for every item of that lane.
+/// This is the temporary step-1 switch of tlinalg-rs#58 "Defaults". The default includes the RHS
+/// extent, matching 0.2; set `TLINALG_AUTO_RHS=exclude` in the environment to measure the
+/// RHS-excluded variant. The knob and the cutoff are removed when #123 step 3 adopts the shared
+/// work model.
+pub(crate) fn auto_extent_with(order: usize, rhs: usize, include_rhs: bool) -> usize {
+    if include_rhs {
+        order.max(rhs)
+    } else {
+        order
+    }
+}
+
+/// [`auto_extent_with`] with the process's `TLINALG_AUTO_RHS` switch (default include).
+pub(crate) fn auto_extent(order: usize, rhs: usize) -> usize {
+    static INCLUDES_RHS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let include = *INCLUDES_RHS.get_or_init(|| {
+        !matches!(
+            std::env::var("TLINALG_AUTO_RHS").ok().as_deref(),
+            Some("exclude")
+        )
+    });
+    auto_extent_with(order, rhs, include)
+}
+
+/// The step-1 Auto decision: the 0.2 `LanePlan` rule on the context's budget.
+///
+/// On a pool with more than one worker, fan out to `min(budget, batch)` outer lanes only when the
+/// batch fills the budget and `max_item_dim <= AUTO_FAN_OUT_MAX_ITEM_DIM`. `None` is the packed
+/// exception (never cut off). Otherwise one lane runs the batch, passing the whole budget to faer
+/// as an intra-item count. The partition is exact (see [`run`]); 0.2's `div_ceil` split could drop
+/// a lane, which this keeps fixed.
+fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usize, usize) {
+    let budget = budget.max(1);
+    let fans_out = budget > 1
+        && batch >= budget
+        && max_item_dim.is_none_or(|dim| dim <= AUTO_FAN_OUT_MAX_ITEM_DIM);
+    if fans_out {
+        (budget.min(batch), 1)
+    } else {
+        (1, budget)
+    }
+}
+
+/// The batch route for this call: `(lanes, item_threads)`.
+///
+/// `Auto` is [`legacy_auto`], the pre-0.3 local cutoff (tlinalg-rs#58 "Defaults", step 1). Every
+/// forced strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget;
+/// `item_muladds` is the family's work estimate, reported for the forced routes and the future
+/// shared-model `Auto`. `max_item_dim` is the legacy Auto measure.
+fn decide(
+    op: Op,
+    exec: Exec<'_>,
+    batch: usize,
+    max_item_dim: Option<usize>,
+    item_muladds: f64,
+) -> Result<(usize, usize)> {
+    if matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+        return Ok(legacy_auto(batch, exec.budget(), max_item_dim));
+    }
+    let query = BatchQuery::new(batch, item_muladds);
+    match exec.batch_decision(&query) {
+        Ok(decision) => Ok((decision.lanes, decision.item_threads)),
+        Err(error) => Err(strategy_error(op, error)),
+    }
+}
+
+/// The one mapping from the executor's forced-route refusal to this crate's typed error.
+fn strategy_error(op: Op, error: ExecError) -> Error {
+    match error {
+        ExecError::StrategyUnavailable { strategy } => Error::StrategyUnavailable { op, strategy },
+        other => Error::InvalidArgument {
+            op,
+            role: "executor",
+            detail: other.to_string(),
+        },
+    }
+}
+
+/// Resolve the route for this batch and discard it, so a caller that returns early on an empty or
+/// zero-length route still refuses a forced strategy this route cannot honor. The refusal precedes
+/// any write.
+pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f64) -> Result<()> {
+    decide(op, exec, batch, None, item_muladds).map(|_| ())
+}
+
+/// Run the batch on one caller-owned resource.
+///
+/// The route comes from [`decide`]: `lanes` nonempty contiguous ranges of the batch, each item run
+/// with `item_threads` (one lane may run items on the caller with a faer count hint; several lanes
+/// run concurrently on the context's pool). Forced strategies are resolved before any write; a
+/// `WholeBatchVendor` request on this route is refused with [`Error::StrategyUnavailable`].
+///
+/// `max_item_dim` is the legacy Auto measure (see [`decide`]); `item_muladds` is the family's work
+/// estimate, used by the forced strategies and the future shared-model Auto.
+///
+/// `make_scratch` builds one lane's scratch, reused for every item of that lane. It is called with
+/// the item width the decision granted, so scratch sized per thread matches the width the items
+/// actually run at.
 ///
 /// Each lane stops at its own first failure and is not stopped by another lane's. The returned
 /// error is the lowest-indexed failing lane's, which is the lowest-indexed failing item, so the
 /// result does not depend on scheduling. On error every [`Out`] output is left empty.
+///
+/// # faer's hint
+///
+/// `item_threads` is the faer count requested on the pool, not a strict active-thread bound: faer
+/// can expose more intra-item tasks than requested (see [`tcontract_exec::Exec`]'s contract).
+/// Admission across simultaneous calls is the resource owner's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run<O, S, MK, F>(
     op: Op,
     batch: usize,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
     max_item_dim: Option<usize>,
+    item_muladds: f64,
     outputs: &mut O,
     make_scratch: MK,
     item: F,
@@ -730,60 +844,70 @@ where
     MK: Fn(faer::Par) -> S + Sync,
     F: Fn(usize, &mut O::Lane, &mut S, faer::Par) -> Result<()> + Sync,
 {
+    // Resolve availability **before** touching the outputs: a forced `WholeBatchVendor` is
+    // refused even when the batch is empty, and a huge-but-valid batch must not reach
+    // `outputs.prepare`'s reservation first. The entry points clear their library-created outputs
+    // before calling the driver, so a refusal still leaves them empty.
+    let (lanes, item_threads) = decide(op, exec, batch, max_item_dim, item_muladds)?;
     outputs.prepare(op, batch)?;
     if batch == 0 {
         return Ok(());
     }
-    let par = par.bounded();
-    let plan = LanePlan::resolve(batch, par.budget().get(), max_item_dim);
-    let chunk = batch.div_ceil(plan.lanes);
-    let lanes = batch.div_ceil(chunk);
+    // INVARIANT: `batch_decision` clamps every route to the item count, so `lanes <= batch` and
+    // `lane_bounds` yields exactly `lanes` nonempty ranges.
+    debug_assert!(lanes >= 1 && lanes <= batch, "lanes={lanes} batch={batch}");
+    let item_threads = item_threads.max(1);
     #[cfg(test)]
     tests::record_lanes(lanes);
     let result = {
-        // SAFETY: `prepare` succeeded above; every lane is created once from its own index and
+        // SAFETY: `prepare` succeeded above; every lane is created once from its own range and
         // consumed inside this block, before `outputs` is touched again by `commit`.
         let parts = unsafe { outputs.parts(batch) };
         let parts = &parts;
-        let run_lane = |lane: usize, item_par: Parallel<'_>| -> Result<()> {
-            // SAFETY: each call site passes a distinct lane index.
-            let mut out = unsafe { O::lane(parts, batch, chunk, lane) };
-            let start = lane * chunk;
-            let end = (start + chunk).min(batch);
-            with_parallel(item_par, |faer_par| {
-                let mut scratch = make_scratch(faer_par);
-                for index in start..end {
-                    item(index, &mut out, &mut scratch, faer_par)?;
-                }
-                if O::lane_complete(&out) {
-                    Ok(())
-                } else {
-                    Err(Error::Inconsistent {
-                        op,
-                        detail: "a kernel did not fill its output",
-                    })
-                }
-            })
+        let run_lane = |lane: usize, faer_par: faer::Par| -> Result<()> {
+            let (first, last) = lane_bounds(batch, lanes, lane);
+            // SAFETY: each call site passes a distinct lane index, whose range is disjoint from the
+            // others'.
+            let mut out = unsafe { O::lane(parts, first, last) };
+            let mut scratch = make_scratch(faer_par);
+            for index in first..last {
+                item(index, &mut out, &mut scratch, faer_par)?;
+            }
+            if O::lane_complete(&out) {
+                Ok(())
+            } else {
+                Err(Error::Inconsistent {
+                    op,
+                    detail: "a kernel did not fill its output",
+                })
+            }
         };
         if lanes == 1 {
-            run_lane(0, par)
-        } else if let Parallel::Pool { pool, .. } = par {
+            // One lane, item-parallel: `install` enters the pool for `item_threads > 1` and stays
+            // on the caller otherwise.
+            exec.install(item_threads, |par| run_lane(0, crate::faer_par(par)))
+        } else {
             // Each lane stops independently; report the lowest failing lane deterministically.
+            // The items inside a lane run at the decision's item width, so a `Split`/`Inner`-style
+            // forced width is not silently dropped. `install` enters the pool once, at `lanes`.
             let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
             let (run_lane, failure_ref) = (&run_lane, &failure);
-            pool.in_place_scope(|scope| {
-                for lane in 0..lanes {
-                    scope.spawn(move |_| {
-                        if let Err(error) = run_lane(lane, Parallel::Sequential) {
-                            let mut slot = failure_ref
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if slot.as_ref().is_none_or(|(first, _)| lane < *first) {
-                                *slot = Some((lane, error));
+            exec.install(lanes, |_| {
+                rayon::scope(|scope| {
+                    for lane in 0..lanes {
+                        scope.spawn(move |_| {
+                            let par = faer::Par::rayon(item_threads);
+                            if let Err(error) = run_lane(lane, par) {
+                                let mut slot = failure_ref
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if slot.as_ref().is_none_or(|(first, _)| lane < *first) {
+                                    *slot = Some((lane, error));
+                                }
                             }
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             });
             match failure
                 .into_inner()
@@ -792,8 +916,6 @@ where
                 Some((_, error)) => Err(error),
                 None => Ok(()),
             }
-        } else {
-            unreachable!("Auto cannot select multiple lanes for a sequential resource")
         }
     };
     if result.is_ok() {

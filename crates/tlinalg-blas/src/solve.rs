@@ -9,8 +9,10 @@
 //!   `A` leaves that item's output untouched.
 //!
 //! Exactly singular `A` is [`Error::Singular`] on both routes. One LU copy and one pivot buffer are
-//! acquired from the workspace per call and reused across the batch; as before the move, they are
-//! not released.
+//! acquired from the workspace per call, reused across the batch, and **released on success**, so a
+//! host that recycles buffers sees steady-state solve calls allocate nothing. An error path (a
+//! singular factor, an illegal argument, a positive `?getrs` `info`) abandons them instead: the
+//! workspace's abandonment contract leaves unwind replenishment to the host owner.
 
 use strided_view::{RawStridedMut, RawStridedRef};
 
@@ -161,6 +163,8 @@ where
             n_i32,
         )?;
     }
+    workspace.release(lu);
+    workspace.release_index(ipiv);
     Ok(())
 }
 
@@ -253,5 +257,7 @@ where
             ldb_i32,
         )?;
     }
+    workspace.release(lu);
+    workspace.release_index(ipiv);
     Ok(())
 }

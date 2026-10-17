@@ -6,8 +6,9 @@ use common::single::{full_piv_lu, full_piv_lu_solve, lu, solve, FullPivLuFactors
 use common::*;
 use num_complex::Complex64;
 use strided_view::{RawStridedMut, RawStridedRef};
+use tcontract_exec::Exec;
 use tlinalg::FaerScalar;
-use tlinalg::{Error, Op, Parallel};
+use tlinalg::{Error, Op};
 
 /// Determinant sign of a permutation matrix, by counting inversions of its row map.
 fn permutation_sign(p: &[Complex64], n: usize) -> f64 {
@@ -45,7 +46,7 @@ fn lu_reconstructs<T: TestScalar + FaerScalar>() {
                 l: &mut l,
                 u: &mut u,
             },
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let k = m.min(n);
@@ -81,7 +82,7 @@ fn lu_of_a_singular_matrix_is_not_an_error() {
             l: &mut l,
             u: &mut u,
         },
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(u[3], 0.0);
@@ -104,7 +105,7 @@ fn solve_residual<T: TestScalar + FaerScalar>() {
             Some(RawStridedRef::new(&b, &dims, &[1, n as isize], 0).unwrap()),
             RawStridedMut::new(&mut storage, &dims, &strides, offset).unwrap(),
             transpose_a,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let lda = n + 2;
@@ -136,7 +137,7 @@ fn solve_residual<T: TestScalar + FaerScalar>() {
         None,
         RawStridedMut::new(&mut x, &[n, nrhs], &[1, n as isize], 0).unwrap(),
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_close(
@@ -166,7 +167,7 @@ fn solve_singular_leaves_destination<T: TestScalar + FaerScalar>() {
         Some(RawStridedRef::new(&b, &[2, 1], &[1, 2], 0).unwrap()),
         RawStridedMut::new(&mut out, &[2, 1], &[1, 2], 0).unwrap(),
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert_eq!(err, Error::Singular { op: Op::Solve });
@@ -190,7 +191,7 @@ fn full_piv_reconstructs<T: TestScalar + FaerScalar>() {
                 u: &mut u,
                 q: &mut q,
             },
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let (p, l, u, q) = (widen(&p), widen(&l), widen(&u), widen(&q));
@@ -223,7 +224,7 @@ fn full_piv_solves<T: TestScalar + FaerScalar>() {
             RawStridedRef::new(&a, &[n, n], &[1, n as isize], 0).unwrap(),
             &mut x,
             transpose_a,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let op_a = if transpose_a {
@@ -255,7 +256,7 @@ fn full_piv_solves<T: TestScalar + FaerScalar>() {
         RawStridedRef::new(&singular, &[2, 2], &[1, 2], 0).unwrap(),
         &mut x,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert_eq!(
@@ -273,7 +274,7 @@ fn full_piv_solves<T: TestScalar + FaerScalar>() {
         RawStridedRef::new(&singular, &[2, 2], &[1, 2], 0).unwrap(),
         &mut x,
         false,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }));
@@ -282,10 +283,12 @@ for_each_scalar!(full_piv_solve, full_piv_solves);
 
 #[test]
 fn solve_on_a_supplied_pool_matches_sequential() {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap();
+    let pool = tcontract_exec::Pool::owned(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap(),
+    );
     let n = 40;
     let a = matrix::<f64>(n, n, 3);
     let b = matrix::<f64>(n, 2, 4);
@@ -304,11 +307,8 @@ fn solve_on_a_supplied_pool_matches_sequential() {
         .unwrap();
         x
     };
-    let sequential = run(Parallel::Sequential);
-    let pooled = run(Parallel::Pool {
-        pool: &pool,
-        budget: core::num::NonZeroUsize::new(2).unwrap(),
-    });
+    let sequential = run(Exec::serial());
+    let pooled = run(tcontract_exec::Exec::rayon(&pool).with_budget(2).unwrap());
     assert_close(
         &widen(&pooled),
         &widen(&sequential),

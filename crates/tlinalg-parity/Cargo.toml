@@ -18,6 +18,8 @@ link-openblas = ["tlinalg-blas/link-openblas"]
 tlinalg = { workspace = true }
 tlinalg-blas = { workspace = true }
 tlinalg-testkit = { workspace = true }
+# The batch token the faer half takes.
+tcontract-exec = { workspace = true }
 num-complex = { workspace = true }
 rayon = { workspace = true }
 strided-view = { workspace = true }

@@ -30,6 +30,12 @@ pub(crate) fn checked_product(op: Op, role: &'static str, shape: &[usize]) -> Re
         })
 }
 
+/// The work estimate a family reports to the batch policy, scaled for the scalar: four real
+/// multiply-adds per complex one (see [`ScalarEntity::COMPLEX_WEIGHT`]).
+pub(crate) fn weighted_muladds<T: ScalarEntity>(real_muladds: f64) -> f64 {
+    real_muladds * T::COMPLEX_WEIGHT
+}
+
 /// Push the column-major `rows x cols` leading block of `mat`, keeping only the entries the
 /// predicate selects and writing zero elsewhere.
 ///

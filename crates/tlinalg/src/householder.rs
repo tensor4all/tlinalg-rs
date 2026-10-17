@@ -25,8 +25,9 @@ use faer::prelude::{IntoConst, Reborrow, ReborrowMut};
 use faer::{Conj, Mat, MatMut, MatRef};
 
 use crate::batch::{self, in_place, out, Push};
-use crate::util::{checked_product, invalid};
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, invalid, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// The faer entity one, the implicit head of every stored reflector.
 fn head_one<T: FaerScalar>() -> T::Entity {
@@ -207,12 +208,13 @@ fn compact_factor_item<T: FaerScalar>(
 /// # Examples
 ///
 /// ```
-/// use tlinalg::{householder::compact_factor, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{householder::compact_factor, Op};
 ///
 /// let mut a = [3.0_f64, 4.0];
 /// let mut coeff = Vec::new();
 /// compact_factor(
-///     Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Parallel::Sequential,
+///     Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Exec::serial(),
 /// ).unwrap();
 /// assert!((a[0].abs() - 5.0).abs() < 1e-12);
 /// assert_eq!(coeff.len(), 1);
@@ -226,15 +228,17 @@ pub fn compact_factor<T: FaerScalar>(
     batch: usize,
     data: &mut [T],
     coeff: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     coeff.clear();
     let matrix_len = checked_product(op, "matrix", &[rows, cols])?;
+    let item_muladds = weighted_muladds::<T>(rows as f64 * cols as f64 * rows.min(cols) as f64);
     batch::run(
         op,
         batch,
-        par,
+        exec,
         Some(rows.max(cols)),
+        item_muladds,
         &mut (
             in_place(data, matrix_len, "matrix"),
             out(coeff, rows.min(cols)),
@@ -274,17 +278,18 @@ pub struct ReflectorShape {
 /// # Examples
 ///
 /// ```
+/// use tcontract_exec::Exec;
 /// use tlinalg::householder::{apply_reflectors, compact_factor, ReflectorShape};
-/// use tlinalg::{Op, Parallel};
+/// use tlinalg::Op;
 ///
 /// let mut a = [3.0_f64, 4.0];
 /// let mut coeff = Vec::new();
-/// compact_factor(Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Parallel::Sequential).unwrap();
+/// compact_factor(Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Exec::serial()).unwrap();
 /// // Q applied to e1 is the first column of Q, which is ±(3, 4)/5.
 /// let mut c = [1.0_f64, 0.0];
 /// let shape = ReflectorShape { rows: 2, a_cols: 1, cols: 1, k: 1 };
 /// apply_reflectors(
-///     Op::HouseholderQrQColumns, shape, 1, &a, &coeff, &mut c, false, Parallel::Sequential,
+///     Op::HouseholderQrQColumns, shape, 1, &a, &coeff, &mut c, false, Exec::serial(),
 /// ).unwrap();
 /// assert!((c[0].abs() - 0.6).abs() < 1e-12);
 /// ```
@@ -298,7 +303,7 @@ pub fn apply_reflectors<T: FaerScalar>(
     coeff: &[T],
     c: &mut [T],
     transpose: bool,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     let ReflectorShape {
         rows,
@@ -325,11 +330,13 @@ pub fn apply_reflectors<T: FaerScalar>(
     }
     let apply = rows != 0 && cols != 0 && k != 0;
     let block = compact_block_size::<T::Entity>(rows, a_cols).min(k).max(1);
+    let item_muladds = weighted_muladds::<T>(rows as f64 * cols as f64 * k as f64);
     batch::run(
         op,
         batch,
-        par,
-        Some(rows.max(a_cols).max(cols)),
+        exec,
+        Some(batch::auto_extent(rows.max(a_cols), cols)),
+        item_muladds,
         &mut (in_place(c, c_len, "C"),),
         |_| {
             let req = if !apply {

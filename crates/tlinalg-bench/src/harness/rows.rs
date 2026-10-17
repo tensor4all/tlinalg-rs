@@ -6,7 +6,8 @@ use crate::RecyclingWorkspace;
 use crate::{Batch, BenchScalar, Env};
 use num_complex::Complex64;
 use std::cell::RefCell;
-use tlinalg::{Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::Op;
 
 /// One output record.
 #[derive(Clone, Debug)]
@@ -164,7 +165,7 @@ macro_rules! impl_eig_buffers {
             ) -> Result<(), String> {
                 let mut w = Vec::new();
                 let mut v = Vec::new();
-                tlinalg::eig::eig(Op::Eig, a.view(), &mut w, &mut v, Parallel::Sequential)
+                tlinalg::eig::eig(Op::Eig, a.view(), &mut w, &mut v, Exec::serial())
                     .map_err(|e| e.to_string())?;
                 *values = w;
                 if let Some(dst) = vectors {
@@ -173,7 +174,7 @@ macro_rules! impl_eig_buffers {
                 Ok(())
             }
             fn faer_eig_values(a: &Batch<Self>, values: &mut Vec<Complex64>) -> Result<(), String> {
-                tlinalg::eig::eig_values(Op::EigValues, a.view(), values, Parallel::Sequential)
+                tlinalg::eig::eig_values(Op::EigValues, a.view(), values, Exec::serial())
                     .map_err(|e| e.to_string())
             }
             #[cfg(any(
@@ -289,7 +290,7 @@ macro_rules! impl_real_values {
         impl RealValues for $scalar {
             fn faer_values(a: &Batch<Self>) -> Result<Vec<f64>, String> {
                 let mut w = Vec::new();
-                tlinalg::eigh::eigh_values(Op::EighValues, a.view(), &mut w, Parallel::Sequential)
+                tlinalg::eigh::eigh_values(Op::EighValues, a.view(), &mut w, Exec::serial())
                     .map_err(|e| e.to_string())?;
                 Ok(w)
             }
@@ -665,7 +666,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
             lu,
             piv,
             parity,
-            Parallel::Sequential
+            Exec::serial()
         )),
         "lu_solve_prepared" => {
             let mut lu = a.data.clone();
@@ -678,7 +679,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut lu,
                 &mut piv,
                 &mut parity,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             let dims = [c.m, c.m, c.batch];
@@ -694,7 +695,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut x,
                 false,
                 false,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(x))
@@ -710,7 +711,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut lu,
                 &mut piv,
                 &mut x,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(x))
@@ -726,7 +727,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 Some(b.view()),
                 dst,
                 false,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(x))
@@ -744,7 +745,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     unit_diagonal: false,
                 },
                 &mut x,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(x))
@@ -761,20 +762,20 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     u: &mut u,
                     parity: &mut parity,
                 },
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::Lu { p, l, u, parity })
         }
         "cholesky" => {
             let mut l = Vec::new();
-            tlinalg::cholesky::cholesky(Op::Cholesky, op.view(), &mut l, Parallel::Sequential)
+            tlinalg::cholesky::cholesky(Op::Cholesky, op.view(), &mut l, Exec::serial())
                 .map_err(|e| e.to_string())?;
             Ok(Output::One(l))
         }
         "qr" => {
             let (mut q, mut r) = (Vec::new(), Vec::new());
-            tlinalg::qr::qr(Op::Qr, a.view(), &mut q, &mut r, Parallel::Sequential)
+            tlinalg::qr::qr(Op::Qr, a.view(), &mut q, &mut r, Exec::serial())
                 .map_err(|e| e.to_string())?;
             Ok(Output::Two(q, r))
         }
@@ -786,7 +787,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut q,
                 &mut r,
                 &mut p,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::TwoPerm(q, r, p))
@@ -800,7 +801,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut u,
                 &mut s,
                 &mut vt,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::Three(u, s, vt))
@@ -814,14 +815,14 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut u,
                 &mut s,
                 &mut vt,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(s))
         }
         "eigh" => {
             let (mut w, mut v) = (Vec::new(), Vec::new());
-            tlinalg::eigh::eigh(Op::Eigh, op.view(), &mut w, &mut v, Parallel::Sequential)
+            tlinalg::eigh::eigh(Op::Eigh, op.view(), &mut w, &mut v, Exec::serial())
                 .map_err(|e| e.to_string())?;
             Ok(Output::Two(w, v))
         }
@@ -852,7 +853,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     q: &mut q,
                     parity: &mut parity,
                 },
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::FullLu { p, l, u, q, parity })
@@ -865,7 +866,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 b.view(),
                 false,
                 &mut x,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             Ok(Output::One(x))
@@ -880,7 +881,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 c.batch,
                 &mut state,
                 &mut tau,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
             let target = {
@@ -905,7 +906,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     &tau,
                     &mut z,
                     false,
-                    Parallel::Sequential,
+                    Exec::serial(),
                 )
                 .map_err(|e| e.to_string())?;
                 Some(z)
@@ -1074,7 +1075,7 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 &mut self.x,
                 &mut self.piv,
                 &mut self.parity,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string()),
             "householder_apply" => tlinalg::householder::compact_factor(
@@ -1084,7 +1085,7 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 c.batch,
                 &mut self.x,
                 &mut self.tau,
-                Parallel::Sequential,
+                Exec::serial(),
             )
             .map_err(|e| e.to_string()),
             _ => Ok(()),
@@ -1285,7 +1286,7 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
         result.map_err(|e| e.to_string())
     }
 
-    fn faer(&mut self, family: &str, c: Case, par: Parallel<'_>) -> Result<(), String> {
+    fn faer(&mut self, family: &str, c: Case, par: Exec<'_>) -> Result<(), String> {
         match family {
             "lu_factor" => tlinalg::packed_lu::factor(
                 Op::LuFactor,
@@ -1565,7 +1566,7 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
             prepared.borrow_mut().reset(family);
             crate::vendor::require_threads(env.threads())
         },
-        || prepared.borrow_mut().faer(family, c, Parallel::Sequential),
+        || prepared.borrow_mut().faer(family, c, Exec::serial()),
     );
     rows.push(record("faer-1lane", result));
     if env.threads() > 1 {

@@ -129,8 +129,8 @@ pub use svd::{
     tlinalg_svd_into, tlinalg_svd_sizes, tlinalg_svd_values_into, tlinalg_svd_values_sizes,
 };
 
-/// ABI version: major * 10000 + minor * 100 + patch. `200` is 0.2.0.
-pub const ABI_VERSION: u32 = 200;
+/// ABI version: major * 10000 + minor * 100 + patch. `300` is 0.3.0.
+pub const ABI_VERSION: u32 = 300;
 
 /// The ABI version of the loaded library (`TLINALG_ABI_VERSION` in the header). Compare it with
 /// the header's macro to detect a header and a library from different versions.

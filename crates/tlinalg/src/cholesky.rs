@@ -11,8 +11,9 @@ use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef, Sink};
-use crate::util::checked_product;
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 fn cholesky_item<T: FaerScalar>(
     op: Op,
@@ -57,13 +58,14 @@ fn cholesky_item<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{cholesky::cholesky, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{cholesky::cholesky, Op};
 ///
 /// let a = [4.0_f64, 2.0, 2.0, 3.0];
 /// let mut l = Vec::new();
 /// cholesky(
 ///     Op::Cholesky, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut l,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert!((l[0] - 2.0).abs() < 1e-12 && l[2] == 0.0);
 /// ```
@@ -71,17 +73,19 @@ pub fn cholesky<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     l: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     l.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let l_len = checked_product(op, "L", &[n, n])?;
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
     batch::run(
         op,
         input.batch(),
-        par,
+        exec,
         Some(n),
+        item_muladds,
         &mut (out(l, l_len),),
         |par| {
             MemBuffer::new(

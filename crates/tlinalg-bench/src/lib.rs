@@ -46,10 +46,32 @@ pub fn bench_threads() -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::MIN)
 }
 
-/// The rayon pool and budget the parallel faer rows run on.
+/// The batch strategy from `TLINALG_BENCH_STRATEGY` (`auto|sequential|outer|inner|split:N`).
+///
+/// This is the benchmark sweep's escape hatch onto the shared `BatchPolicy`; an unset or unknown
+/// value is `Auto`.
+pub fn bench_strategy() -> tcontract_exec::BatchStrategy {
+    match std::env::var("TLINALG_BENCH_STRATEGY").ok().as_deref() {
+        Some("sequential") => tcontract_exec::BatchStrategy::Sequential,
+        Some("outer") => tcontract_exec::BatchStrategy::Outer,
+        Some("inner") => tcontract_exec::BatchStrategy::Inner,
+        Some(value) if value.starts_with("split:") => tcontract_exec::BatchStrategy::Split {
+            lanes: value[6..]
+                .parse()
+                .ok()
+                .and_then(NonZeroUsize::new)
+                .unwrap_or(NonZeroUsize::MIN),
+        },
+        _ => tcontract_exec::BatchStrategy::Auto,
+    }
+}
+
+/// The pool and budget the parallel faer rows run on.
 pub struct Env {
-    pool: rayon::ThreadPool,
+    pool: tcontract_exec::Pool<'static>,
     threads: NonZeroUsize,
+    /// Read once at construction, so `par()` does not touch the environment inside a timed call.
+    policy: tcontract_exec::BatchPolicy,
 }
 
 impl Env {
@@ -64,7 +86,11 @@ impl Env {
             .num_threads(threads.get())
             .build()
             .expect("a benchmark rayon pool");
-        Self { pool, threads }
+        Self {
+            pool: tcontract_exec::Pool::owned(pool),
+            threads,
+            policy: tcontract_exec::BatchPolicy::new(bench_strategy()),
+        }
     }
 
     /// The worker count.
@@ -72,12 +98,12 @@ impl Env {
         self.threads.get()
     }
 
-    /// The token for the pool.
-    pub fn par(&self) -> tlinalg::Parallel<'_> {
-        tlinalg::Parallel::Pool {
-            pool: &self.pool,
-            budget: self.threads,
-        }
+    /// The token for the pool, with the cached `TLINALG_BENCH_STRATEGY` policy applied.
+    pub fn par(&self) -> tcontract_exec::Exec<'_> {
+        tcontract_exec::Exec::rayon(&self.pool)
+            .with_budget(self.threads.get())
+            .expect("a nonzero benchmark budget")
+            .with_batch_policy(self.policy)
     }
 }
 

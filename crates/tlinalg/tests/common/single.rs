@@ -5,9 +5,10 @@
 #![allow(dead_code, clippy::too_many_arguments)]
 
 use strided_view::{RawStridedMut, RawStridedRef};
+use tcontract_exec::Exec;
 use tlinalg::householder::ReflectorShape;
 use tlinalg::triangular_solve::TriangularSolveFlags;
-use tlinalg::{Error, FaerScalar, Op, Parallel, Result};
+use tlinalg::{Error, FaerScalar, Op, Result};
 
 fn length_error(op: Op) -> Error {
     Error::InvalidArgument {
@@ -22,7 +23,7 @@ pub fn cholesky<T: FaerScalar>(
     _n: usize,
     input: RawStridedRef<'_, T>,
     l: &mut Vec<T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::cholesky::cholesky(op, input, l, par)
 }
@@ -36,7 +37,7 @@ pub fn triangular_solve<T: FaerScalar, W: ?Sized>(
     b_cols: usize,
     flags: TriangularSolveFlags,
     _workspace: &mut W,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<Vec<T>> {
     if b_rows.checked_mul(b_cols) != Some(rhs.len()) {
         return Err(length_error(op));
@@ -61,7 +62,7 @@ pub fn lu<T: FaerScalar>(
     _n: usize,
     input: RawStridedRef<'_, T>,
     factors: LuFactors<'_, T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<T> {
     let mut parity = Vec::new();
     tlinalg::lu::lu(
@@ -86,7 +87,7 @@ pub fn solve<T: FaerScalar>(
     rhs: Option<RawStridedRef<'_, T>>,
     out: RawStridedMut<'_, T>,
     transpose_a: bool,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::lu::solve(op, a, rhs, out, transpose_a, par)
 }
@@ -103,7 +104,7 @@ pub fn full_piv_lu<T: FaerScalar>(
     _n: usize,
     input: RawStridedRef<'_, T>,
     factors: FullPivLuFactors<'_, T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<T> {
     let mut parity = Vec::new();
     tlinalg::full_piv_lu::full_piv_lu(
@@ -129,7 +130,7 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
     a: RawStridedRef<'_, T>,
     rhs: &mut [T],
     transpose_a: bool,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     if n.checked_mul(nrhs) != Some(rhs.len()) {
         return Err(length_error(op));
@@ -156,7 +157,7 @@ pub fn qr<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     q: &mut Vec<T>,
     r: &mut Vec<T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::qr::qr(op, input, q, r, par)
 }
@@ -168,7 +169,7 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     q: &mut Vec<T>,
     r: &mut Vec<T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<Vec<i64>> {
     let mut permutation = Vec::new();
     tlinalg::qr::rank_revealing_qr(op, input, q, r, &mut permutation, par)?;
@@ -181,7 +182,7 @@ pub fn eigh<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T>,
     vectors: &mut Vec<T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::eigh::eigh(op, input, values, vectors, par)
 }
@@ -191,7 +192,7 @@ pub fn eigh_values<T: FaerScalar>(
     _n: usize,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T::Real>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::eigh::eigh_values(op, input, values, par)
 }
@@ -202,7 +203,7 @@ pub fn eig<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T::Complex>,
     vectors: &mut Vec<T::Complex>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::eig::eig(op, input, values, vectors, par)
 }
@@ -212,7 +213,7 @@ pub fn eig_values<T: FaerScalar>(
     _n: usize,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T::Complex>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     tlinalg::eig::eig_values(op, input, values, par)
 }
@@ -223,7 +224,7 @@ pub fn compact_factor<T: FaerScalar>(
     rows: usize,
     cols: usize,
     coeff: &mut Vec<T>,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     if rows.checked_mul(cols) != Some(data.len()) {
         return Err(length_error(op));
@@ -241,7 +242,7 @@ pub fn apply_reflectors<T: FaerScalar>(
     cols: usize,
     k: usize,
     transpose: bool,
-    par: Parallel<'_>,
+    par: Exec<'_>,
 ) -> Result<()> {
     if coeff.len() != k {
         return Err(length_error(op));

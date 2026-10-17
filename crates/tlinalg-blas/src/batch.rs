@@ -16,8 +16,12 @@ const INLINE_AXES: usize = 8;
 
 /// A list of up to `N` elements stored inline, spilling to the heap only beyond `N`.
 ///
-/// The batch driver must not allocate per call: a compact batch normalises to at most one axis and
-/// real views rarely have more than a handful, so the inline capacity covers every practical case.
+/// The driver keeps normalised batch metadata inline up to `N` axes, so a descriptor with up to
+/// `N` non-mergeable batch axes allocates nothing; a view with more spills its axis list to the
+/// heap once per layout. That bound is the allocation claim: arbitrary-rank layout independence is
+/// allocation-free *within the inline axis capacity*, and a wider rank allocates metadata
+/// independently of the numerical workspace. `N = 8` covers every compact or mildly gapped batch;
+/// a rank that spills is still supported, just not allocation-free.
 #[derive(Clone, Debug)]
 pub(crate) struct SmallList<T: Copy + Default, const N: usize> {
     inline: [T; N],

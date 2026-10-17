@@ -11,7 +11,7 @@ placement, execution context and error wrapping.
 
 *Tensor-free* describes the interface, not the subject. No tensor type appears in it: every entry
 point takes borrowed strided matrix batches — one call per batch over a rank-2+B descriptor — plus a
-small vocabulary of its own (`Parallel`, `Scalar`, `Error`, `Op`). That is what keeps the two
+small vocabulary of its own (`tcontract_exec::Exec`, `Scalar`, `Error`, `Op`). That is what keeps the two
 providers siblings with no shared trait crate, lets a host adapt them to the interface the host
 defines, and lets the kernels be tested and measured on plain buffers. It is not a claim that this
 library is about matrices instead of tensors.
@@ -33,8 +33,8 @@ ever a `[dev-dependencies]` entry of a provider).
 `tlinalg` is the faer-backed provider. It owns batched kernels (SVD, packed LU, Cholesky,
 triangular solve, LU and solve, full-pivot LU, QR and column-pivoted QR, Hermitian and general
 eigendecompositions, compact Householder QR), the batch loop and lane fan-out over them, and the
-vocabulary its entry points take: borrowed strided I/O, one resource token (`Parallel`) and typed
-errors (`Error`). Auto lane policy belongs to the library; no tensor types.
+vocabulary its entry points take: borrowed strided I/O, one execution token (`tcontract_exec::Exec`)
+and typed errors (`Error`). The batch route belongs to the library; no tensor types.
 
 `tlinalg-blas` has the same batched shape without a parallelism token: LAPACK and BLAS own their
 threading, the batch loop is serial, and scratch comes from a host `Workspace`, queried and acquired
@@ -53,8 +53,8 @@ descriptor, with the library owning the batch loop and the lane fan-out. The con
 The crate documentation is the specification for the rest:
 
 * numerical conventions and failure behaviour — crate root of `tlinalg`;
-* the parallelism and budget contract — `tlinalg::Parallel`;
-* library-owned Auto lanes and the accepted faer count-hint limitation —
+* the execution and budget contract — `tcontract_exec::Exec`;
+* library-owned batch lanes on the shared work model and the accepted faer count-hint limitation —
   [`docs/design/library-owned-lanes.md`](docs/design/library-owned-lanes.md);
 * output assembly and lane scratch — `docs/design/batched-api.md`;
 * the error vocabulary — `tlinalg::Error`.
@@ -111,9 +111,11 @@ to three rows:
 
 * `faer-1lane` — one sequential lane: per-item cost plus the batch loop, no threading.
 * `faer-{N}t` — an explicit `N`-worker pool and requested budget (`TLINALG_BENCH_THREADS`,
-  default the available parallelism); tlinalg's ordinary Auto policy chooses outer lanes or
-  faer's intra-item count hint. Use `TLINALG_BENCH_THREADS=1` for overhead baselines.
-  **The faer hint is not a hard active-thread limit**; see the `Parallel` budget contract.
+  default the available parallelism); tlinalg's `Auto` route chooses outer lanes or faer's intra-item count hint.
+  `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route, and
+  `TLINALG_AUTO_RHS=exclude` drops the RHS/reflector extent from the temporary `Auto` measure.
+  Use `TLINALG_BENCH_THREADS=1` for overhead baselines.
+  **The faer hint is not a hard active-thread limit**; see the `tcontract_exec::Exec` contract.
 * `lapack` — `tlinalg-blas` (with `--features link-openblas`): a serial batch loop, vendor-owned
   threading.
 

@@ -15,8 +15,9 @@ use faer::{Conj, Mat, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef, Push, Sink};
-use crate::util::{checked_product, invalid, push_masked};
-use crate::{FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, invalid, push_masked, weighted_muladds};
+use crate::{FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// Lane scratch for `m x n` QR factorizations, plain or column-pivoted.
 struct QrScratch<E: faer::traits::ComplexField> {
@@ -205,13 +206,14 @@ fn rank_revealing_qr_item<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{qr::qr, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{qr::qr, Op};
 ///
 /// let a = [3.0_f64, 4.0];
 /// let (mut q, mut r) = (Vec::new(), Vec::new());
 /// qr(
 ///     Op::Qr, RawStridedRef::new(&a, &[2, 1], &[1, 2], 0).unwrap(), &mut q, &mut r,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert!((r[0].abs() - 5.0).abs() < 1e-12);
 /// ```
@@ -220,7 +222,7 @@ pub fn qr<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     q: &mut Vec<T>,
     r: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     q.clear();
     r.clear();
@@ -229,11 +231,14 @@ pub fn qr<T: FaerScalar>(
     let k = m.min(n);
     let q_len = checked_product(op, "Q", &[m, k])?;
     let r_len = checked_product(op, "R", &[k, n])?;
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
     batch::run(
         op,
         input.batch(),
-        par,
+        exec,
         Some(m.max(n)),
+        item_muladds,
         &mut (out(q, q_len), out(r, r_len)),
         |par| QrScratch::<T::Entity>::new(m, n, false, par),
         |index, (q, r), scratch, par| {
@@ -279,13 +284,14 @@ pub fn magnitude<T: FaerScalar>(value: T) -> f64 {
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{qr::rank_revealing_qr, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{qr::rank_revealing_qr, Op};
 ///
 /// let a = [1.0_f64, 0.0, 0.0, 5.0];
 /// let (mut q, mut r, mut perm) = (Vec::new(), Vec::new(), Vec::new());
 /// rank_revealing_qr(
 ///     Op::RankRevealingQr, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
-///     &mut q, &mut r, &mut perm, Parallel::Sequential,
+///     &mut q, &mut r, &mut perm, Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(perm, [1, 0]);
 /// ```
@@ -295,7 +301,7 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     q: &mut Vec<T>,
     r: &mut Vec<T>,
     permutation: &mut Vec<i64>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     q.clear();
     r.clear();
@@ -305,11 +311,14 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     let k = m.min(n);
     let q_len = checked_product(op, "Q", &[m, k])?;
     let r_len = checked_product(op, "R", &[k, n])?;
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
     batch::run(
         op,
         input.batch(),
-        par,
+        exec,
         Some(m.max(n)),
+        item_muladds,
         &mut (out(q, q_len), out(r, r_len), out(permutation, n)),
         |par| QrScratch::<T::Entity>::new(m, n, true, par),
         |index, (q, r, permutation), scratch, par| {

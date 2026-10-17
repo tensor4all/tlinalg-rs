@@ -11,7 +11,8 @@ the shared rules were unavailable.
 ## Repository-specific rules
 
 * `tlinalg` is a provider: tensor-free kernels plus the small vocabulary its own entry points take
-  (`Parallel`, `Scalar`, `Error`, `Op`; lane policy is crate-private). It contains no tensor types.
+  (`tcontract_exec::Exec`, `Scalar`, `Error`, `Op`; the batch route comes from the shared
+  `tcontract_exec::BatchPolicy`). It contains no tensor types.
 * Every public entry point is batched (`docs/design/batched-api.md`); per-matrix kernels stay
   crate-private, and `crates/tlinalg/src/batch.rs` is the only batch loop.
 * The interface a host requires of its linear-algebra providers belongs to the host (tenferro
@@ -21,8 +22,8 @@ the shared rules were unavailable.
   `tlinalg-testkit` (only ever a `[dev-dependencies]` entry of a provider), never in either
   provider; cross-provider checks go in `tlinalg-parity`, kernel benchmarks in `tlinalg-bench`. A
   parity failure is a bug in a provider or in a documented convention, not a tolerance to loosen.
-* The public types are published behaviour: changing `Parallel`, `Error`, or the
-  batched contract in `docs/design/batched-api.md` is a contract change and needs the design
+* The public types are published behaviour: changing `Error`, the `tcontract_exec::Exec` token, or
+  the batched contract in `docs/design/batched-api.md` is a contract change and needs the design
   reviewed first.
 * `tlinalg-blas` owns its vocabulary (`Error`, `Op`, `Workspace`, `IndexWorkspace`, `Scalar`).
   Its entry points take no parallelism token (LAPACK and BLAS own their threading), loop serially

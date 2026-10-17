@@ -9,7 +9,8 @@
 use std::ffi::c_void;
 
 use num_complex::{Complex32, Complex64};
-use tlinalg::{lu, FaerScalar, Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::{lu, FaerScalar, Op};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
 use crate::executor::with_executor;
@@ -42,7 +43,7 @@ fn lu_into_typed<T: FaerScalar>(
     u: *mut c_void,
     parity: *mut c_void,
     sizes: &tlinalg_lu_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut pp, mut ll, mut uu, mut par) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
