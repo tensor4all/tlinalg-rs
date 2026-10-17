@@ -1576,7 +1576,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "num-complex",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1618,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-capi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "num-complex",
  "strided-view",

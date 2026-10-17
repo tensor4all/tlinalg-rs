@@ -43,7 +43,7 @@ extern "C" {
 
 /* ABI version: major * 10000 + minor * 100 + patch. Compare with
    tlinalg_abi_version() to detect a header and a library from different versions. */
-#define TLINALG_ABI_VERSION 200 /* 0.2.0 */
+#define TLINALG_ABI_VERSION 300 /* 0.3.0 */
 
 /* Status codes. These mirror the provider's typed errors; zero is the only
    success. Text for any code is in tlinalg_explain_error / tlinalg_last_error. */
