@@ -1454,26 +1454,26 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
 /// The provider rows a case measures, with whether the shape applies at all.
 ///
 /// The campaign's verification census must name exactly the cells its timing run will emit, so both
-/// paths ask this one function: `faer-1lane` always, `faer-pool` only when more than one thread is
-/// in force, and the vendor row only when a vendor library is linked.
+/// paths ask this one function. Every declared row is listed: `faer-1lane` always, `faer-pool`
+/// whenever the campaign declares it (a 1-thread run reports it as a declared skip rather than
+/// dropping the cell), and the vendor row whenever a vendor library is linked.
 pub(crate) fn plan(family: &str, c: Case, env: &Env) -> Vec<(String, bool, String)> {
     let mut rows = Vec::new();
     for row in ["faer-1lane", "faer-pool", crate::vendor::LAPACK_ROW] {
-        if row == "faer-pool" && env.threads() == 1
-            || row == crate::vendor::LAPACK_ROW && !crate::vendor::LINKED
-        {
+        if row == crate::vendor::LAPACK_ROW && !crate::vendor::LINKED {
             continue;
         }
-        let applies = applicable(family, c);
-        rows.push((
-            row.to_owned(),
-            applies,
-            if applies {
-                String::new()
-            } else {
-                "shape not applicable".to_owned()
-            },
-        ));
+        let (applies, note) = if row == "faer-pool" && env.threads() == 1 {
+            (
+                false,
+                "a 1-thread run does not measure the pool row".to_owned(),
+            )
+        } else if applicable(family, c) {
+            (true, String::new())
+        } else {
+            (false, "shape not applicable".to_owned())
+        };
+        rows.push((row.to_owned(), applies, note));
     }
     rows
 }
@@ -1489,8 +1489,9 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
     statistic: timing::Statistic,
 ) -> Vec<Record> {
     let mut rows = Vec::new();
+    let planned = plan(family, c, env);
     if !applicable(family, c) {
-        for (row, _, note) in plan(family, c, env) {
+        for (row, _, note) in planned.clone() {
             rows.push(Record {
                 regime: regime.into(),
                 family: family.into(),
@@ -1606,6 +1607,29 @@ pub(crate) fn measure_case<T: BenchScalar + LapackEigh>(
             },
         );
         rows.push(record(crate::vendor::LAPACK_ROW, result));
+    }
+    // Declared rows this process start does not measure are recorded as skips, so the campaign's
+    // census and the page name the cell instead of silently losing it.
+    for (row, applies, note) in planned {
+        if !applies {
+            rows.push(Record {
+                regime: regime.into(),
+                family: family.into(),
+                dtype: T::LABEL.into(),
+                m: c.m,
+                n: c.n,
+                batch: c.batch,
+                row,
+                threads: env.threads(),
+                samples_ms: Vec::new(),
+                total_ms: 0.,
+                per_item_us: 0.,
+                status: "skipped".into(),
+                note,
+                rayon_threads: env.threads(),
+                vendor_threads: env.threads(),
+            });
+        }
     }
     rows
 }
