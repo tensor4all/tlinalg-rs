@@ -178,13 +178,13 @@ fn row(name: &str, count: usize) -> usize {
 
 #[test]
 fn steady_state_allocations_do_not_grow_with_the_batch() {
-    // `solve` keeps the host's pre-extraction policy of not releasing its LU copy and pivot
-    // buffer, so a recycling host sees those two acquisitions miss every call. Everything else,
-    // including the batch driver, allocates nothing once warmed up.
+    // `solve` now returns its LU copy and pivot buffer on success, so a recycling host sees a
+    // steady-state call allocate nothing. Everything else, including the batch driver, allocates
+    // nothing once warmed up. Error paths abandon the two buffers (see the module docs).
     let families = [
         ("cholesky", 0),
         ("triangular_solve", 0),
-        ("solve", 2),
+        ("solve", 0),
         ("qr", 0),
         ("rank_revealing_qr", 3),
         ("eigh", 0),

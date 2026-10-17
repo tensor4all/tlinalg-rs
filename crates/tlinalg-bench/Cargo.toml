@@ -38,5 +38,9 @@ criterion = { workspace = true }
 name = "kernels"
 harness = false
 
+[[bench]]
+name = "overhead_smoke"
+harness = false
+
 [lints]
 workspace = true

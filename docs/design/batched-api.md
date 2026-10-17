@@ -22,18 +22,19 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 
 ## Parallelism (tlinalg only)
 
-* One argument: `par: Parallel<'_>` (Sequential or caller-owned pool + requested budget).
-  **tlinalg owns Auto lane selection**, not the host. `LanePlan` is crate-private; there is no
-  forced-policy or benchmark escape hatch. See [library-owned-lanes.md](library-owned-lanes.md).
-* Effective requested width is `min(budget, pool.current_num_threads())`. Width one executes on
-  the calling thread, without installing a pool.
-* Ordinary families fan out only when `max(rows, cols) <= 64` and the batch has at least one item
-  per effective worker (and at least two workers). RHS/reflector target extents are included.
-  Packed LU's three routes retain their existing no-size-cutoff policy.
-* Outer tasks are contiguous chunks of `batch.div_ceil(width)` items on the supplied pool, using
-  `in_place_scope`; every outer child is sequential. Their count never exceeds effective width.
-  Otherwise one lane runs the batch in order, passing effective width to faer as an intra-item hint.
-* **faer 0.24.4 does not guarantee a strict active-thread bound from that hint.** Its wide-RHS
+* One argument: `exec: tcontract_exec::Exec<'_>` (serial, or a caller-owned pool + budget +
+  `BatchPolicy`). **tlinalg owns the batch route**, not the host: `batch::run` asks
+  `Exec::batch_decision` from each family's work estimate. Forced strategies are reachable from
+  outside; there is no private cutoff. See [library-owned-lanes.md](library-owned-lanes.md).
+* `Auto` follows the shared `WorkModel` (estimated work), not a per-item dimension. The step-1
+  default model fans small items out over the batch where the old 64 cutoff would, and (the case
+  tlinalg-rs#58 was filed for) also fans out an item above the old cutoff; a single large item keeps
+  one lane with the whole budget. RHS/reflector target extents enter the estimate as work.
+* The driver partitions into **exactly** the decided number of nonempty contiguous ranges, never
+  above `batch` or the budget. Every outer child runs its items at the decision's `item_threads`,
+  passed to both scratch sizing and faer; a forced `WholeBatchVendor` is refused with
+  [`crate::Error::StrategyUnavailable`] before any write.
+* **faer 0.24.4 does not guarantee a strict active-thread bound from that count.** Its wide-RHS
   recursion and rounded-up splitting can exceed the requested count. This accepted limitation is
   not hidden by serial fallback or replacement pools; no hard bound on all native work is claimed.
 * Scratch is per lane and reused across the items of that lane (faer `MemBuffer` sized once for the
@@ -92,9 +93,11 @@ Recorded with the implementation; they refine, not replace, the contract above.
   and batch-axis normalisation (`BatchedRef`, `BatchedMut`, `BatchAxes`), lane split and fan-out
   (`run`), and output assembly (`Out` for library-created vectors, `InPlace` for host-owned compact
   buffers).
-* **Lane parallelism.** The private resolver selects outer lanes only for a pool with effective
-  width greater than one. Each child uses `Parallel::Sequential`; a single lane uses the sole call
-  token. A sequential resource never resolves to multiple lanes.
+* **Lane split and fan-out.** `tcontract_exec::Exec::batch_decision` selects the route; the driver
+  partitions `0..batch` into exactly the decided number of nonempty ranges. Several lanes run on
+  the context's pool, each item at the decided `item_threads`; one lane runs on the caller when
+  `item_threads` is one, or in the pool otherwise. A serial context never resolves to multiple
+  lanes.
 * **Item offsets.** After normalisation a compact batch has one axis and an item offset is one
   multiply. A non-mergeable view decomposes the item index per item (`O(B)` integer work next to an
   `O(n³)` kernel) instead of carrying an odometer: items are addressed by index from independent
@@ -103,13 +106,15 @@ Recorded with the implementation; they refine, not replace, the contract above.
   batch axes) is injective under a sufficient test: after dropping extent-one axes and sorting by
   absolute stride, every stride exceeds the span of the smaller axes. Input/output overlap cannot
   be expressed: inputs borrow `&[T]` and destinations `&mut [T]`.
-* **No driver allocation.** Normalised batch axes are stored inline (up to 8 axes; heap only
-  beyond). Lane views are derived from the lane index on demand, never collected into a list, and a
-  multi-lane run records the lowest failing lane in a mutex instead of a per-lane result vector. On
-  one lane the driver allocates nothing; `tests/alloc_counts.rs` pins the remaining per-call
-  allocations of compact Householder, Cholesky, QR, rank-revealing QR, LU solve, full-pivot LU
-  solve, eigh, SVD, packed LU and triangular solve (their faer lane scratch), which do not grow
-  with the batch. The families the table does not name are not pinned yet.
+* **No driver allocation, within the inline bound.** Normalised batch axes are stored inline (up to
+  8 axes; heap only beyond, independently of the numerical workspace). Lane views are derived from
+  the lane range on demand, never collected into a list, and a multi-lane run records the lowest
+  failing lane in a mutex instead of a per-lane result vector. On one lane the driver allocates
+  nothing; `tests/alloc_counts.rs` pins the remaining per-call allocations of compact Householder,
+  Cholesky, QR, rank-revealing QR, LU solve, full-pivot LU solve, eigh, SVD, packed LU and
+  triangular solve (their faer lane scratch), which do not grow with the batch. The families the
+  table does not name are not pinned yet. Worker allocations are observed by
+  `tlinalg_testkit::alloc::allocations_all_threads`, which the thread-local counter cannot see.
 * **Output assembly.** Library-created vectors are cleared, reserved, and their spare capacity is
   split into disjoint per-lane `MaybeUninit` chunks written sequentially. `set_len` runs only after
   every lane returned `Ok` with its chunk full; otherwise the vectors stay empty.

@@ -85,6 +85,10 @@ jobs:
       # The injected symbol set exports ?gesvd but not ?gesdd, so the other driver has to be
       # exercised too; OpenBLAS provides both symbols.
       - run: cargo test --workspace --profile ci --features tlinalg-blas/link-openblas,tlinalg-blas/provider-inject,tlinalg-parity/link-openblas
+      # The cheap timing layer next to the allocation gates (tlinalg-rs#57): seconds, single-thread,
+      # ratio-gated, and report-only without OVERHEAD_GATE.
+      - name: overhead smoke
+        run: RAYON_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OVERHEAD_GATE=1 cargo bench -p tlinalg-bench --bench overhead_smoke
       # A red gate here has to say which CPU ran it and which vendor build it linked. The linked
       # tests have failed with SIGILL on a runner because the from-source OpenBLAS was built for
       # an ISA that runner cannot execute, and neither fact was visible in the log.

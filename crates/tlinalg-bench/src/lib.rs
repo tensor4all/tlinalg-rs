@@ -46,6 +46,26 @@ pub fn bench_threads() -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::MIN)
 }
 
+/// The batch strategy from `TLINALG_BENCH_STRATEGY` (`auto|sequential|outer|inner|split:N`).
+///
+/// This is the benchmark sweep's escape hatch onto the shared `BatchPolicy`; an unset or unknown
+/// value is `Auto`.
+pub fn bench_strategy() -> tcontract_exec::BatchStrategy {
+    match std::env::var("TLINALG_BENCH_STRATEGY").ok().as_deref() {
+        Some("sequential") => tcontract_exec::BatchStrategy::Sequential,
+        Some("outer") => tcontract_exec::BatchStrategy::Outer,
+        Some("inner") => tcontract_exec::BatchStrategy::Inner,
+        Some(value) if value.starts_with("split:") => tcontract_exec::BatchStrategy::Split {
+            lanes: value[6..]
+                .parse()
+                .ok()
+                .and_then(NonZeroUsize::new)
+                .unwrap_or(NonZeroUsize::MIN),
+        },
+        _ => tcontract_exec::BatchStrategy::Auto,
+    }
+}
+
 /// The pool and budget the parallel faer rows run on.
 pub struct Env {
     pool: tcontract_exec::Pool<'static>,
@@ -75,11 +95,12 @@ impl Env {
         self.threads.get()
     }
 
-    /// The token for the pool.
+    /// The token for the pool, with the `TLINALG_BENCH_STRATEGY` policy applied.
     pub fn par(&self) -> tcontract_exec::Exec<'_> {
         tcontract_exec::Exec::rayon(&self.pool)
             .with_budget(self.threads.get())
             .expect("a nonzero benchmark budget")
+            .with_batch_policy(tcontract_exec::BatchPolicy::new(bench_strategy()))
     }
 }
 

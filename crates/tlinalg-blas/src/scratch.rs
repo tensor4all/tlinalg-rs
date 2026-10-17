@@ -5,10 +5,18 @@
 //!
 //! Implementations obtain every reusable buffer through [`Workspace`]. The host implements it over
 //! its own pool, so the pool's identity, retention policy and steady-state allocation behaviour are
-//! preserved and no second allocator is introduced. Rank-revealing QR is the one family whose
-//! short-lived working buffers — `tau`, `jpvt` and its per-item permutation check — are allocated
-//! per call rather than pooled; `tests/alloc_counts.rs` pins that count so it cannot grow with the
-//! batch.
+//! preserved and no second allocator is introduced. A few short-lived **index** buffers are still
+//! allocated per call rather than pooled, because they are `usize` permutations the `i32`
+//! [`IndexWorkspace`] cannot hand out; they are enumerated here so the inventory is complete and
+//! `tests/alloc_counts.rs` pins their count:
+//!
+//! * rank-revealing QR: `tau` (`T`), `jpvt` (`i32`) and the per-item permutation-check `seen`
+//!   (`bool`) — three allocations;
+//! * partial-pivot LU factor: the `usize` `permutation` — one allocation;
+//! * full-pivot LU factor: the `usize` `row_perm` and `col_perm` — two allocations.
+//!
+//! General-eigendecomposition real-eigenvector assembly no longer adds a per-item staging column:
+//! it pushes each output element straight into the caller's reserved vector.
 //!
 //! # Ownership
 //!
