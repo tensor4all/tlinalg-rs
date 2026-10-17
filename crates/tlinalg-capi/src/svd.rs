@@ -9,7 +9,8 @@
 use std::ffi::c_void;
 
 use num_complex::{Complex32, Complex64};
-use tlinalg::{svd, FaerScalar, Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::{svd, FaerScalar, Op};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
 use crate::executor::with_executor;
@@ -61,7 +62,7 @@ fn svd_into_typed<T: FaerScalar>(
     s: *mut c_void,
     vt: *mut c_void,
     sizes: &tlinalg_svd_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     let op = if full { Op::SvdFull } else { Op::Svd };
     with_view::<T, _>(desc, data, data_len, |input| {
@@ -84,7 +85,7 @@ fn svd_values_into_typed<T: FaerScalar>(
     data_len: usize,
     s: *mut c_void,
     sizes: &tlinalg_svd_values_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut ss = Vec::new();

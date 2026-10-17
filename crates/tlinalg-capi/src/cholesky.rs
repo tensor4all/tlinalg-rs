@@ -8,7 +8,8 @@
 use std::ffi::c_void;
 
 use num_complex::{Complex32, Complex64};
-use tlinalg::{cholesky, FaerScalar, Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::{cholesky, FaerScalar, Op};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
 use crate::executor::with_executor;
@@ -33,7 +34,7 @@ fn cholesky_into_typed<T: FaerScalar>(
     data_len: usize,
     l: *mut c_void,
     sizes: &tlinalg_cholesky_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut ll = Vec::new();

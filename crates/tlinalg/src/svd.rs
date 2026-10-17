@@ -36,8 +36,9 @@ use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef, Push, Sink};
 use crate::scalar::ScalarEntity;
-use crate::util::{checked_product, push_identity};
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, push_identity, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// faer's parameters with the QR algorithm at every size.
 ///
@@ -326,14 +327,15 @@ fn svd_item<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{svd::svd_values, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{svd::svd_values, Op};
 ///
 /// // Two 2x2 diagonal matrices, batch-contiguous.
 /// let a = [3.0_f64, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 5.0];
 /// let mut s = Vec::new();
 /// svd_values(
 ///     Op::SvdValues, RawStridedRef::new(&a, &[2, 2, 2], &[1, 2, 4], 0).unwrap(), &mut s,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(s, [3.0, 1.0, 5.0, 2.0]);
 /// ```
@@ -341,16 +343,17 @@ pub fn svd_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     s: &mut Vec<<T as ScalarEntity>::Real>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     s.clear();
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
+    let item_muladds = weighted_muladds::<T>((m * n * m.min(n)) as f64);
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(m.max(n)),
+        exec,
+        item_muladds,
         &mut (out(s, m.min(n)),),
         |par| SvdScratch::<T::Entity>::new(m, n, ComputeSvdVectors::No, par),
         |index, (s,), scratch, par| svd_values_item::<T>(op, input.item(index), s, scratch, par),
@@ -372,13 +375,14 @@ pub fn svd_values<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{svd::svd, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{svd::svd, Op};
 ///
 /// let a = [3.0_f64, 0.0, 0.0, 1.0];
 /// let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
 /// svd(
 ///     Op::Svd, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), false,
-///     &mut u, &mut s, &mut vt, Parallel::Sequential,
+///     &mut u, &mut s, &mut vt, Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(s, [3.0, 1.0]);
 /// ```
@@ -392,7 +396,7 @@ pub fn svd<T: FaerScalar>(
     u: &mut Vec<T>,
     s: &mut Vec<T>,
     vt: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     u.clear();
     s.clear();
@@ -407,11 +411,12 @@ pub fn svd<T: FaerScalar>(
     };
     let u_len = checked_product(op, "U", &[m, u_cols])?;
     let vt_len = checked_product(op, "VH", &[v_cols, n])?;
+    let item_muladds = weighted_muladds::<T>((m * n * k) as f64);
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(m.max(n)),
+        exec,
+        item_muladds,
         &mut (out(u, u_len), out(s, k), out(vt, vt_len)),
         |par| SvdScratch::<T::Entity>::new(m, n, vectors, par),
         |index, (u, s, vt), scratch, par| {

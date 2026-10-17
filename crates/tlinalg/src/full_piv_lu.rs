@@ -12,8 +12,9 @@ use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, same_batch, BatchedRef, Push, Sink};
 use crate::scalar::ScalarEntity;
-use crate::util::{checked_product, invalid, push_masked, push_permutation};
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, invalid, push_masked, push_permutation, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// The explicit factors of a batch of full-pivot LU decompositions, as caller-provided buffers.
 ///
@@ -124,8 +125,9 @@ fn full_piv_lu_item<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
+/// use tcontract_exec::Exec;
 /// use tlinalg::full_piv_lu::{full_piv_lu, FullPivLuFactors};
-/// use tlinalg::{Op, Parallel};
+/// use tlinalg::Op;
 ///
 /// let a = [1.0_f64, 0.0, 0.0, 2.0];
 /// let (mut p, mut l, mut u, mut q, mut parity) =
@@ -133,7 +135,7 @@ fn full_piv_lu_item<T: FaerScalar>(
 /// full_piv_lu(
 ///     Op::FullPivLu, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     FullPivLuFactors { p: &mut p, l: &mut l, u: &mut u, q: &mut q, parity: &mut parity },
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(u[0], 2.0);
 /// ```
@@ -141,7 +143,7 @@ pub fn full_piv_lu<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     factors: FullPivLuFactors<'_, T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     let FullPivLuFactors { p, l, u, q, parity } = factors;
     p.clear();
@@ -152,11 +154,12 @@ pub fn full_piv_lu<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let len = checked_product(op, "matrix", &[n, n])?;
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 3.0);
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(n),
+        exec,
+        item_muladds,
         &mut (
             out(p, len),
             out(l, len),
@@ -251,7 +254,8 @@ fn full_piv_lu_solve_item<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{full_piv_lu::full_piv_lu_solve, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{full_piv_lu::full_piv_lu_solve, Op};
 ///
 /// let a = [2.0_f64, 0.0, 0.0, 4.0];
 /// let b = [2.0_f64, 8.0];
@@ -260,7 +264,7 @@ fn full_piv_lu_solve_item<T: FaerScalar>(
 ///     Op::FullPivLuSolve,
 ///     RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     RawStridedRef::new(&b, &[2, 1], &[1, 2], 0).unwrap(),
-///     false, &mut x, Parallel::Sequential,
+///     false, &mut x, Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
@@ -273,7 +277,7 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
     b: RawStridedRef<'_, T>,
     transpose_a: bool,
     x: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     x.clear();
     let a = BatchedRef::square(op, "A", a)?;
@@ -289,11 +293,13 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
     same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
     let nrhs = b.cols();
     let x_len = checked_product(op, "X", &[n, nrhs])?;
+    let (nf, krhs) = (n as f64, nrhs as f64);
+    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
     batch::run(
         op,
         a.batch(),
-        par,
-        Some(n.max(nrhs)),
+        exec,
+        item_muladds,
         &mut (out(x, x_len),),
         |par| {
             (

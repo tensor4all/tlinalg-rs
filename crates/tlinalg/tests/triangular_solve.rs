@@ -7,9 +7,10 @@ use common::single::triangular_solve;
 use common::*;
 use num_complex::Complex64;
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::triangular_solve::TriangularSolveFlags;
 use tlinalg::FaerScalar;
-use tlinalg::{Error, Op, Parallel};
+use tlinalg::{Error, Op};
 
 /// The triangle of `a` the flags select, as a dense matrix, with the unit diagonal applied.
 fn effective<T: TestScalar + FaerScalar>(
@@ -64,7 +65,7 @@ fn all_flags<T: TestScalar + FaerScalar>() {
             b_cols,
             flags,
             &mut workspace,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let op_a = effective(&a, n, flags);
@@ -101,7 +102,7 @@ fn transposed_layout<T: TestScalar + FaerScalar>() {
             2,
             flags,
             &mut CountingWorkspace,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap()
     };
@@ -130,7 +131,7 @@ fn shape_errors() {
             cols,
             flags,
             &mut CountingWorkspace,
-            Parallel::Sequential,
+            Exec::serial(),
         )
     };
     assert!(matches!(

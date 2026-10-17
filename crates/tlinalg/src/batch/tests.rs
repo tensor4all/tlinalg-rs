@@ -2,28 +2,31 @@ mod scheduling;
 pub(super) use scheduling::record_lanes;
 
 use super::{is_injective, out, run, BatchAxes, BatchedMut, BatchedRef};
-use crate::{Error, Op, Parallel};
-use core::num::NonZeroUsize;
+use crate::{Error, Op};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use strided_view::{RawStridedMut, RawStridedRef};
+use tcontract_exec::{Exec, Pool};
+
+/// An owned pool (kept alive by `Pool::owned`) and an `Exec` borrowing it.
+fn owned_pool(threads: usize) -> Pool<'static> {
+    let tp = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
+    Pool::owned(tp)
+}
 
 /// A failing outer lane must not stop the other lanes.
 #[test]
 fn a_failing_lane_does_not_stop_the_later_ones() {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(3)
-        .build()
-        .unwrap();
+    let pool = owned_pool(3);
     let ran = AtomicUsize::new(0);
     let mut values: Vec<usize> = Vec::new();
     let err = run(
         Op::Svd,
         6,
-        Parallel::Pool {
-            pool: &pool,
-            budget: NonZeroUsize::new(3).unwrap(),
-        },
-        Some(1),
+        Exec::rayon(&pool).with_budget(3).unwrap(),
+        1.0,
         &mut (out(&mut values, 1),),
         |_| (),
         |index, (values,), (), _| {
@@ -54,22 +57,16 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
 /// lowest-indexed failing item is returned and the output stays empty.
 #[test]
 fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(3)
-        .build()
-        .unwrap();
+    let pool = owned_pool(8);
     for budget in [1, 2, 3, 4, 8] {
-        let par = Parallel::Pool {
-            pool: &pool,
-            budget: NonZeroUsize::new(budget).unwrap(),
-        };
+        let exec = Exec::rayon(&pool).with_budget(budget).unwrap();
         for _ in 0..20 {
             let mut values = vec![9usize; 3];
             let err = run(
                 Op::Svd,
                 8,
-                par,
-                Some(1),
+                exec,
+                1.0,
                 &mut (out(&mut values, 1),),
                 |_| (),
                 |index, (values,), (), _| {
@@ -103,8 +100,8 @@ fn a_kernel_that_writes_too_little_is_an_error() {
     let err = run(
         Op::Svd,
         2,
-        Parallel::Sequential,
-        Some(1),
+        Exec::serial(),
+        1.0,
         &mut (out(&mut values, 2),),
         |_| (),
         |_, (values,), (), _| {

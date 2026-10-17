@@ -46,9 +46,9 @@ pub fn bench_threads() -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::MIN)
 }
 
-/// The rayon pool and budget the parallel faer rows run on.
+/// The pool and budget the parallel faer rows run on.
 pub struct Env {
-    pool: rayon::ThreadPool,
+    pool: tcontract_exec::Pool<'static>,
     threads: NonZeroUsize,
 }
 
@@ -64,7 +64,10 @@ impl Env {
             .num_threads(threads.get())
             .build()
             .expect("a benchmark rayon pool");
-        Self { pool, threads }
+        Self {
+            pool: tcontract_exec::Pool::owned(pool),
+            threads,
+        }
     }
 
     /// The worker count.
@@ -73,11 +76,10 @@ impl Env {
     }
 
     /// The token for the pool.
-    pub fn par(&self) -> tlinalg::Parallel<'_> {
-        tlinalg::Parallel::Pool {
-            pool: &self.pool,
-            budget: self.threads,
-        }
+    pub fn par(&self) -> tcontract_exec::Exec<'_> {
+        tcontract_exec::Exec::rayon(&self.pool)
+            .with_budget(self.threads.get())
+            .expect("a nonzero benchmark budget")
     }
 }
 

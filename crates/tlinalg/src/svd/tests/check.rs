@@ -9,11 +9,12 @@ use strided_view::RawStridedRef;
 use tlinalg_testkit::{clustered_spectrum, with_singular_values, TestScalar};
 
 use crate::svd::{divides, reproduces, residual_bound, svd, Check, SvdScratch};
-use crate::{FaerScalar, Op, Parallel};
+use crate::{FaerScalar, Op};
+use tcontract_exec::Exec;
 
 thread_local! {
-    // The kernel records a repeat on the thread that runs it; with `Parallel::Sequential` that is
-    // the test's own thread, so tests on other threads do not interfere.
+    // The kernel records a repeat on the thread that runs it; with `Exec::serial()` that is the
+    // test's own thread, so tests on other threads do not interfere.
     static REPEATS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -33,7 +34,7 @@ fn repeats<T: FaerScalar + TestScalar>(a: &[T], m: usize, n: usize, full: bool) 
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     (REPEATS.get(), s)

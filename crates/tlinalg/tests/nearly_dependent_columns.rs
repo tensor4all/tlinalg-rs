@@ -22,9 +22,10 @@
 //! a dropped middle column is visible in the factors and in the spectrum alike.
 
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::qr::{qr, rank_revealing_qr};
 use tlinalg::svd::{svd, svd_values};
-use tlinalg::{Op, Parallel};
+use tlinalg::Op;
 
 /// `A = [a, a + 1e-10 e_0, a + 1e-6 e_1]`, column-major `m x 3`.
 fn fixture(m: usize) -> Vec<f64> {
@@ -83,7 +84,7 @@ fn svd_values_ratio(m: usize) -> f64 {
         Op::SvdValues,
         tall(&a, m, &mut dims, &mut strides),
         &mut s,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     s[2] / s[0]
@@ -100,7 +101,7 @@ fn thin_svd_ratio(m: usize) -> f64 {
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     s[2] / s[0]
@@ -119,7 +120,7 @@ fn full_svd_relative_error(m: usize) -> f64 {
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     // A = U diag(s) V^H, with U column-major m x m and V^H column-major 3 x 3.
@@ -141,7 +142,7 @@ fn qr_relative_error(m: usize) -> f64 {
         tall(&a, m, &mut dims, &mut strides),
         &mut q,
         &mut r,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     let mut reconstructed = vec![0.0_f64; 3 * m];
@@ -163,7 +164,7 @@ fn rank_revealing_qr_relative_error(m: usize) -> f64 {
         &mut q,
         &mut r,
         &mut permutation,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     // A P = Q R, with the permutation applied to the columns of A.
@@ -254,7 +255,7 @@ fn wide_qr_reconstructs_the_transpose() {
         RawStridedRef::new(&transposed, &[3, m], &[1, 3], 0).unwrap(),
         &mut q,
         &mut r,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     // `Q` is 3 x 3 and `R` is 3 x m, both column-major: `rec[i + 3 * j] = sum_k Q(i,k) R(k,j)`.

@@ -16,8 +16,9 @@ use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef};
 use crate::scalar::ScalarEntity;
-use crate::util::checked_product;
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// Lane scratch for `n x n` Hermitian eigendecompositions. The eigenvectors are written straight
 /// into the caller's output, so only the eigenvalues and faer's workspace live here.
@@ -82,13 +83,14 @@ fn decompose<E: faer::traits::ComplexField>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{eigh::eigh_values, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{eigh::eigh_values, Op};
 ///
 /// let a = [2.0_f64, 0.0, 0.0, 1.0];
 /// let mut w = Vec::new();
 /// eigh_values(
 ///     Op::EighValues, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w, [1.0, 2.0]);
 /// ```
@@ -96,16 +98,17 @@ pub fn eigh_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Real>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(n),
+        exec,
+        item_muladds,
         &mut (out(values, n),),
         |par| EighScratch::<T::Entity>::new(n, ComputeEigenvectors::No, par),
         |index, (values,), scratch, par| {
@@ -137,13 +140,14 @@ pub fn eigh_values<T: FaerScalar>(
 ///
 /// ```
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{eigh::eigh, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{eigh::eigh, Op};
 ///
 /// let a = [2.0_f64, 0.0, 0.0, 1.0];
 /// let (mut w, mut v) = (Vec::new(), Vec::new());
 /// eigh(
 ///     Op::Eigh, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w, &mut v,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w, [1.0, 2.0]);
 /// assert_eq!(v.len(), 4);
@@ -153,18 +157,19 @@ pub fn eigh<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T>,
     vectors: &mut Vec<T>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     values.clear();
     vectors.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(n),
+        exec,
+        item_muladds,
         &mut (out(values, n), out(vectors, v_len)),
         |par| EighScratch::<T::Entity>::new(n, ComputeEigenvectors::Yes, par),
         |index, (values, vectors), scratch, par| {

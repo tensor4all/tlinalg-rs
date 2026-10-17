@@ -19,8 +19,9 @@ name = "tlinalg_capi"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-# The TAPP executor handle this ABI accepts, resolved to its pool and budget.
+# The TAPP executor handle this ABI accepts, resolved to its guarded `Exec`.
 tcontract-capi = { workspace = true }
+tcontract-exec = { workspace = true }
 num-complex = { workspace = true }
 strided-view = { workspace = true }
 tlinalg = { workspace = true }

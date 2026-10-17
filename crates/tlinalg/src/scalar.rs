@@ -32,6 +32,12 @@ pub trait ScalarEntity: crate::Scalar + Default + PartialEq {
     /// Machine epsilon of the real scalar, widened to `f64`.
     const EPSILON: f64;
 
+    /// Weight of one multiply-add in this scalar relative to a real one: 1 for the real scalars,
+    /// 4 for the complex ones (a complex multiply-add is four real ones). The work estimate every
+    /// family reports to the batch policy is scaled by this, so a complex batch is not mistaken
+    /// for a cheap real one.
+    const COMPLEX_WEIGHT: f64;
+
     /// Reinterpret a slice as the faer entity type.
     fn entity_slice(data: &[Self]) -> &[Self::Entity];
     /// Reinterpret a mutable slice as the faer entity type.
@@ -107,6 +113,8 @@ macro_rules! impl_real_scalar {
 
             const EPSILON: f64 = <$scalar>::EPSILON as f64;
 
+            const COMPLEX_WEIGHT: f64 = 1.0;
+
             fn entity_slice(data: &[Self]) -> &[Self::Entity] {
                 data
             }
@@ -177,6 +185,8 @@ macro_rules! impl_complex_scalar {
             type Complex = $scalar;
 
             const EPSILON: f64 = <$real>::EPSILON as f64;
+
+            const COMPLEX_WEIGHT: f64 = 4.0;
 
             fn entity_slice(data: &[Self]) -> &[Self::Entity] {
                 // SAFETY: the const assertions above pin size, alignment and field offsets, so both

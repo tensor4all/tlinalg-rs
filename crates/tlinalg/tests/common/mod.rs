@@ -24,17 +24,16 @@ impl<T: tlinalg_testkit::TestScalar + tlinalg::Scalar> TestScalar for T {}
 #[derive(Default)]
 pub struct CountingWorkspace;
 
-/// A three-worker pool and its explicit budget token.
-pub fn lanes_pool() -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
+/// A three-worker pool, owned by the returned [`tcontract_exec::Pool`] so a token can borrow it.
+pub fn lanes_pool() -> tcontract_exec::Pool<'static> {
+    let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(3)
         .build()
-        .unwrap()
+        .unwrap();
+    tcontract_exec::Pool::owned(pool)
 }
 
-pub fn pool_token(pool: &rayon::ThreadPool) -> tlinalg::Parallel<'_> {
-    tlinalg::Parallel::Pool {
-        pool,
-        budget: core::num::NonZeroUsize::new(3).unwrap(),
-    }
+/// A three-thread batch token on `pool`.
+pub fn pool_token<'a>(pool: &'a tcontract_exec::Pool<'a>) -> tcontract_exec::Exec<'a> {
+    tcontract_exec::Exec::rayon(pool).with_budget(3).unwrap()
 }

@@ -185,6 +185,19 @@ pub enum Error {
         /// What disagreed.
         detail: &'static str,
     },
+
+    /// The caller forced a batch route this operation has no implementation for.
+    ///
+    /// Resolved before any output is written. This provider has no vendor batched call, so a
+    /// forced `WholeBatchVendor` is always reported this way; a host maps it to its
+    /// "unsupported" kind.
+    #[error("{op}: batch strategy {strategy:?} is unavailable", op = .op.as_str())]
+    StrategyUnavailable {
+        /// Operation being executed.
+        op: Op,
+        /// The forced strategy the route cannot honor.
+        strategy: tcontract_exec::BatchStrategy,
+    },
 }
 
 /// Result type for this crate's operations.

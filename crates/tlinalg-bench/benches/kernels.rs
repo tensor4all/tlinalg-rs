@@ -19,7 +19,8 @@ use std::time::Duration;
 use criterion::measurement::WallTime;
 use criterion::{criterion_group, criterion_main, BenchmarkGroup, BenchmarkId, Criterion};
 use strided_view::RawStridedRef;
-use tlinalg::{Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::Op;
 #[cfg(feature = "link-openblas")]
 use tlinalg_bench::RecyclingWorkspace;
 use tlinalg_bench::{Batch, BenchScalar, Env};
@@ -59,11 +60,11 @@ fn rows(
     group: &mut BenchmarkGroup<'_, WallTime>,
     env: &Env,
     case: &str,
-    mut faer: impl FnMut(Parallel<'_>),
+    mut faer: impl FnMut(Exec<'_>),
     lapack: LapackRow<'_>,
 ) {
     group.bench_function(BenchmarkId::new("faer-1lane", case), |b| {
-        b.iter(|| faer(Parallel::Sequential))
+        b.iter(|| faer(Exec::serial()))
     });
     if env.threads() > 1 {
         group.bench_function(
@@ -155,7 +156,7 @@ fn packed_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usi
             &mut lu,
             &mut piv,
             &mut parity,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let lu_dims = [n, n, batch];

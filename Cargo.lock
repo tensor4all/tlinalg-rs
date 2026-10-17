@@ -1314,31 +1314,35 @@ dependencies = [
 
 [[package]]
 name = "strided-basic"
-version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be6bcd77df92dafe92bec863b100b0e8a80fe4a636f9851d896641b4700db64"
 dependencies = [
  "num-complex",
  "num-traits",
  "rayon",
- "smallvec",
  "strided-perm",
  "strided-view",
+ "tinyvec",
 ]
 
 [[package]]
 name = "strided-perm"
-version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "724fa2fe7e48f162f7cae5ed1b9beca17a2eefdc7ecadfe0354170f93922087c"
 dependencies = [
  "rayon",
  "strided-view",
  "thiserror 1.0.69",
+ "tinyvec",
 ]
 
 [[package]]
 name = "strided-traits"
-version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50459313ee40ab577f84e490320988dd47586776b2efb989668e4c9d0830bc4e"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1346,13 +1350,15 @@ dependencies = [
 
 [[package]]
 name = "strided-view"
-version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dc4c6d2efe67712642c648a4e0ff75f2c1db1b191e512520cec681f332f9d0d"
 dependencies = [
  "num-complex",
  "num-traits",
  "strided-traits",
  "thiserror 1.0.69",
+ "tinyvec",
 ]
 
 [[package]]
@@ -1459,22 +1465,24 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.2.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=9587c34c03861a88cefeac8c9112991951674a8b#9587c34c03861a88cefeac8c9112991951674a8b"
+version = "0.3.0"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df#3239c86de62262586854c9dc4fc18095b00916df"
 dependencies = [
  "faer",
  "num-complex",
+ "num-traits",
  "strided-basic",
  "strided-view",
  "tcontract-exec",
  "tcontract-kernel",
  "thiserror 1.0.69",
+ "tinyvec",
 ]
 
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=9587c34c03861a88cefeac8c9112991951674a8b#9587c34c03861a88cefeac8c9112991951674a8b"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df#3239c86de62262586854c9dc4fc18095b00916df"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1485,8 +1493,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.2.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=9587c34c03861a88cefeac8c9112991951674a8b#9587c34c03861a88cefeac8c9112991951674a8b"
+version = "0.3.0"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df#3239c86de62262586854c9dc4fc18095b00916df"
 dependencies = [
  "rayon",
  "strided-basic",
@@ -1495,8 +1503,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract-kernel"
-version = "0.2.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=9587c34c03861a88cefeac8c9112991951674a8b#9587c34c03861a88cefeac8c9112991951674a8b"
+version = "0.3.0"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df#3239c86de62262586854c9dc4fc18095b00916df"
 dependencies = [
  "num-complex",
 ]
@@ -1561,6 +1569,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "tlinalg"
 version = "0.2.0"
 dependencies = [
@@ -1568,6 +1582,7 @@ dependencies = [
  "rayon",
  "strided-view",
  "t4a-faer",
+ "tcontract-exec",
  "thiserror 2.0.21",
  "tlinalg-testkit",
 ]
@@ -1580,6 +1595,7 @@ dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
+ "tcontract-exec",
  "tlinalg",
  "tlinalg-blas",
  "tlinalg-testkit",
@@ -1607,6 +1623,7 @@ dependencies = [
  "num-complex",
  "strided-view",
  "tcontract-capi",
+ "tcontract-exec",
  "tlinalg",
  "tlinalg-testkit",
 ]
@@ -1618,6 +1635,7 @@ dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
+ "tcontract-exec",
  "tlinalg",
  "tlinalg-blas",
  "tlinalg-testkit",

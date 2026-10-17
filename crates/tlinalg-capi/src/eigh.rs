@@ -8,7 +8,8 @@
 use std::ffi::c_void;
 
 use num_complex::{Complex32, Complex64};
-use tlinalg::{eigh, FaerScalar, Op, Parallel};
+use tcontract_exec::Exec;
+use tlinalg::{eigh, FaerScalar, Op};
 
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
 use crate::executor::with_executor;
@@ -47,7 +48,7 @@ fn eigh_into_typed<T: FaerScalar>(
     values: *mut c_void,
     vectors: *mut c_void,
     sizes: &tlinalg_eigh_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut vv, mut ww) = (Vec::new(), Vec::new());
@@ -67,7 +68,7 @@ fn eigh_values_into_typed<T: FaerScalar>(
     data_len: usize,
     values: *mut c_void,
     sizes: &tlinalg_eigh_values_out,
-    parallel: Parallel<'_>,
+    parallel: Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut vv = Vec::new();

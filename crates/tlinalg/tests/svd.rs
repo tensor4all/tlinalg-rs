@@ -5,8 +5,9 @@
 
 use num_complex::{Complex32, Complex64};
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::svd::{svd, svd_values};
-use tlinalg::{Op, Parallel};
+use tlinalg::Op;
 
 /// Column-major `m x n` matrix with well-separated singular values.
 fn matrix(m: usize, n: usize) -> Vec<f64> {
@@ -54,7 +55,7 @@ fn check_svd(m: usize, n: usize, full: bool) {
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -102,7 +103,7 @@ fn values_only_agrees_with_the_full_decomposition() {
         &mut Vec::new(),
         &mut full,
         &mut Vec::new(),
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     let mut only = Vec::new();
@@ -110,7 +111,7 @@ fn values_only_agrees_with_the_full_decomposition() {
         Op::SvdValues,
         RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
         &mut only,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     for (got, want) in only.iter().zip(full.iter()) {
@@ -139,7 +140,7 @@ fn complex_and_f32_reconstruct() {
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     // `s` is carried in the complex scalar type with a zero imaginary part.
@@ -180,7 +181,7 @@ fn complex_and_f32_reconstruct() {
         &mut u32,
         &mut s32,
         &mut vt32,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
 
@@ -195,7 +196,7 @@ fn complex_and_f32_reconstruct() {
         &mut ur,
         &mut sr,
         &mut vtr,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert!(sr[0] > 0.0);
@@ -217,7 +218,7 @@ fn outputs_are_cleared_before_being_filled() {
         &mut u,
         &mut s,
         &mut vt,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!(u.len(), m * k);
@@ -242,7 +243,7 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
             &mut u,
             &mut s,
             &mut vt,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
         let mut values = Vec::new();
@@ -250,7 +251,7 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
             Op::SvdValues,
             RawStridedRef::new(&a, &[n, n], &[1, n as isize], 0).unwrap(),
             &mut values,
-            Parallel::Sequential,
+            Exec::serial(),
         )
         .unwrap();
 

@@ -23,8 +23,9 @@ use strided_view::RawStridedRef;
 
 use crate::batch::{self, out, BatchedRef, Push};
 use crate::scalar::{EigScalar, ScalarEntity};
-use crate::util::checked_product;
-use crate::{Error, FaerScalar, Op, Parallel, Result};
+use crate::util::{checked_product, weighted_muladds};
+use crate::{Error, FaerScalar, Op, Result};
+use tcontract_exec::Exec;
 
 /// Eigenvalues and eigenvectors of every `n x n` matrix of a batch, `A V = V diag(w)`.
 ///
@@ -42,14 +43,15 @@ use crate::{Error, FaerScalar, Op, Parallel, Result};
 /// ```
 /// use num_complex::Complex64;
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{eig::eig, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{eig::eig, Op};
 ///
 /// // Rotation by 90 degrees: eigenvalues ±i.
 /// let a = [0.0_f64, 1.0, -1.0, 0.0];
 /// let (mut w, mut v) = (Vec::<Complex64>::new(), Vec::new());
 /// eig(
 ///     Op::Eig, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w, &mut v,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert!((w[0].im.abs() - 1.0).abs() < 1e-12 && (w[0].conj() - w[1]).norm() < 1e-12);
 /// ```
@@ -58,18 +60,19 @@ pub fn eig<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Complex>,
     vectors: &mut Vec<<T as ScalarEntity>::Complex>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     values.clear();
     vectors.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(n),
+        exec,
+        item_muladds,
         &mut (out(values, n), out(vectors, v_len)),
         |par| T::eig_scratch(n, true, par),
         |index, (values, vectors), scratch, par| {
@@ -97,13 +100,14 @@ pub fn eig<T: FaerScalar>(
 /// ```
 /// use num_complex::Complex64;
 /// use strided_view::RawStridedRef;
-/// use tlinalg::{eig::eig_values, Op, Parallel};
+/// use tcontract_exec::Exec;
+/// use tlinalg::{eig::eig_values, Op};
 ///
 /// let a = [2.0_f64, 0.0, 0.0, 3.0];
 /// let mut w = Vec::<Complex64>::new();
 /// eig_values(
 ///     Op::EigValues, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w,
-///     Parallel::Sequential,
+///     Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w.len(), 2);
 /// ```
@@ -111,16 +115,17 @@ pub fn eig_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Complex>,
-    par: Parallel<'_>,
+    exec: Exec<'_>,
 ) -> Result<()> {
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
     batch::run(
         op,
         input.batch(),
-        par,
-        Some(n),
+        exec,
+        item_muladds,
         &mut (out(values, n),),
         |par| T::eig_scratch(n, false, par),
         |index, (values,), scratch, par| {

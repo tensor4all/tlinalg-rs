@@ -3,10 +3,11 @@
 
 use num_complex::Complex64;
 use strided_view::RawStridedRef;
+use tcontract_exec::Exec;
 use tlinalg::eigh::eigh;
 use tlinalg::qr::{qr, rank_revealing_qr};
 use tlinalg::svd::svd;
-use tlinalg::{FaerScalar, Op, Parallel};
+use tlinalg::{FaerScalar, Op};
 
 fn input<T: FaerScalar>(m: usize, n: usize, batch: usize, entry: fn(f64) -> T) -> Vec<T> {
     (0..m * n * batch)
@@ -44,7 +45,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [q, r] = o else { unreachable!() };
-                    qr(Op::Qr, view, q, r, Parallel::Sequential).unwrap();
+                    qr(Op::Qr, view, q, r, Exec::serial()).unwrap();
                 },
                 2,
             );
@@ -54,7 +55,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [u, s, vt] = o else { unreachable!() };
-                    svd(Op::Svd, view, false, u, s, vt, Parallel::Sequential).unwrap();
+                    svd(Op::Svd, view, false, u, s, vt, Exec::serial()).unwrap();
                 },
                 3,
             );
@@ -64,7 +65,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [u, s, vt] = o else { unreachable!() };
-                    svd(Op::Svd, view, true, u, s, vt, Parallel::Sequential).unwrap();
+                    svd(Op::Svd, view, true, u, s, vt, Exec::serial()).unwrap();
                 },
                 3,
             );
@@ -79,7 +80,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [w, v] = o else { unreachable!() };
-                    eigh(Op::Eigh, view, w, v, Parallel::Sequential).unwrap();
+                    eigh(Op::Eigh, view, w, v, Exec::serial()).unwrap();
                 },
                 2,
             );
@@ -110,7 +111,7 @@ fn rank_revealing_outputs_do_not_depend_on_prior_contents() {
         &mut q,
         &mut r,
         &mut p,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     let (mut q2, mut r2, mut p2) = (vec![f64::NAN; 99], vec![f64::NAN; 99], vec![-1i64; 99]);
@@ -120,7 +121,7 @@ fn rank_revealing_outputs_do_not_depend_on_prior_contents() {
         &mut q2,
         &mut r2,
         &mut p2,
-        Parallel::Sequential,
+        Exec::serial(),
     )
     .unwrap();
     assert_eq!((q, r, p), (q2, r2, p2));

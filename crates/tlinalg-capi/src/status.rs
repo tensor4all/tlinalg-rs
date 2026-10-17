@@ -94,6 +94,9 @@ pub(crate) fn map_error(e: tlinalg::Error) -> FfiError {
         tlinalg::Error::InvalidArgument { .. } => TLINALG_ERR_INVALID_ARGUMENT,
         tlinalg::Error::Inconsistent { .. } => TLINALG_ERR_SHAPE,
         tlinalg::Error::InvalidWorkspace { .. } => TLINALG_ERR_INTERNAL,
+        // A forced batch strategy this route cannot honor is a well-formed request the
+        // implementation declines, the same kind as a reserved dtype tag.
+        tlinalg::Error::StrategyUnavailable { .. } => TLINALG_ERR_UNSUPPORTED,
         // `tlinalg::Error` is `#[non_exhaustive]`; a new variant is internal until mapped.
         _ => TLINALG_ERR_INTERNAL,
     };
@@ -182,12 +185,13 @@ pub extern "C" fn tlinalg_last_error() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tcontract_exec::BatchStrategy;
     use tlinalg::{Error, NonFiniteRole, Op};
 
     /// The mapping table is the contract: every provider variant has exactly one C status.
     #[test]
     fn the_error_table_maps_every_typed_variant() {
-        let cases: [(Error, tlinalg_status); 6] = [
+        let cases: [(Error, tlinalg_status); 7] = [
             (Error::Singular { op: Op::Cholesky }, TLINALG_ERR_SINGULAR),
             (
                 Error::NonConvergence { op: Op::Svd },
@@ -223,6 +227,13 @@ mod tests {
                     detail: "detail".into(),
                 },
                 TLINALG_ERR_INTERNAL,
+            ),
+            (
+                Error::StrategyUnavailable {
+                    op: Op::Qr,
+                    strategy: BatchStrategy::WholeBatchVendor,
+                },
+                TLINALG_ERR_UNSUPPORTED,
             ),
         ];
         for (error, want) in cases {
