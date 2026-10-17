@@ -237,6 +237,7 @@ pub fn compact_factor<T: FaerScalar>(
         op,
         batch,
         exec,
+        Some(rows.max(cols)),
         item_muladds,
         &mut (
             in_place(data, matrix_len, "matrix"),
@@ -334,6 +335,7 @@ pub fn apply_reflectors<T: FaerScalar>(
         op,
         batch,
         exec,
+        Some(batch::auto_extent(rows.max(a_cols), cols)),
         item_muladds,
         &mut (in_place(c, c_len, "C"),),
         |_| {

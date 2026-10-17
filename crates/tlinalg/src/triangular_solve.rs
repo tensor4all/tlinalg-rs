@@ -179,6 +179,7 @@ pub fn triangular_solve<T: FaerScalar>(
         op,
         a.batch(),
         exec,
+        Some(batch::auto_extent(n, b_rows.max(b_cols))),
         item_muladds,
         &mut (out(x, item_len),),
         |_| (),

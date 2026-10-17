@@ -194,6 +194,7 @@ pub fn factor<T: FaerScalar>(
         op,
         batch,
         exec,
+        None,
         item_muladds,
         &mut (
             in_place(lu, matrix_len, "packed LU"),
@@ -432,6 +433,7 @@ pub fn solve_prepared<T: FaerScalar>(
         op,
         batch,
         exec,
+        None,
         item_muladds,
         &mut (in_place(output, rhs_len, "rhs batch"),),
         |_| (),
@@ -511,6 +513,7 @@ pub fn factor_solve<T: FaerScalar>(
         op,
         batch,
         exec,
+        None,
         item_muladds,
         &mut (
             in_place(packed_lu, matrix_len, "packed LU"),

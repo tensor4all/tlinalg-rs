@@ -1,11 +1,12 @@
 # Borrowed workspace contract for the faer lane (design, 0.3)
 
-Status: **contracted, not implemented** in this change. `tlinalg-rs#57`/`#58` require every family
-to grow a `*_workspace(...) -> WorkspaceReq` query and a `*_into(..., &mut Workspace)` entry whose
-live scratch comes from caller-owned storage. The independent pre-review flagged that the
-borrowing contract must be defined *before* that implementation (alignment, disjoint lane regions,
-execution-dependent sizing, insufficient-space behaviour); this note is that definition. The
-existing `Vec`-output wrappers stay as they are until it lands.
+Status: **contracted, ships additively in 0.3.x**. `tlinalg-rs#57`/`#58` require every family to
+grow a `*_workspace(...) -> WorkspaceReq` query and a `*_into(..., &mut Workspace)` entry whose
+live scratch comes from caller-owned storage. #57 classifies these additions as non-breaking, so
+they land after 0.3.0 without a major bump and #57 stays open. The independent pre-review flagged
+that the borrowing contract must be defined *before* that implementation (alignment, disjoint lane
+regions, execution-dependent sizing, insufficient-space behaviour); this note is that definition.
+The existing `Vec`-output wrappers stay as they are until it lands.
 
 ## The requirement
 

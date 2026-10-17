@@ -112,8 +112,9 @@ to three rows:
 * `faer-1lane` — one sequential lane: per-item cost plus the batch loop, no threading.
 * `faer-{N}t` — an explicit `N`-worker pool and requested budget (`TLINALG_BENCH_THREADS`,
   default the available parallelism); tlinalg's `Auto` route chooses outer lanes or faer's intra-item count hint.
-  `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route. Use
-  `TLINALG_BENCH_THREADS=1` for overhead baselines.
+  `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route, and
+  `TLINALG_AUTO_RHS=exclude` drops the RHS/reflector extent from the temporary `Auto` measure.
+  Use `TLINALG_BENCH_THREADS=1` for overhead baselines.
   **The faer hint is not a hard active-thread limit**; see the `tcontract_exec::Exec` contract.
 * `lapack` — `tlinalg-blas` (with `--features link-openblas`): a serial batch loop, vendor-owned
   threading.

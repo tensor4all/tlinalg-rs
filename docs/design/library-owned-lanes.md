@@ -14,29 +14,38 @@ allocation-free API needs, and the shared `BatchPolicy`. `tlinalg::Parallel`, `L
 `WholeBatchVendor` — which this provider has no route for — is refused with the typed
 `Error::StrategyUnavailable` before any output is written (including the empty packed routes).
 
-## Scheduling change, explicitly
+## Auto unchanged in 0.3.0
 
-0.2 chose lanes from a **dimension cutoff**: fan out when `max(rows, cols) <= 64` (with RHS columns
-counted) and the batch fills every worker; otherwise one lane with the whole budget passed to faer.
-0.3 asks `Exec::batch_decision` with each family's `item_muladds` and the shared `WorkModel`
-(tenferro's restored `CpuBatchThresholds`), so the decision follows estimated work, not a
-per-item extent. With the step-1 default model (`min_work_per_lane_ns = 0`) this means:
+0.2 chose lanes from a **dimension cutoff**: fan out when `max(rows, cols) <= 64` (with RHS
+columns counted) and the batch fills every worker; otherwise one lane with the whole budget passed
+to faer. 0.3.0 **keeps that decision**. tlinalg-rs#58 "Defaults" and tcontract-rs#123 "Defaults
+need numbers" step 1 are explicit: step 1 ships "a temporary `Auto` that still applies the 64
+cutoff, RHS excluded or included behind one switch so both can be measured"; the switch to the
+shared work model happens in #123 step 3 with the sweep as evidence. The issue's acceptance rule
+is not overridden by a review finding.
 
-* a small item fans out to `min(budget, items)` lanes where the 64 cutoff would fan out too;
-* an item **above** the old 64 cutoff now also fans out, because its extent no longer disables
-  lanes (the case tlinalg-rs#58 was filed for: a 16x16 solve with many RHS columns);
-* a single large item keeps one lane with the whole budget, as before.
+* `Auto` is the pre-0.3 rule (`batch::legacy_auto`): on a context with more than one worker, fan
+  out to `min(budget, items)` outer lanes only while the batch fills the budget and the largest item
+  extent is at most 64; packed LU keeps its no-cutoff exception (`None`). Otherwise one lane runs
+  the batch, passing the whole budget to faer.
+* The RHS/reflector target extent is counted by default, matching 0.2. `TLINALG_AUTO_RHS=exclude`
+  in the environment measures the RHS-excluded variant; the knob and the cutoff are removed when
+  step 3 adopts the shared model.
+* The partition is now **exact** (`[l*batch/lanes, (l+1)*batch/lanes)`), so `Auto` keeps the decided
+  lane count; 0.2's `div_ceil` split could drop one (five items and four lanes gave three).
 
-This is the change the independent pre-review asked to make explicit and pin. The pinned cases
-live in `crates/tlinalg/src/batch/tests/scheduling.rs` (`driver_bounds_...`,
-`solve_and_reflector_extents_enter_the_work_estimate`, `packed_routes_use_their_own_work_estimate`).
-The shared defaults are still provisional: tenferro#2000's work-model sweep is the umbrella's later
-step, and `WorkModel` is configurable on the `Exec` meanwhile.
+Forced strategies are the 0.3 addition: they go through `Exec::batch_decision` on the original host
+budget (never falling back), and `WholeBatchVendor` is refused with the typed
+`Error::StrategyUnavailable` before any write. The `(lanes, item_threads)` cases are pinned in
+`crates/tlinalg/src/batch/tests/scheduling.rs`, including RHS/reflector extents and the packed
+routes.
 
 ## Per-family work estimates
 
-`batch::run` is fed one item's multiply-adds, so the RHS/reflector extents enter the decision as
-work instead of as a size. The estimates distinguish the actual route:
+`batch::run` is fed one item's multiply-adds. Step-1 `Auto` does not read it (it uses the legacy
+cutoff); the estimates are reported for the forced routes and the step-3 shared-model `Auto`, so
+the RHS/reflector extents are already expressed as work rather than as a size. The estimates
+distinguish the actual route:
 
 | route | `item_muladds` |
 |---|---|
@@ -84,9 +93,10 @@ belongs to the resource owner. Vendor BLAS/LAPACK threading stays vendor-owned.
 ## Scope and integration
 
 The borrowed-workspace `*_workspace`/`*_into` API (`tlinalg-rs#57`) is contracted in
-[borrowed-workspace.md](borrowed-workspace.md) but not implemented in this change; the `Vec`
-wrappers remain. When it lands, the `Workspace` is a component-wise checked per-lane region and an
-insufficient workspace is a typed refusal before any write.
+[borrowed-workspace.md](borrowed-workspace.md); it ships additively in 0.3.x after 0.3.0 (#57
+classifies the additions as non-breaking, so #57 stays open) and the `Vec` wrappers remain for now.
+When it lands, the `Workspace` is a component-wise checked per-lane region and an insufficient
+workspace is a typed refusal before any write.
 
 Every native entry point, executable doc, native test, parity call and benchmark moves to `Exec`;
 `tlinalg-bench` reads `TLINALG_BENCH_STRATEGY` for the forced-route sweep. The C API migrates its
@@ -101,7 +111,8 @@ baselines. No speedup or completed integrated-tenferro performance claim is made
 
 ## Acceptance
 
-* Native calls compile with only `Exec`; no public `Parallel`, `LanePlan` or cutoff remains.
+* Native calls compile with only `Exec`; no public `Parallel` or `LanePlan` remains, and `Auto`
+  keeps the documented step-1 64 cutoff until #123 step 3.
 * Driver tests pin the new `(lanes, item_threads)` cases (including RHS/reflector extents and the
   packed routes), the exact nonempty partition, forced strategies, and the `WholeBatchVendor`
   refusal on empty batches. Do not mistake observing a faer count for proving its active-thread

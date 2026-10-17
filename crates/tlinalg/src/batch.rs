@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use faer::{MatMut, MatRef};
 use strided_view::{RawStridedMut, RawStridedRef};
-use tcontract_exec::batch::BatchQuery;
+use tcontract_exec::batch::{BatchQuery, BatchStrategy};
 use tcontract_exec::{Exec, ExecError};
 
 use crate::scalar::ScalarEntity;
@@ -705,16 +705,75 @@ impl_outputs_tuple!(A 0, B 1, C 2);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3, E 4);
 
-/// The batch route the shared work model decided for this call: `(lanes, item_threads)`.
+/// The pre-0.3 Auto cutoff: ordinary families fan out on a pool only while the largest item
+/// extent is at most this. Packed LU keeps its no-cutoff exception (`None`).
 ///
-/// Auto is `tcontract_exec::batch::batch_decision` on the context's budget and policy, fed the
-/// family's `item_muladds`. This replaces the pre-0.3 `AUTO_FAN_OUT_MAX_ITEM_DIM` dimension cutoff
-/// with the shared work estimate (tlinalg-rs#58): lanes now follow the estimated work and the
-/// context's `WidthPolicy`, not a per-item extent. The default [`WorkModel`] still has no
-/// `min_work_per_lane_ns`, so a small item fans out over the batch where the cutoff would have
-/// kept one lane, and a large item keeps one lane with item threads; the tuned shared defaults
-/// land with the umbrella's later step.
-fn decide(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f64) -> Result<(usize, usize)> {
+/// tlinalg-rs#58 / tcontract-rs#123 step 1 keep this local Auto in 0.3.0; the switch to the shared
+/// work model (with the sweep as evidence) lands in step 3.
+const AUTO_FAN_OUT_MAX_ITEM_DIM: usize = 64;
+
+/// The legacy Auto item measure: `order`, or `order.max(rhs)` when the RHS/reflector target extent
+/// is counted.
+///
+/// This is the temporary step-1 switch of tlinalg-rs#58 "Defaults". The default includes the RHS
+/// extent, matching 0.2; set `TLINALG_AUTO_RHS=exclude` in the environment to measure the
+/// RHS-excluded variant. The knob and the cutoff are removed when #123 step 3 adopts the shared
+/// work model.
+pub(crate) fn auto_extent_with(order: usize, rhs: usize, include_rhs: bool) -> usize {
+    if include_rhs {
+        order.max(rhs)
+    } else {
+        order
+    }
+}
+
+/// [`auto_extent_with`] with the process's `TLINALG_AUTO_RHS` switch (default include).
+pub(crate) fn auto_extent(order: usize, rhs: usize) -> usize {
+    static INCLUDES_RHS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let include = *INCLUDES_RHS.get_or_init(|| {
+        !matches!(
+            std::env::var("TLINALG_AUTO_RHS").ok().as_deref(),
+            Some("exclude")
+        )
+    });
+    auto_extent_with(order, rhs, include)
+}
+
+/// The step-1 Auto decision: the 0.2 `LanePlan` rule on the context's budget.
+///
+/// On a pool with more than one worker, fan out to `min(budget, batch)` outer lanes only when the
+/// batch fills the budget and `max_item_dim <= AUTO_FAN_OUT_MAX_ITEM_DIM`. `None` is the packed
+/// exception (never cut off). Otherwise one lane runs the batch, passing the whole budget to faer
+/// as an intra-item count. The partition is exact (see [`run`]); 0.2's `div_ceil` split could drop
+/// a lane, which this keeps fixed.
+fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usize, usize) {
+    let budget = budget.max(1);
+    let fans_out = budget > 1
+        && batch >= budget
+        && max_item_dim.is_none_or(|dim| dim <= AUTO_FAN_OUT_MAX_ITEM_DIM);
+    if fans_out {
+        (budget.min(batch), 1)
+    } else {
+        (1, budget)
+    }
+}
+
+/// The batch route for this call: `(lanes, item_threads)`.
+///
+/// `Auto` is [`legacy_auto`], the pre-0.3 local cutoff (tlinalg-rs#58 "Defaults", step 1). Every
+/// forced strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget;
+/// `item_muladds` is the family's work estimate, reported for the forced routes and the future
+/// shared-model `Auto`. `max_item_dim` is the legacy Auto measure.
+fn decide(
+    op: Op,
+    exec: Exec<'_>,
+    batch: usize,
+    max_item_dim: Option<usize>,
+    item_muladds: f64,
+) -> Result<(usize, usize)> {
+    if matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+        return Ok(legacy_auto(batch, exec.budget(), max_item_dim));
+    }
     let query = BatchQuery::new(batch, item_muladds);
     match exec.batch_decision(&query) {
         Ok(decision) => Ok((decision.lanes, decision.item_threads)),
@@ -738,7 +797,7 @@ fn strategy_error(op: Op, error: ExecError) -> Error {
 /// zero-length route still refuses a forced strategy this route cannot honor. The refusal precedes
 /// any write.
 pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f64) -> Result<()> {
-    decide(op, exec, batch, item_muladds).map(|_| ())
+    decide(op, exec, batch, None, item_muladds).map(|_| ())
 }
 
 /// Run the batch on one caller-owned resource.
@@ -747,6 +806,9 @@ pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f6
 /// with `item_threads` (one lane may run items on the caller with a faer count hint; several lanes
 /// run concurrently on the context's pool). Forced strategies are resolved before any write; a
 /// `WholeBatchVendor` request on this route is refused with [`Error::StrategyUnavailable`].
+///
+/// `max_item_dim` is the legacy Auto measure (see [`decide`]); `item_muladds` is the family's work
+/// estimate, used by the forced strategies and the future shared-model Auto.
 ///
 /// `make_scratch` builds one lane's scratch, reused for every item of that lane. It is called with
 /// the item width the decision granted, so scratch sized per thread matches the width the items
@@ -761,10 +823,12 @@ pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f6
 /// `item_threads` is the faer count requested on the pool, not a strict active-thread bound: faer
 /// can expose more intra-item tasks than requested (see [`tcontract_exec::Exec`]'s contract).
 /// Admission across simultaneous calls is the resource owner's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run<O, S, MK, F>(
     op: Op,
     batch: usize,
     exec: Exec<'_>,
+    max_item_dim: Option<usize>,
     item_muladds: f64,
     outputs: &mut O,
     make_scratch: MK,
@@ -778,7 +842,7 @@ where
     outputs.prepare(op, batch)?;
     // Resolve availability before the empty-batch exit, so a forced `WholeBatchVendor` is refused
     // even when there is nothing to write.
-    let (lanes, item_threads) = decide(op, exec, batch, item_muladds)?;
+    let (lanes, item_threads) = decide(op, exec, batch, max_item_dim, item_muladds)?;
     if batch == 0 {
         return Ok(());
     }

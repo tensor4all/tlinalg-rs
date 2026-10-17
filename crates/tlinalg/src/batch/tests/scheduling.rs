@@ -1,13 +1,14 @@
-//! Batch-lane scheduling: the shared work model, the exact partition, and forced strategies.
+//! Batch-lane scheduling: the temporary step-1 Auto rule, the exact partition, and forced
+//! strategies.
 //!
-//! The pre-0.3 driver chose lanes from `AUTO_FAN_OUT_MAX_ITEM_DIM` (a 64 item-extent cutoff) and
-//! split with `div_ceil`, which could return fewer lanes than requested. 0.3 asks
-//! `tcontract_exec::Exec::batch_decision` and partitions into exactly the decided number of
-//! nonempty ranges (tlinalg-rs#58). These tests pin the new `(lanes, item_threads)` cases,
-//! including the solve/reflector extents and the packed routes, so the scheduling change is
-//! explicit rather than implicit (tlinalg-rs#57/#58).
+//! tlinalg-rs#58 "Defaults" and tcontract-rs#123 step 1 keep tlinalg's pre-0.3 `Auto` in 0.3.0: fan
+//! out to outer lanes only while the largest item extent is at most 64 (packed LU excepted), RHS
+//! columns counted by default behind the `TLINALG_AUTO_RHS` switch. The switch to the shared work
+//! model lands in #123 step 3 with the sweep as evidence. These tests pin the step-1 decisions on a
+//! table of `(items, n, k, budget)`, including RHS-heavy solves and reflector targets, and pin the
+//! exact nonempty partition, the forced routes and the typed vendor refusal.
 
-use crate::batch::{check_route, out, run};
+use crate::batch::{auto_extent_with, check_route, out, run};
 use crate::Op;
 use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::cell::Cell;
@@ -38,27 +39,43 @@ fn token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
     Exec::rayon(pool).with_budget(budget).unwrap()
 }
 
+/// The step-1 Auto decision, written out independently of the driver.
+fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usize, usize) {
+    let budget = budget.max(1);
+    let fans_out = budget > 1 && batch >= budget && max_item_dim.is_none_or(|dim| dim <= 64);
+    if fans_out {
+        (budget.min(batch), 1)
+    } else {
+        (1, budget)
+    }
+}
+
 #[test]
 fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
     let pool = owned_pool(8);
-    // (batch, budget, item_muladds, lanes, item_threads). Auto now follows the shared work model:
-    // a small item fans out to `min(budget, items)` lanes with item threads one, and a single
-    // large item keeps one lane with the whole budget. `(5, 4)` is the partition fix: it is exactly
-    // four nonempty ranges, where the old `div_ceil` split produced three.
-    for (batch, budget, item_muladds, lanes, hint) in [
-        (0usize, 4usize, 1.0, 0usize, 1usize),
-        (1, 4, 1.0, 1, 1),
-        (12, 1, 1.0, 1, 1),
-        (12, 2, 1.0, 2, 1),
-        (12, 3, 1.0, 3, 1),
-        (12, 4, 1.0, 4, 1),
-        (16, 99, 1.0, 8, 1),
-        (3, 4, 1.0, 3, 1),
-        (5, 4, 1.0, 4, 1),
-        (8, 4, 1.0, 4, 1),
-        (1, 4, 1e9, 1, 4),
-        (8, 4, 1e9, 4, 1),
+    // (batch, budget, max_item_dim, lanes, item_threads). `dim` is the legacy extent the family
+    // reports (`None` is packed LU's exception); `(5, 4)` is the exact-partition fix, four nonempty
+    // ranges where the old `div_ceil` split produced three.
+    for (batch, budget, dim, lanes, hint) in [
+        (0usize, 4usize, Some(1usize), 0usize, 0usize),
+        (1, 4, Some(1), 1, 4),
+        (3, 4, Some(1), 1, 4),
+        (12, 1, Some(1), 1, 1),
+        (12, 2, Some(1), 2, 1),
+        (12, 3, Some(1), 3, 1),
+        (12, 4, Some(1), 4, 1),
+        (16, 99, Some(1), 8, 1),
+        (5, 4, Some(1), 4, 1),
+        (8, 4, Some(64), 4, 1),
+        (8, 4, Some(65), 1, 4),
+        (8, 4, None, 4, 1),
     ] {
+        let (want_lanes, _) = if batch == 0 {
+            (0, 0)
+        } else {
+            legacy_auto(batch, budget.min(8), dim)
+        };
+        assert_eq!(lanes, want_lanes, "table row {batch}/{budget}/{dim:?}");
         let mut values = vec![99];
         let scratch = AtomicUsize::new(0);
         let active = AtomicUsize::new(0);
@@ -70,7 +87,8 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
             Op::Svd,
             batch,
             token(&pool, budget),
-            item_muladds,
+            dim,
+            1.0,
             &mut (out(&mut values, 1),),
             |par| {
                 scratch.fetch_add(1, SeqCst);
@@ -101,7 +119,7 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
         assert_eq!(
             LAST_LANES.get(),
             lanes,
-            "batch={batch}, budget={budget}, item_muladds={item_muladds}"
+            "batch={batch}, budget={budget}, dim={dim:?}"
         );
         assert_eq!(scratch.load(SeqCst), lanes);
         assert_eq!(values, (0..batch).collect::<Vec<_>>());
@@ -110,6 +128,16 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
         // This probes driver callback concurrency, not faer's internal numerical concurrency.
         assert!(peak.load(SeqCst) <= budget.min(8));
     }
+}
+
+#[test]
+fn auto_extent_switch_counts_rhs_by_default() {
+    // Default (include): the RHS/reflector extent wins when it is larger.
+    assert_eq!(auto_extent_with(2, 65, true), 65);
+    assert_eq!(auto_extent_with(16, 1, true), 16);
+    // Exclude: the matrix order alone decides.
+    assert_eq!(auto_extent_with(2, 65, false), 2);
+    assert_eq!(auto_extent_with(16, 1, false), 16);
 }
 
 #[test]
@@ -146,6 +174,7 @@ fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
             Op::Qr,
             8,
             token(&selected, 2),
+            Some(1),
             1.0,
             &mut (out(&mut values, 1),),
             |_| (),
@@ -192,6 +221,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             Op::Svd,
             8,
             exec,
+            Some(1),
             1.0,
             &mut (out(&mut values, 1),),
             |par| {
@@ -231,6 +261,7 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
             Op::Qr,
             0,
             exec,
+            Some(1),
             1.0,
             &mut (out(&mut Vec::<f64>::new(), 1),),
             |_| (),
@@ -240,25 +271,21 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
     ));
 }
 
-/// The work estimate a family reports is the input to `Auto`, so the RHS extent of a solve and the
-/// target extent of a reflector application move the lane count once the model has a work gate.
-/// This is what "work, not a dimension cutoff" means for the routes the old cutoff mishandled.
+/// The legacy Auto measure counts the RHS/reflector target extent by default, exactly as 0.2 did:
+/// a 65-column solve or reflector application stays on one lane where the 64-column case fans out.
 #[test]
-fn solve_and_reflector_extents_enter_the_work_estimate() {
+fn auto_counts_rhs_and_reflector_extents() {
     use crate::householder::{apply_reflectors, ReflectorShape};
     use crate::triangular_solve::{triangular_solve, TriangularSolveFlags};
     let pool = owned_pool(4);
-    let model = WorkModel::default().with_min_work_per_lane_ns(10.0);
-    let policy = BatchPolicy::new(BatchStrategy::Auto).with_model(model);
-    let exec = |budget: usize| token(&pool, budget).with_batch_policy(policy);
+    let exec = token(&pool, 2);
 
     let n = 2;
     let batch = 4;
     let a = [1.0_f64, 0.0, 0.0, 1.0];
     let adims = [n, n, batch];
     let astrides = [1, n as isize, 0];
-    // A solve with more RHS columns is more work, so the work gate grants it more lanes.
-    for (width, lanes) in [(1usize, 1usize), (1000, 2)] {
+    for (width, lanes) in [(64usize, 2usize), (65, 1)] {
         let dims = [n, width, batch];
         let strides = [1, n as isize, (n * width) as isize];
         let mut x = vec![1.0; n * width * batch];
@@ -268,14 +295,42 @@ fn solve_and_reflector_extents_enter_the_work_estimate() {
             None,
             RawStridedMut::new(&mut x, &dims, &strides, 0).unwrap(),
             false,
-            exec(2),
+            exec,
         )
         .unwrap();
         assert_eq!(LAST_LANES.get(), lanes, "solve width={width}");
     }
-    // A reflector application with a wider target is more work too.
-    for (a_cols, cols, lanes) in [(1usize, 1usize, 1usize), (1, 1000, 2)] {
-        let rows = 2;
+    // The triangular solve reports the larger of the two RHS extents.
+    let flags = TriangularSolveFlags {
+        left_side: true,
+        lower: true,
+        transpose_a: false,
+        unit_diagonal: false,
+    };
+    for (width, lanes) in [(64usize, 2usize), (65, 1)] {
+        let dims = [n, width, batch];
+        let strides = [1, n as isize, (n * width) as isize];
+        let b = vec![3.0; n * width * batch];
+        let mut x = Vec::new();
+        triangular_solve(
+            Op::TriangularSolve,
+            RawStridedRef::new(&a, &adims, &astrides, 0).unwrap(),
+            RawStridedRef::new(&b, &dims, &strides, 0).unwrap(),
+            flags,
+            &mut x,
+            exec,
+        )
+        .unwrap();
+        assert_eq!(LAST_LANES.get(), lanes, "triangular width={width}");
+    }
+    // A reflector application counts both the compact state extent and the target columns.
+    let rows = 2;
+    for (a_cols, cols, lanes) in [
+        (64usize, 1usize, 2usize),
+        (65, 1, 1),
+        (1, 64, 2),
+        (1, 65, 1),
+    ] {
         let mut state = vec![0.0; rows * a_cols * batch];
         for item in state.chunks_exact_mut(rows * a_cols) {
             item[0] = 1.0;
@@ -294,44 +349,24 @@ fn solve_and_reflector_extents_enter_the_work_estimate() {
             &[2.0; 4],
             &mut c,
             false,
-            exec(2),
+            exec,
         )
         .unwrap();
-        assert_eq!(LAST_LANES.get(), lanes, "reflector cols={cols}");
-    }
-    // The triangular solve reports half the solved work and follows the same gate.
-    let flags = TriangularSolveFlags {
-        left_side: true,
-        lower: true,
-        transpose_a: false,
-        unit_diagonal: false,
-    };
-    for (width, lanes) in [(1usize, 1usize), (1000, 2)] {
-        let dims = [n, width, batch];
-        let strides = [1, n as isize, (n * width) as isize];
-        let mut x = Vec::new();
-        triangular_solve(
-            Op::TriangularSolve,
-            RawStridedRef::new(&a, &adims, &astrides, 0).unwrap(),
-            RawStridedRef::new(&vec![3.0; n * width * batch], &dims, &strides, 0).unwrap(),
-            flags,
-            &mut x,
-            exec(2),
-        )
-        .unwrap();
-        assert_eq!(LAST_LANES.get(), lanes, "triangular width={width}");
+        assert_eq!(
+            LAST_LANES.get(),
+            lanes,
+            "reflector a_cols={a_cols} cols={cols}"
+        );
     }
 }
 
-/// The packed routes keep their own work estimate (`n^3/3` factor, `n^2 k` prepared solve,
-/// factor + solve) instead of the old dimension exception.
+/// The packed routes keep their no-cutoff exception: `max_item_dim = None`, so a large item still
+/// fans out.
 #[test]
-fn packed_routes_use_their_own_work_estimate() {
+fn packed_routes_keep_the_no_cutoff_exception() {
     use crate::packed_lu::{factor, factor_solve, solve_prepared};
     let pool = owned_pool(4);
-    let policy = BatchPolicy::new(BatchStrategy::Auto)
-        .with_model(WorkModel::default().with_min_work_per_lane_ns(10.0));
-    let exec = token(&pool, 2).with_batch_policy(policy);
+    let exec = token(&pool, 2);
     let batch = 4;
     let n = 65;
     let mut lu = vec![0.0; n * n * batch];
@@ -371,5 +406,27 @@ fn packed_routes_use_their_own_work_estimate() {
         exec,
     )
     .unwrap();
+    assert_eq!(LAST_LANES.get(), 2);
+}
+
+/// The forced routes are evaluated against the original budget even though `WorkModel` exists.
+#[test]
+fn forced_strategies_ignore_the_auto_cutoff() {
+    let pool = owned_pool(4);
+    let policy = BatchPolicy::new(BatchStrategy::Outer)
+        .with_model(WorkModel::default().with_min_work_per_lane_ns(10.0));
+    let exec = token(&pool, 2).with_batch_policy(policy);
+    // n = 65 would take one lane under Auto; `Outer` still clamps to the budget.
+    let n = 65;
+    let batch = 4;
+    let mut lu = vec![0.0; n * n * batch];
+    for item in lu.chunks_exact_mut(n * n) {
+        for i in 0..n {
+            item[i + i * n] = 1.0;
+        }
+    }
+    let mut pivots = vec![0; n * batch];
+    let mut parity = vec![0.0; batch];
+    crate::packed_lu::factor(Op::LuFactor, n, n, &mut lu, &mut pivots, &mut parity, exec).unwrap();
     assert_eq!(LAST_LANES.get(), 2);
 }

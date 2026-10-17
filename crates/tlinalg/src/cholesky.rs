@@ -84,6 +84,7 @@ pub fn cholesky<T: FaerScalar>(
         op,
         input.batch(),
         exec,
+        Some(n),
         item_muladds,
         &mut (out(l, l_len),),
         |par| {

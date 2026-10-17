@@ -156,6 +156,7 @@ pub fn lu<T: FaerScalar>(
         op,
         input.batch(),
         exec,
+        Some(m.max(n)),
         item_muladds,
         &mut (out(p, p_len), out(l, l_len), out(u, u_len), out(parity, 1)),
         |par| LuScratch::<T::Entity>::new(m, n, par),
@@ -297,6 +298,7 @@ pub fn solve<T: FaerScalar>(
         op,
         a.batch(),
         exec,
+        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         &mut (),
         |par| {

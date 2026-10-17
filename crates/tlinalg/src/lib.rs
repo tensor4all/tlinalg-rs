@@ -14,10 +14,11 @@
 //!
 //! Every entry point is batched (`docs/design/batched-api.md` in the repository): an input is a
 //! rank-`2 + B` [`strided_view::RawStridedRef`] `[rows, cols, b_1, ..., b_B]`, outputs are compact
-//! column-major items in batch order (first batch axis fastest). The library asks the context for a
-//! batch route ([`tcontract_exec::Exec::batch_decision`]) from each family's work estimate; the
-//! context's [`BatchPolicy`](tcontract_exec::BatchPolicy) selects `Auto` or a forced strategy. A
-//! forced `WholeBatchVendor` is refused with [`Error::StrategyUnavailable`] before any write — this
+//! column-major items in batch order (first batch axis fastest). `Auto` keeps the pre-0.3 local
+//! decision in 0.3.0 (an item-extent cutoff); every forced strategy is decided by the context
+//! ([`tcontract_exec::Exec::batch_decision`], configured through
+//! [`BatchPolicy`](tcontract_exec::BatchPolicy)) on the original budget. A forced
+//! `WholeBatchVendor` is refused with [`Error::StrategyUnavailable`] before any write — this
 //! provider has no vendor batched call. A failing call returns the error of its lowest-indexed
 //! failing item and leaves every library-created output vector empty.
 //!

@@ -159,6 +159,7 @@ pub fn full_piv_lu<T: FaerScalar>(
         op,
         input.batch(),
         exec,
+        Some(n),
         item_muladds,
         &mut (
             out(p, len),
@@ -299,6 +300,7 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
         op,
         a.batch(),
         exec,
+        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         &mut (out(x, x_len),),
         |par| {
