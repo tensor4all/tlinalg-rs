@@ -197,7 +197,8 @@ fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
 }
 
 /// Forced strategies are clamped, never silently downgraded, and `item_threads` reaches both the
-/// scratch and the numerical execution inside each lane.
+/// scratch and the numerical execution inside each lane. Every grant is asserted directly, so an
+/// oversized grant cannot hide behind a minimum.
 #[test]
 fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
     let pool = owned_pool(8);
@@ -215,7 +216,8 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
     ] {
         let exec = token(&pool, 4).with_batch_policy(BatchPolicy::new(strategy));
         let mut values = Vec::new();
-        let observed = AtomicUsize::new(usize::MAX);
+        let scratch_builds = AtomicUsize::new(0);
+        let items = AtomicUsize::new(0);
         LAST_LANES.set(0);
         run(
             Op::Svd,
@@ -225,19 +227,87 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             1.0,
             &mut (out(&mut values, 1),),
             |par| {
-                observed.fetch_min(par.degree(), SeqCst);
+                assert_eq!(par.degree(), item_threads, "scratch {strategy:?}");
+                scratch_builds.fetch_add(1, SeqCst);
             },
             |index, (values,), (), par| {
-                observed.fetch_min(par.degree(), SeqCst);
+                assert_eq!(par.degree(), item_threads, "item {strategy:?}");
+                items.fetch_add(1, SeqCst);
                 values.push(index);
                 Ok(())
             },
         )
         .unwrap();
         assert_eq!(LAST_LANES.get(), lanes, "{strategy:?}");
-        // Every item ran at the decision's item width (faer's degree is the requested count).
-        assert_eq!(observed.load(SeqCst), item_threads, "{strategy:?}");
+        // Exactly one scratch per lane and every item visited once.
+        assert_eq!(scratch_builds.load(SeqCst), lanes, "{strategy:?}");
+        assert_eq!(items.load(SeqCst), 8, "{strategy:?}");
         assert_eq!(values, (0..8).collect::<Vec<_>>());
+    }
+}
+
+/// Forced policies run the **real** kernels: QR under `Outer`/`Inner`/`Split` reproduces every
+/// input matrix in the residual, so nested-lane scratch sizing and results are exercised, not just
+/// index-pushing closures. Item parallelism can change the arithmetic, so the check is a residual
+/// rather than bitwise equality.
+#[test]
+fn forced_kernels_match_sequential_in_the_residual() {
+    let n = 6;
+    let batch = 4;
+    let a: Vec<f64> = (0..n * n * batch)
+        .map(|i| {
+            let (row, col) = (i % n, (i / n) % n);
+            if row == col {
+                4.0 + row as f64
+            } else {
+                0.1 * (row + col) as f64
+            }
+        })
+        .collect();
+    let dims = [n, n, batch];
+    let strides = [1, n as isize, (n * n) as isize];
+    let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
+    let residual = |q: &[f64], r: &[f64]| -> f64 {
+        let mut worst = 0.0f64;
+        for item in 0..batch {
+            let start = item * n * n;
+            let (q, r, a) = (
+                &q[start..start + n * n],
+                &r[start..start + n * n],
+                &a[start..start + n * n],
+            );
+            for row in 0..n {
+                for col in 0..n {
+                    let mut acc = 0.0;
+                    for j in 0..n {
+                        acc += q[row + j * n] * r[j + col * n];
+                    }
+                    worst = worst.max((acc - a[row + col * n]).abs());
+                }
+            }
+        }
+        worst
+    };
+    let mut seq_q = Vec::new();
+    let mut seq_r = Vec::new();
+    crate::qr::qr(Op::Qr, view, &mut seq_q, &mut seq_r, Exec::serial()).unwrap();
+    assert!(residual(&seq_q, &seq_r) < 1e-12, "sequential baseline");
+    let pool = owned_pool(4);
+    for strategy in [
+        BatchStrategy::Outer,
+        BatchStrategy::Inner,
+        BatchStrategy::Split {
+            lanes: core::num::NonZeroUsize::new(2).unwrap(),
+        },
+    ] {
+        let exec = token(&pool, 2).with_batch_policy(BatchPolicy::new(strategy));
+        let (mut q, mut r) = (Vec::new(), Vec::new());
+        crate::qr::qr(Op::Qr, view, &mut q, &mut r, exec).unwrap();
+        assert!(
+            residual(&q, &r) < 1e-10,
+            "{strategy:?}: QR does not reproduce A"
+        );
+        assert_eq!(q.len(), seq_q.len(), "{strategy:?}");
     }
 }
 
@@ -409,6 +479,57 @@ fn packed_routes_keep_the_no_cutoff_exception() {
     assert_eq!(LAST_LANES.get(), 2);
 }
 
+/// The forced-route refusal must happen before `outputs.prepare`: a valid broadcast input with a
+/// batch too large to reserve must still return `StrategyUnavailable`, not panic on capacity
+/// overflow. (Reproducer for the post-review finding at `batch.rs` output reservation.)
+#[test]
+fn forced_vendor_refusal_precedes_output_reservation() {
+    let big = usize::MAX / 8;
+    let dims = [1usize, 1, big];
+    let strides = [1isize, 1, 0];
+    let data = [4.0_f64];
+    let view = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+    let exec = Exec::serial().with_batch_policy(BatchPolicy::new(BatchStrategy::WholeBatchVendor));
+    let mut l = Vec::new();
+    let err = crate::cholesky::cholesky(Op::Cholesky, view, &mut l, exec).unwrap_err();
+    assert!(matches!(
+        err,
+        crate::Error::StrategyUnavailable {
+            strategy: BatchStrategy::WholeBatchVendor,
+            ..
+        }
+    ));
+    assert!(l.is_empty());
+}
+
+/// Work estimates must cast before multiplying: `2^22` cubed overflows `usize` on a 64-bit debug
+/// build, but an empty batch must return before any numerical work. (Reproducer for the
+/// post-review finding in `svd.rs`.)
+#[test]
+fn work_estimates_do_not_overflow_before_the_empty_exit() {
+    let big = 1usize << 22;
+    let dims = [big, big, 0usize];
+    let strides = [1isize, 1, 1];
+    let empty: [f64; 0] = [];
+    let view = RawStridedRef::new(&empty, &dims, &strides, 0).unwrap();
+    let mut s = Vec::new();
+    crate::svd::svd_values(Op::SvdValues, view, &mut s, Exec::serial()).unwrap();
+    assert!(s.is_empty());
+    let mut state: [f64; 0] = [];
+    let mut coeff = Vec::new();
+    crate::householder::compact_factor(
+        Op::HouseholderQr,
+        big,
+        big,
+        0,
+        &mut state,
+        &mut coeff,
+        Exec::serial(),
+    )
+    .unwrap();
+    assert!(coeff.is_empty());
+}
+
 /// The forced routes are evaluated against the original budget even though `WorkModel` exists.
 #[test]
 fn forced_strategies_ignore_the_auto_cutoff() {
@@ -416,17 +537,16 @@ fn forced_strategies_ignore_the_auto_cutoff() {
     let policy = BatchPolicy::new(BatchStrategy::Outer)
         .with_model(WorkModel::default().with_min_work_per_lane_ns(10.0));
     let exec = token(&pool, 2).with_batch_policy(policy);
-    // n = 65 would take one lane under Auto; `Outer` still clamps to the budget.
+    // An ordinary family at extent 65: Auto keeps one lane, `Outer` still clamps to the budget.
     let n = 65;
     let batch = 4;
-    let mut lu = vec![0.0; n * n * batch];
-    for item in lu.chunks_exact_mut(n * n) {
-        for i in 0..n {
-            item[i + i * n] = 1.0;
-        }
-    }
-    let mut pivots = vec![0; n * batch];
-    let mut parity = vec![0.0; batch];
-    crate::packed_lu::factor(Op::LuFactor, n, n, &mut lu, &mut pivots, &mut parity, exec).unwrap();
+    let a: Vec<f64> = (0..n * n * batch)
+        .map(|i| if i % (n + 1) == 0 { 4.0 } else { 0.1 })
+        .collect();
+    let dims = [n, n, batch];
+    let strides = [1, n as isize, (n * n) as isize];
+    let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
+    let (mut q, mut r) = (Vec::new(), Vec::new());
+    crate::qr::qr(Op::Qr, view, &mut q, &mut r, exec).unwrap();
     assert_eq!(LAST_LANES.get(), 2);
 }

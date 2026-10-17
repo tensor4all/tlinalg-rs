@@ -35,30 +35,36 @@ fn per_matrix<F: FnMut()>(matrices: usize, iters: usize, mut call: F) -> f64 {
     best
 }
 
-/// The L2 case: a batch of 64 n=6 QR factorizations against 64 separate batch-1 calls. Both run on
-/// `Exec::serial()`. A batch call builds its lane scratch once; the loop rebuilds it per call, so
-/// the loop must not become cheaper than the batch path.
+/// The L2 case: a batch of 64 identical n=6 QR factorizations against 64 separate batch-1 calls of
+/// the *same* matrix. Both run on `Exec::serial()`. A batch call builds its lane scratch once; the
+/// loop rebuilds it per call, so the loop must not become cheaper than the batch path.
 fn l2(gate: bool) {
     let n = 6;
     let batch = 64;
-    let a: Vec<f64> = (0..n * n * batch)
+    let one: Vec<f64> = (0..n * n)
         .map(|i| if i % (n + 1) == 0 { 4.0 } else { 0.1 })
         .collect();
+    let mut a = Vec::with_capacity(n * n * batch);
+    for _ in 0..batch {
+        a.extend_from_slice(&one);
+    }
     let dims = [n, n, batch];
     let strides = [1, n as isize, (n * n) as isize];
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
     let single_dims = [n, n];
     let single_strides = [1, n as isize];
-    let single = RawStridedRef::new(&a[..n * n], &single_dims, &single_strides, 0).unwrap();
+    let single = RawStridedRef::new(&one, &single_dims, &single_strides, 0).unwrap();
     let (mut q, mut r) = (Vec::new(), Vec::new());
     let seq = Exec::serial();
 
     let batch_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, seq).unwrap();
+        black_box((q.as_slice(), r.as_slice()));
     });
     let loop_ns = per_matrix(batch, 64, || {
         for _ in 0..batch {
             tlinalg::qr::qr(Op::Qr, single, &mut q, &mut r, seq).unwrap();
+            black_box((q.as_slice(), r.as_slice()));
         }
     });
     let allocs = allocations_all_threads(|| {

@@ -70,6 +70,8 @@ pub fn bench_strategy() -> tcontract_exec::BatchStrategy {
 pub struct Env {
     pool: tcontract_exec::Pool<'static>,
     threads: NonZeroUsize,
+    /// Read once at construction, so `par()` does not touch the environment inside a timed call.
+    policy: tcontract_exec::BatchPolicy,
 }
 
 impl Env {
@@ -87,6 +89,7 @@ impl Env {
         Self {
             pool: tcontract_exec::Pool::owned(pool),
             threads,
+            policy: tcontract_exec::BatchPolicy::new(bench_strategy()),
         }
     }
 
@@ -95,12 +98,12 @@ impl Env {
         self.threads.get()
     }
 
-    /// The token for the pool, with the `TLINALG_BENCH_STRATEGY` policy applied.
+    /// The token for the pool, with the cached `TLINALG_BENCH_STRATEGY` policy applied.
     pub fn par(&self) -> tcontract_exec::Exec<'_> {
         tcontract_exec::Exec::rayon(&self.pool)
             .with_budget(self.threads.get())
             .expect("a nonzero benchmark budget")
-            .with_batch_policy(tcontract_exec::BatchPolicy::new(bench_strategy()))
+            .with_batch_policy(self.policy)
     }
 }
 

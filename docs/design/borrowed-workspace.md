@@ -70,8 +70,7 @@ that needs more refuses.
   coefficients, the thin-`Q` seed) is preserved.
 * On success the storage stays the caller's; nothing is freed. On an error, a lane's scratch is
   **abandoned**, not returned or freed: the host owns in-flight accounting and unwind
-  replenishment, matching `tcontract_exec`'s `WorkspaceProvider` abandonment contract. A provider
-  must not release on a path where the `Vec` wrapper would drop.
+  replenishment. A provider must not release on a path where the `Vec` wrapper would drop.
 * No `Sync` requirement: lanes own disjoint regions, and scratch is not shared across lanes.
 
 ## Family inventory

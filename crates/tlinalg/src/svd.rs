@@ -348,7 +348,7 @@ pub fn svd_values<T: FaerScalar>(
     s.clear();
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let item_muladds = weighted_muladds::<T>((m * n * m.min(n)) as f64);
+    let item_muladds = weighted_muladds::<T>(m as f64 * n as f64 * m.min(n) as f64);
     batch::run(
         op,
         input.batch(),
@@ -412,7 +412,7 @@ pub fn svd<T: FaerScalar>(
     };
     let u_len = checked_product(op, "U", &[m, u_cols])?;
     let vt_len = checked_product(op, "VH", &[v_cols, n])?;
-    let item_muladds = weighted_muladds::<T>((m * n * k) as f64);
+    let item_muladds = weighted_muladds::<T>(m as f64 * n as f64 * k as f64);
     batch::run(
         op,
         input.batch(),

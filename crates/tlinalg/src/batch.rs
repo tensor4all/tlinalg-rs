@@ -479,9 +479,14 @@ impl<U> Chunk<'_, U> {
 }
 
 /// Lane `lane`'s half-open item range when `batch` items are split into `lanes` nonempty
-/// contiguous ranges. `lanes <= batch`, so every range is nonempty.
+/// contiguous ranges. `lanes <= batch`, so every range is nonempty. Computed from the quotient and
+/// remainder so `lane * batch` cannot overflow for a huge valid batch.
 fn lane_bounds(batch: usize, lanes: usize, lane: usize) -> (usize, usize) {
-    (lane * batch / lanes, (lane + 1) * batch / lanes)
+    let base = batch / lanes;
+    let extra = batch % lanes;
+    let first = lane * base + lane.min(extra);
+    let last = first + base + usize::from(lane < extra);
+    (first, last)
 }
 
 /// The outputs of one batched call, handed out per lane.
@@ -839,10 +844,12 @@ where
     MK: Fn(faer::Par) -> S + Sync,
     F: Fn(usize, &mut O::Lane, &mut S, faer::Par) -> Result<()> + Sync,
 {
-    outputs.prepare(op, batch)?;
-    // Resolve availability before the empty-batch exit, so a forced `WholeBatchVendor` is refused
-    // even when there is nothing to write.
+    // Resolve availability **before** touching the outputs: a forced `WholeBatchVendor` is
+    // refused even when the batch is empty, and a huge-but-valid batch must not reach
+    // `outputs.prepare`'s reservation first. The entry points clear their library-created outputs
+    // before calling the driver, so a refusal still leaves them empty.
     let (lanes, item_threads) = decide(op, exec, batch, max_item_dim, item_muladds)?;
+    outputs.prepare(op, batch)?;
     if batch == 0 {
         return Ok(());
     }

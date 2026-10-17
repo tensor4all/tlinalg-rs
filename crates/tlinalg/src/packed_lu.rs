@@ -403,7 +403,7 @@ pub fn solve_prepared<T: FaerScalar>(
     let n = lu.rows();
     let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
     // A prepared solve is the triangular solves alone; the factorization happened in `factor`.
-    let item_muladds = weighted_muladds::<T>((n * n * nrhs) as f64);
+    let item_muladds = weighted_muladds::<T>(n as f64 * n as f64 * nrhs as f64);
     let batch = lu.batch();
     batch::check_route(op, exec, batch, item_muladds)?;
     if rhs_len == 0 {
@@ -493,12 +493,11 @@ pub fn factor_solve<T: FaerScalar>(
     let batch = packed_lu.len() / matrix_len.max(1);
     // A fused route factors and then solves, so its estimate is the factor plus the solve.
     let nf = n as f64;
-    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + (n * n * nrhs) as f64);
+    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
     batch::check_route(op, exec, batch, item_muladds)?;
     if matrix_len == 0 {
         return Ok(());
     }
-    let batch = packed_lu.len() / matrix_len;
     check_batches(
         op,
         [

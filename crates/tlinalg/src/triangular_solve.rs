@@ -174,7 +174,7 @@ pub fn triangular_solve<T: FaerScalar>(
     let item_len = crate::util::checked_product(op, "X", &[b_rows, b_cols])?;
     // One triangular solve touches `n x n` against the solved right-hand side count.
     let solved = if flags.left_side { b_cols } else { b_rows };
-    let item_muladds = weighted_muladds::<T>((n * n * solved) as f64 / 2.0);
+    let item_muladds = weighted_muladds::<T>(n as f64 * n as f64 * solved as f64 / 2.0);
     batch::run(
         op,
         a.batch(),

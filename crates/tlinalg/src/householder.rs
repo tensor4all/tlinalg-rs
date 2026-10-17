@@ -232,7 +232,7 @@ pub fn compact_factor<T: FaerScalar>(
 ) -> Result<()> {
     coeff.clear();
     let matrix_len = checked_product(op, "matrix", &[rows, cols])?;
-    let item_muladds = weighted_muladds::<T>((rows * cols * rows.min(cols)) as f64);
+    let item_muladds = weighted_muladds::<T>(rows as f64 * cols as f64 * rows.min(cols) as f64);
     batch::run(
         op,
         batch,
@@ -330,7 +330,7 @@ pub fn apply_reflectors<T: FaerScalar>(
     }
     let apply = rows != 0 && cols != 0 && k != 0;
     let block = compact_block_size::<T::Entity>(rows, a_cols).min(k).max(1);
-    let item_muladds = weighted_muladds::<T>((rows * cols * k) as f64);
+    let item_muladds = weighted_muladds::<T>(rows as f64 * cols as f64 * k as f64);
     batch::run(
         op,
         batch,
