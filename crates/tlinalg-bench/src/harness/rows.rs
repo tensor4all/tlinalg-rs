@@ -46,15 +46,20 @@ pub struct Record {
 impl Record {
     pub fn csv(&self) -> String {
         // The chronological calls are a JSON list, quoted because it contains commas; the campaign's
-        // evidence check parses them back.
-        let samples = format!(
-            "[{}]",
-            self.samples_ms
-                .iter()
-                .map(|v| format!("{v:.6}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        // evidence check parses them back. A row that was not measured carries an empty field rather
+        // than an empty list, because a skipped row must not look as if it had been timed.
+        let samples = if self.samples_ms.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "[{}]",
+                self.samples_ms
+                    .iter()
+                    .map(|v| format!("{v:.6}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         format!(
             "{},{},{},{},{},{},{},{},{:.6},{:.6},{},{},\"{}\",{},{}",
             self.regime,
