@@ -83,6 +83,11 @@ belongs to the resource owner. Vendor BLAS/LAPACK threading stays vendor-owned.
 
 ## Scope and integration
 
+The borrowed-workspace `*_workspace`/`*_into` API (`tlinalg-rs#57`) is contracted in
+[borrowed-workspace.md](borrowed-workspace.md) but not implemented in this change; the `Vec`
+wrappers remain. When it lands, the `Workspace` is a component-wise checked per-lane region and an
+insufficient workspace is a typed refusal before any write.
+
 Every native entry point, executable doc, native test, parity call and benchmark moves to `Exec`;
 `tlinalg-bench` reads `TLINALG_BENCH_STRATEGY` for the forced-route sweep. The C API migrates its
 tcontract-capi pin to the 0.3.0 revision and forwards that executor's guarded `Exec` instead of
