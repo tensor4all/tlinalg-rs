@@ -38,12 +38,27 @@ fn getc2_in_place<T: LapackScalar>(
     Ok(())
 }
 
-fn permutation_from_pivots(op: Op, pivots: &[i32], permutation: &mut Vec<usize>) -> Result<()> {
-    permutation.clear();
-    permutation.extend(0..pivots.len());
+/// Append an `n x n` permutation matrix built from `pivots` in place: the identity with each swap
+/// applied to its rows.
+///
+/// Both `P` and `Q` use this convention (`M[row][perm[row]] = 1`), exactly as the previous
+/// `permutation_from_pivots` + `push_permutation_matrix` pair did, so `Q` is the same matrix the
+/// faer provider returns for the same pivots. The swap sequence is applied to the identity block
+/// directly, so no permutation vector (and no per-call allocation) is needed.
+fn push_permutation_matrix<T: LapackScalar>(
+    op: Op,
+    pivots: &[i32],
+    out: &mut Vec<T>,
+) -> Result<()> {
+    let n = pivots.len();
+    let start = out.len();
+    out.resize(start + n * n, T::default());
+    for index in 0..n {
+        out[start + index + index * n] = T::one();
+    }
     for (idx, &pivot_one_based) in pivots.iter().enumerate() {
         let pivot = match usize::try_from(pivot_one_based - 1) {
-            Ok(pivot) if pivot < pivots.len() => pivot,
+            Ok(pivot) if pivot < n => pivot,
             _ => {
                 return Err(Error::Internal {
                     op,
@@ -54,20 +69,14 @@ fn permutation_from_pivots(op: Op, pivots: &[i32], permutation: &mut Vec<usize>)
                 });
             }
         };
-        if pivot != idx {
-            permutation.swap(idx, pivot);
+        if pivot == idx {
+            continue;
+        }
+        for col in 0..n {
+            out.swap(start + idx + col * n, start + pivot + col * n);
         }
     }
     Ok(())
-}
-
-fn push_permutation_matrix<T: LapackScalar>(permutation: &[usize], out: &mut Vec<T>) {
-    let n = permutation.len();
-    let start = out.len();
-    out.resize(start + n * n, T::default());
-    for (row, &source) in permutation.iter().enumerate() {
-        out[start + row + source * n] = T::one();
-    }
 }
 
 fn swaps(pivots: &[i32]) -> usize {
@@ -164,16 +173,12 @@ where
     let mut ipiv = workspace.acquire_zeroed_index(n);
     let mut jpiv = workspace.acquire_zeroed_index(n);
     check_scratch(op, ipiv.len().min(jpiv.len()), n)?;
-    let mut row_perm = Vec::with_capacity(n);
-    let mut col_perm = Vec::with_capacity(n);
     for offset in input.layout.offsets() {
         lu.clear();
         input.gather(offset, &mut lu);
         getc2_in_place(op, &mut lu, n_i32, &mut ipiv[..n], &mut jpiv[..n])?;
-        permutation_from_pivots(op, &ipiv[..n], &mut row_perm)?;
-        permutation_from_pivots(op, &jpiv[..n], &mut col_perm)?;
-        push_permutation_matrix(&row_perm, out.p);
-        push_permutation_matrix(&col_perm, out.q);
+        push_permutation_matrix(op, &ipiv[..n], out.p)?;
+        push_permutation_matrix(op, &jpiv[..n], out.q)?;
         for col in 0..n {
             out.l.extend(core::iter::repeat_n(T::default(), col));
             out.l.push(T::one());

@@ -278,10 +278,13 @@ where
     out.r.reserve(batch_len(op, r_len, count)?);
     out.permutation.reserve(batch_len(op, n, count)?);
     let mut qr = workspace.acquire_capacity(matrix_len);
-    let mut tau = vec![T::default(); k];
+    // The reflector scalars come from the host pool like every other `T` buffer.
+    let mut tau = workspace.acquire_zeroed(k);
+    check_scratch(op, tau.len(), k)?;
+    // `jpvt` is `i32` and `IndexWorkspace` is not part of this entry point's published bound, so it
+    // stays a per-call allocation; `tests/alloc_counts.rs` pins that as an upper bound (tlinalg-rs#57
+    // keeps the rank-revealing site open for an `IndexWorkspace` route in a breaking release).
     let mut jpvt = vec![0_i32; n];
-    // Reused per item by the permutation check.
-    let mut seen = vec![false; n];
     let mut scratch: Option<RrqrScratch<T, T::Real>> = None;
     for offset in input.layout.offsets() {
         qr.clear();
@@ -352,9 +355,10 @@ where
             );
         }
         check_info(op, T::ORGQR, info)?;
-        normalize_into(op, &jpvt, &mut seen, out.permutation)?;
+        normalize_into(op, &mut jpvt, out.permutation)?;
     }
     workspace.release(qr);
+    workspace.release(tau);
     if let Some(RrqrScratch { work, rwork, .. }) = scratch {
         workspace.release(work);
         if T::COMPLEX {
@@ -423,27 +427,46 @@ where
 
 /// Append a one-based `?geqp3` permutation as zero-based `i64` indices, rejecting anything that is
 /// not a permutation.
-fn normalize_into(
-    op: Op,
-    permutation: &[i32],
-    seen: &mut [bool],
-    out: &mut Vec<i64>,
-) -> Result<()> {
+///
+/// The validation walks the cycles of the mapping in place, marking visited positions by adding
+/// `n` (the entries are `1..=n`, so a marked entry exceeds `n`), and restores them afterwards.
+/// Re-entering a marked position before closing the cycle means two positions map to the same
+/// entry, which is not a permutation. No separate `seen` buffer is needed.
+fn normalize_into(op: Op, permutation: &mut [i32], out: &mut Vec<i64>) -> Result<()> {
+    let invalid = || Error::InvalidArgument {
+        op,
+        role: "column_permutation",
+        detail: "LAPACK GEQP3 returned an invalid pivot permutation".to_owned(),
+    };
     let n = permutation.len();
-    seen.fill(false);
-    for &column in permutation {
-        let zero_based = column
-            .checked_sub(1)
-            .and_then(|value| usize::try_from(value).ok());
-        let Some(zero_based) = zero_based.filter(|&value| value < n && !seen[value]) else {
-            return Err(Error::InvalidArgument {
-                op,
-                role: "column_permutation",
-                detail: "LAPACK GEQP3 returned an invalid pivot permutation".to_owned(),
-            });
-        };
-        seen[zero_based] = true;
-        out.push(zero_based as i64);
+    let marked = i32::try_from(n).map_err(|_| invalid())?;
+    for &value in permutation.iter() {
+        if value < 1 || value > marked {
+            return Err(invalid());
+        }
+    }
+    for start in 0..n {
+        if permutation[start] > marked {
+            continue;
+        }
+        let mut index = start;
+        loop {
+            let value = permutation[index];
+            if value > marked {
+                // The walk reached a position of an already validated cycle, so the mapping is not
+                // injective.
+                return Err(invalid());
+            }
+            permutation[index] = value + marked;
+            index = (value - 1) as usize;
+            if index == start {
+                break;
+            }
+        }
+    }
+    for value in permutation.iter_mut() {
+        *value -= marked;
+        out.push(i64::from(*value - 1));
     }
     Ok(())
 }
