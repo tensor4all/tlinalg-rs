@@ -1107,9 +1107,17 @@ fn the_pool_route_adds_a_constant() {
         for _ in 0..3 {
             qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
         }
-        allocations_all_threads(|| {
-            qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
-        })
+        // Minimum of three rounds: a worker the warm-up never scheduled pays a one-time
+        // first touch (thread-local registration allocates on macOS) the first time it
+        // picks up a lane; a per-call allocation shows up in every round.
+        (0..3)
+            .map(|_| {
+                allocations_all_threads(|| {
+                    qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+                })
+            })
+            .min()
+            .unwrap_or(0)
     };
     let two = measure(2);
     let many = measure(64);
