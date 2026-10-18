@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -19,9 +19,9 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.3.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.3.0", path = "crates/tlinalg-blas" }
-tlinalg-capi = { version = "0.3.0", path = "crates/tlinalg-capi" }
+tlinalg = { version = "0.3.1", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.3.1", path = "crates/tlinalg-blas" }
+tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
 # tlinalg-rs#28 (faer's QR dropped nearly dependent columns), which upstream 0.24.4 does not have.
