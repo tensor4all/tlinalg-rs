@@ -24,7 +24,7 @@ use strided_view::RawStridedRef;
 use crate::batch::{self, fixed_out, BatchedRef, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -125,7 +125,7 @@ pub fn eigh_workspace<T: FaerScalar>(
     } else {
         ComputeEigenvectors::No
     };
-    workspace_bytes::<T>(n, compute, batch, exec)
+    eigh_bytes::<T>(Op::Eigh, n, compute, batch, exec)
 }
 
 /// [`eigh_workspace`] for the values-only route (the canonical `Op` is `Op::EighValues`).
@@ -138,24 +138,41 @@ pub fn eigh_values_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    workspace_bytes::<T>(n, ComputeEigenvectors::No, batch, exec)
+    eigh_bytes::<T>(Op::EighValues, n, ComputeEigenvectors::No, batch, exec)
 }
 
-fn workspace_bytes<T: FaerScalar>(
+/// Reject a shape whose square the lane requirement multiplies.
+fn check_shape(op: Op, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    Ok(())
+}
+
+/// The work estimate a Hermitian eigendecomposition reports to the batch policy.
+fn work<T: ScalarEntity>(n: usize) -> f64 {
+    weighted_muladds::<T>((n as f64).powi(3))
+}
+
+/// The query with the caller's operation, so a wrapper reports its own `Op`.
+fn eigh_bytes<T: FaerScalar>(
+    op: Op,
     n: usize,
     vectors: ComputeEigenvectors,
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let op = if matches!(vectors, ComputeEigenvectors::Yes) {
-        Op::Eigh
-    } else {
-        Op::EighValues
-    };
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, batch, Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(op, eigh_req::<T::Entity>(n, vectors, par), lanes, batch)
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(n),
+        work::<T>(n),
+        || check_shape(op, n),
+        |par| eigh_req::<T::Entity>(n, vectors, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
 }
 
 /// Eigenvalues of every `n x n` Hermitian matrix of a batch, without the vectors, into
@@ -178,13 +195,17 @@ pub fn eigh_values_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(
-        eigh_req::<T::Entity>(n, ComputeEigenvectors::No, par),
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
         input.batch(),
-    );
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::No, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -247,9 +268,11 @@ pub fn eigh_values<T: FaerScalar>(
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); eigh_values_workspace::<T>(n, batch, exec)?];
+    let bytes = eigh_bytes::<T>(op, n, ComputeEigenvectors::No, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
     eigh_values_into(op, input.raw(), values_out.spare(), &mut workspace, exec)?;
     values_out.publish();
@@ -276,13 +299,17 @@ pub fn eigh_into<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(
-        eigh_req::<T::Entity>(n, ComputeEigenvectors::Yes, par),
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
         input.batch(),
-    );
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::Yes, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -358,9 +385,11 @@ pub fn eigh<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); eigh_workspace::<T>(n, true, batch, exec)?];
+    let bytes = eigh_bytes::<T>(op, n, ComputeEigenvectors::Yes, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
     let mut vectors_out = VecOut::new(
         vectors,

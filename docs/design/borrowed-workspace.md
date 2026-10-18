@@ -22,11 +22,20 @@ pub fn <family>_workspace(<shape args>, batch, exec: Exec<'_>) -> Result<usize>
   scratch per item thread, so `per_lane` is computed at the `item_threads` width the batch decision
   grants — the *same* `batch::decide` call the execution makes, with the same work estimate and
   Auto measure. A query and its matching call therefore resolve the same width and the same lanes.
-* A family whose scratch does not depend on the route (cholesky has only a faer `MemStack`) reports
-  the same number for every route; triangular solve and the packed-LU prepared solve need no
-  scratch at all and report `0`.
-* `batch == 0` reports `0` (nothing runs), after the route was resolved, so a forced strategy this
-  route cannot honor is still refused.
+* A family whose per-lane scratch does not depend on the item width (cholesky has only a faer
+  `MemStack`) has a route-independent *per-lane* requirement; the reported total still scales with
+  the lane count the route resolves (`Outer` and `Inner` therefore differ). Triangular solve and the
+  packed-LU prepared solve need no scratch at all and report `0`.
+* The order is fixed: resolve strategy availability first (a forced route this provider cannot honor
+  is refused even for an empty batch), then return `0` for `batch == 0` **before** building any
+  requirement (a shape-only huge extent must not become a huge or overflowing byte count), then
+  check every shape product the requirement builders multiply — including the products inside
+  faer's block-size recommendation helpers — and only then compose the requirement. `workspace::lane_requirement`
+  is that one implementation, used by every family's query and `_into` route.
+* A query reports its family's canonical `Op` in a refusal; a `Vec` wrapper passes the caller's `op`
+  through a crate-private variant of the same query, so the error a caller sees is unchanged from
+  0.3.0. Wrappers also validate their operands in the published order *before* sizing a workspace,
+  so a malformed operand is still reported ahead of an unavailable strategy.
 
 Why bytes and not a layout type: `tcontract_exec::WorkspaceReq` describes GEMM arena components
 and is deliberately checked component-wise, so it is the wrong contract for a generic borrowed
@@ -116,3 +125,14 @@ bytes per call (zero for triangular solve). With reserved outputs that is the on
 makes; cold outputs allocate for their own capacity. `tests/alloc_counts.rs` pins both the
 wrapper's one-allocation steady state and the `*_into` zero-allocation gate, and
 `tlinalg-bench/benches/overhead_smoke.rs` (L1) gates the wrapper/`_into` timing ratio.
+
+## Compatibility with 0.3.0
+
+The storage change — padded, over-aligned faer `Mat`/`Diag` lane storage replaced by compact typed
+slices carved from borrowed bytes — is inside the same algorithms, so it has to be checked rather
+than assumed. `tests/alloc_counts.rs` compares the new wrappers against the **published**
+`tlinalg 0.3.0` release (a dev-dependency) on the whole battery: four scalar types, sizes {1, 2, 8},
+batches {1, 64}, both input layouts, every family. The measured result on x86_64 is **0 differing
+outputs** (bitwise). The `_into` routes are asserted bitwise equal to the wrappers on the same
+shapes, so that comparison covers them too; a family that differed would be reported in that test
+rather than folded into a tolerance.

@@ -22,7 +22,7 @@ use strided_view::RawStridedRef;
 use crate::batch::{self, fixed_out, same_batch, BatchedRef, Push, Sink, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, push_masked, push_permutation, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -146,6 +146,68 @@ fn full_piv_lu_item<T: FaerScalar>(
     parity.push(T::parity(transpositions % 2 != 0));
 }
 
+/// The work estimate a full-pivot factorization reports to the batch policy.
+fn work<T: ScalarEntity>(n: usize) -> f64 {
+    weighted_muladds::<T>((n as f64).powi(3) / 3.0)
+}
+
+/// The work estimate of a full-pivot factor-then-solve.
+fn solve_work<T: ScalarEntity>(n: usize, nrhs: usize) -> f64 {
+    let (nf, krhs) = (n as f64, nrhs as f64);
+    weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs)
+}
+
+/// Reject shapes whose products the lane requirement multiplies.
+fn check_shape(op: Op, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    Ok(())
+}
+
+/// Reject shapes whose products the solve requirement multiplies.
+fn check_solve_shape(op: Op, n: usize, nrhs: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    checked_product(op, "rhs", &[n, nrhs])?;
+    Ok(())
+}
+
+fn full_piv_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(n),
+        work::<T>(n),
+        || check_shape(op, n),
+        |par| full_piv_req::<T::Entity>(n, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
+fn full_piv_solve_bytes<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    nrhs: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(batch::auto_extent(n, nrhs)),
+        solve_work::<T>(n, nrhs),
+        || check_solve_shape(op, n, nrhs),
+        |par| full_piv_solve_req::<T::Entity>(n, nrhs, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
 /// Bytes one batched full-pivot LU call needs in its borrowed workspace.
 ///
 /// # Errors
@@ -157,15 +219,7 @@ pub fn full_piv_lu_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 3.0);
-    let (lanes, item_threads) = batch::decide(Op::FullPivLu, exec, batch, Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::FullPivLu,
-        full_piv_req::<T::Entity>(n, par),
-        lanes,
-        batch,
-    )
+    full_piv_bytes::<T>(Op::FullPivLu, n, batch, exec)
 }
 
 /// Full-pivot LU of every `n x n` matrix of a batch into caller-owned storage, `P A Qᵀ = L U`.
@@ -194,10 +248,17 @@ pub fn full_piv_lu_into<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let len = checked_product(op, "matrix", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 3.0);
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(full_piv_req::<T::Entity>(n, par), input.batch());
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| full_piv_req::<T::Entity>(n, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -265,9 +326,11 @@ pub fn full_piv_lu<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let len = checked_product(op, "matrix", &[n, n])?;
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); full_piv_lu_workspace::<T>(n, batch, exec)?];
+    let bytes = full_piv_bytes::<T>(op, n, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut p_out = VecOut::new(p, checked_product(op, "P", &[len, batch])?);
     let mut l_out = VecOut::new(l, checked_product(op, "L", &[len, batch])?);
     let mut u_out = VecOut::new(u, checked_product(op, "U", &[len, batch])?);
@@ -398,22 +461,30 @@ pub fn full_piv_lu_solve_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let (nf, krhs) = (n as f64, nrhs as f64);
-    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
-    let (lanes, item_threads) = batch::decide(
-        Op::FullPivLuSolve,
-        exec,
-        batch,
-        Some(batch::auto_extent(n, nrhs)),
-        item_muladds,
-    )?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::FullPivLuSolve,
-        full_piv_solve_req::<T::Entity>(n, nrhs, par),
-        lanes,
-        batch,
-    )
+    full_piv_solve_bytes::<T>(Op::FullPivLuSolve, n, nrhs, batch, exec)
+}
+
+/// Validate the coefficient and right-hand side of a full-pivot solve.
+///
+/// This is the published validation order, shared by `_into` and the `Vec` wrapper so the wrapper
+/// can validate before it sizes a workspace.
+fn solve_shape<T: FaerScalar>(
+    op: Op,
+    a: &BatchedRef<'_, T>,
+    b: &BatchedRef<'_, T>,
+) -> Result<(usize, usize, usize, f64)> {
+    let n = a.rows();
+    if b.rows() != n {
+        return Err(invalid(
+            op,
+            "configuration",
+            format!("B has {} rows, expected {n}", b.rows()),
+        ));
+    }
+    same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
+    let nrhs = b.cols();
+    let x_len = checked_product(op, "X", &[n, nrhs])?;
+    Ok((n, nrhs, x_len, solve_work::<T>(n, nrhs)))
 }
 
 /// Solve every linear system of a batch through a full-pivot LU of `A`, into caller-owned storage.
@@ -443,28 +514,17 @@ pub fn full_piv_lu_solve_into<T: FaerScalar>(
 ) -> Result<()> {
     let a = BatchedRef::square(op, "A", a)?;
     let b = BatchedRef::new(op, "B", b)?;
-    let n = a.rows();
-    if b.rows() != n {
-        return Err(invalid(
-            op,
-            "configuration",
-            format!("B has {} rows, expected {n}", b.rows()),
-        ));
-    }
-    same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
-    let nrhs = b.cols();
-    let x_len = checked_product(op, "X", &[n, nrhs])?;
-    let (nf, krhs) = (n as f64, nrhs as f64);
-    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
-    let (lanes, item_threads) = batch::decide(
+    let (n, nrhs, x_len, item_muladds) = solve_shape::<T>(op, &a, &b)?;
+    let requirement = lane_requirement(
         op,
         exec,
         a.batch(),
         Some(batch::auto_extent(n, nrhs)),
         item_muladds,
+        || check_solve_shape(op, n, nrhs),
+        |par| full_piv_solve_req::<T::Entity>(n, nrhs, par),
     )?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(full_piv_solve_req::<T::Entity>(n, nrhs, par), a.batch());
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -535,22 +595,25 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
     exec: Exec<'_>,
 ) -> Result<()> {
     x.clear();
-    let shape = BatchedRef::square(op, "A", a)?;
-    let n = shape.rows();
-    let batch = shape.batch();
-    let dims = b.dims();
-    if dims.len() < 2 {
-        return Err(invalid(
-            op,
-            "configuration",
-            format!("B has rank {}, expected at least 2", dims.len()),
-        ));
-    }
-    let nrhs = dims[1];
-    drop(shape);
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); full_piv_lu_solve_workspace::<T>(n, nrhs, batch, exec)?];
-    let mut x_out = VecOut::new(x, checked_product(op, "X", &[n * nrhs, batch])?);
+    // The published order: operand validation (including B's rank) before any workspace query or
+    // allocation, and no unchecked `n * nrhs` in the output length.
+    let (n, nrhs, x_len, batch) = {
+        let dims = b.dims();
+        if dims.len() < 2 {
+            return Err(invalid(
+                op,
+                "configuration",
+                format!("B has rank {}, expected at least 2", dims.len()),
+            ));
+        }
+        let a_view = BatchedRef::square(op, "A", a)?;
+        let b_view = BatchedRef::new(op, "B", b)?;
+        let (n, nrhs, x_len, _) = solve_shape::<T>(op, &a_view, &b_view)?;
+        (n, nrhs, x_len, a_view.batch())
+    };
+    let bytes = full_piv_solve_bytes::<T>(op, n, nrhs, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+    let mut x_out = VecOut::new(x, checked_product(op, "X", &[x_len, batch])?);
     full_piv_lu_solve_into(op, a, b, transpose_a, x_out.spare(), &mut workspace, exec)?;
     x_out.publish();
     Ok(())

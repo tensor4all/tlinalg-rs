@@ -23,8 +23,9 @@ use faer::{Conj, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, fixed_out, BatchedRef, Push, Sink, VecOut};
+use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, push_masked, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -43,8 +44,20 @@ fn block_size<E: faer::traits::ComplexField>(m: usize, n: usize) -> usize {
     faer::linalg::qr::no_pivoting::factor::recommended_block_size::<E>(m, n)
 }
 
+/// The apply scratch of the thin-`Q` formation (faer's sequence apply on the left).
+fn apply_req<E: faer::traits::ComplexField>(m: usize, n: usize) -> StackReq {
+    let k = m.min(n);
+    let block = block_size::<E>(m, n);
+    faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
+        m, block, k,
+    )
+}
+
 /// One lane's complete requirement: the work matrix, the block coefficients, the permutations and
 /// faer's factor/apply scratch.
+///
+/// Call [`check_shape`] first: it checks every product this function multiplies, including the one
+/// inside faer's block-size recommendation.
 fn qr_req<E: faer::traits::ComplexField>(
     m: usize,
     n: usize,
@@ -53,27 +66,6 @@ fn qr_req<E: faer::traits::ComplexField>(
 ) -> StackReq {
     let k = m.min(n);
     let block = block_size::<E>(m, n);
-    let factor_req = if pivoting {
-        faer::linalg::qr::col_pivoting::factor::qr_in_place_scratch::<usize, E>(
-            m,
-            n,
-            block,
-            par,
-            Default::default(),
-        )
-    } else {
-        faer::linalg::qr::no_pivoting::factor::qr_in_place_scratch::<E>(
-            m,
-            n,
-            block,
-            par,
-            Default::default(),
-        )
-    };
-    let apply_req =
-        faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
-            m, block, k,
-        );
     // On 64-bit targets the permutation is written straight into the `i64` output, so only the
     // inverse needs lane storage.
     let permutation = if pivoting && !PERMUTATION_IN_OUTPUT {
@@ -86,8 +78,34 @@ fn qr_req<E: faer::traits::ComplexField>(
         .and(StackReq::new::<E>(block * k))
         .and(StackReq::new::<usize>(permutation))
         .and(StackReq::new::<usize>(inverse_permutation))
-        .and(faer_req(factor_req))
-        .and(faer_req(apply_req))
+        .and(faer_req(qr_req_factor::<E>(m, n, pivoting, par)))
+        .and(faer_req(apply_req::<E>(m, n)))
+}
+
+/// Reject shapes whose products the lane requirement multiplies, before any faer helper sees them.
+fn check_shape<E: faer::traits::ComplexField>(op: Op, m: usize, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[m, n])?;
+    // faer's recommendation multiplies the dimensions itself; the product above covers it.
+    let block = block_size::<E>(m, n);
+    checked_product(op, "workspace", &[block, m.min(n)])?;
+    Ok(())
+}
+
+/// The output lengths and the work estimate of an `m x n` batch, with every product the lane
+/// requirement multiplies checked (this is the validation the `Vec` wrappers run before they size a
+/// workspace, and `_into` runs before it builds one).
+fn qr_shape<T: FaerScalar>(op: Op, m: usize, n: usize) -> Result<(usize, usize, f64)> {
+    check_shape::<T::Entity>(op, m, n)?;
+    let k = m.min(n);
+    let q_len = checked_product(op, "Q", &[m, k])?;
+    let r_len = checked_product(op, "R", &[k, n])?;
+    Ok((q_len, r_len, qr_work::<T>(m, n)))
+}
+
+/// The work estimate a QR factorization reports to the batch policy.
+fn qr_work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
+    let k = m.min(n);
+    weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0)
 }
 
 impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
@@ -113,11 +131,7 @@ impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
         let (inverse_permutation, stack) = zeros::<usize>(stack, if pivoting { n } else { 0 }, &0);
         let factor_req = qr_req_factor::<E>(m, n, pivoting, par);
         let (factor_mem, stack) = bytes(stack, factor_req.unaligned_bytes_required());
-        let apply_req =
-            faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
-                m, block, k,
-            );
-        let (apply_mem, _) = bytes(stack, apply_req.unaligned_bytes_required());
+        let (apply_mem, _) = bytes(stack, apply_req::<E>(m, n).unaligned_bytes_required());
         QrScratch {
             work: MatMut::from_column_major_slice_mut(work, m, n),
             coeff: MatMut::from_column_major_slice_mut(coeff, block, k),
@@ -298,12 +312,35 @@ pub fn qr_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let k = m.min(n);
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    let (lanes, item_threads) = batch::decide(Op::Qr, exec, batch, Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(Op::Qr, qr_req::<T::Entity>(m, n, false, par), lanes, batch)
+    qr_bytes::<T>(Op::Qr, m, n, false, batch, exec)
+}
+
+/// [`qr_workspace`] with the caller's operation, so a wrapper reports its own `Op`.
+///
+/// The order matches the contract: resolve the route (refusing an unavailable strategy), return
+/// zero for an empty batch, and only then check the shape products and build the requirement.
+fn qr_bytes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    pivoting: bool,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let item_muladds = qr_work::<T>(m, n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(m.max(n)),
+        item_muladds,
+        || check_shape::<T::Entity>(op, m, n),
+        |par| qr_req::<T::Entity>(m, n, pivoting, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
 }
 
 /// Thin QR of every `m x n` matrix of a batch, `A = Q R`, into caller-owned storage.
@@ -330,15 +367,17 @@ pub fn qr_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let q_len = checked_product(op, "Q", &[m, k])?;
-    let r_len = checked_product(op, "R", &[k, n])?;
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    let (lanes, item_threads) =
-        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(qr_req::<T::Entity>(m, n, false, par), input.batch());
+    let (q_len, r_len, item_muladds) = qr_shape::<T>(op, m, n)?;
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(m.max(n)),
+        item_muladds,
+        || check_shape::<T::Entity>(op, m, n),
+        |par| qr_req::<T::Entity>(m, n, false, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -393,13 +432,13 @@ pub fn qr<T: FaerScalar>(
 ) -> Result<()> {
     q.clear();
     r.clear();
+    // The published order: operand validation before any workspace query or allocation.
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let q_len = checked_product(op, "Q", &[m, k])?;
-    let r_len = checked_product(op, "R", &[k, n])?;
+    let (q_len, r_len, _) = qr_shape::<T>(op, m, n)?;
     let batch = input.batch();
-    let mut workspace = vec![MaybeUninit::<u8>::uninit(); qr_workspace::<T>(m, n, batch, exec)?];
+    let bytes = qr_bytes::<T>(op, m, n, false, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut q_out = VecOut::new(q, checked_product(op, "Q", &[q_len, batch])?);
     let mut r_out = VecOut::new(r, checked_product(op, "R", &[r_len, batch])?);
     qr_into(
@@ -448,23 +487,7 @@ pub fn rank_revealing_qr_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let k = m.min(n);
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    let (lanes, item_threads) = batch::decide(
-        Op::RankRevealingQr,
-        exec,
-        batch,
-        Some(m.max(n)),
-        item_muladds,
-    )?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::RankRevealingQr,
-        qr_req::<T::Entity>(m, n, true, par),
-        lanes,
-        batch,
-    )
+    qr_bytes::<T>(Op::RankRevealingQr, m, n, true, batch, exec)
 }
 
 /// Column-pivoted QR of every `m x n` matrix of a batch, `A P = Q R`, into caller-owned storage.
@@ -487,15 +510,17 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let q_len = checked_product(op, "Q", &[m, k])?;
-    let r_len = checked_product(op, "R", &[k, n])?;
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    let (lanes, item_threads) =
-        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(qr_req::<T::Entity>(m, n, true, par), input.batch());
+    let (q_len, r_len, item_muladds) = qr_shape::<T>(op, m, n)?;
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(m.max(n)),
+        item_muladds,
+        || check_shape::<T::Entity>(op, m, n),
+        |par| qr_req::<T::Entity>(m, n, true, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -558,14 +583,13 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     q.clear();
     r.clear();
     permutation.clear();
+    // The published order: operand validation before any workspace query or allocation.
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let q_len = checked_product(op, "Q", &[m, k])?;
-    let r_len = checked_product(op, "R", &[k, n])?;
+    let (q_len, r_len, _) = qr_shape::<T>(op, m, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); rank_revealing_qr_workspace::<T>(m, n, batch, exec)?];
+    let bytes = qr_bytes::<T>(op, m, n, true, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut q_out = VecOut::new(q, checked_product(op, "Q", &[q_len, batch])?);
     let mut r_out = VecOut::new(r, checked_product(op, "R", &[r_len, batch])?);
     let mut perm_out = VecOut::new(

@@ -524,60 +524,6 @@ pub(crate) trait Outputs {
     unsafe fn commit(&mut self, batch: usize);
 }
 
-/// A library-created vector output, cleared and then filled with `item_len` elements per item.
-///
-/// The public entry points no longer use it (their `Vec` wrappers reserve the vector's spare
-/// capacity directly and hand the `*_into` route a `FixedOut`), but the driver tests exercise the
-/// clear/reserve/publish contract through it.
-#[cfg(test)]
-pub(crate) struct Out<'a, U> {
-    vec: &'a mut Vec<U>,
-    item_len: usize,
-}
-
-/// A vector output of `item_len` elements per batch item.
-#[cfg(test)]
-pub(crate) fn out<U>(vec: &mut Vec<U>, item_len: usize) -> Out<'_, U> {
-    Out { vec, item_len }
-}
-
-#[cfg(test)]
-impl<'a, U: Send> Outputs for Out<'a, U> {
-    type Parts = (SharedPtr<MaybeUninit<U>>, usize);
-    type Item = Sink<'a, U>;
-
-    fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
-        self.vec.clear();
-        let total = checked_product(op, "output", &[self.item_len, batch])?;
-        self.vec.reserve(total);
-        Ok(())
-    }
-
-    unsafe fn parts(&mut self, _: usize) -> Self::Parts {
-        (
-            SharedPtr(self.vec.spare_capacity_mut().as_mut_ptr()),
-            self.item_len,
-        )
-    }
-
-    unsafe fn item(parts: &Self::Parts, index: usize) -> Sink<'a, U> {
-        let (ptr, item_len) = *parts;
-        // SAFETY: `prepare` reserved `item_len * batch`, distinct indices are disjoint, and the
-        // vector is untouched until the items are gone.
-        let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(index * item_len), item_len) };
-        Sink { buf, pos: 0 }
-    }
-
-    fn item_complete(item: &Sink<'a, U>) -> bool {
-        item.is_full()
-    }
-
-    unsafe fn commit(&mut self, batch: usize) {
-        // SAFETY: every item `0..batch` was created once, filled its whole range and is gone.
-        unsafe { self.vec.set_len(self.item_len * batch) };
-    }
-}
-
 /// A caller-owned compact buffer of `item_len` elements per batch item, updated in place.
 pub(crate) struct InPlace<'a, U> {
     slice: &'a mut [U],

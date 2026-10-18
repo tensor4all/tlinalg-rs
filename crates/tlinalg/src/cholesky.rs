@@ -19,8 +19,9 @@ use faer::MatMut;
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, fixed_out, BatchedRef, Sink, VecOut};
+use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -58,6 +59,17 @@ fn req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
     faer::linalg::cholesky::llt::factor::cholesky_in_place_scratch::<E>(n, par, Default::default())
 }
 
+/// Reject a shape whose square the lane requirement multiplies (faer's request does).
+fn check_shape(op: Op, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    Ok(())
+}
+
+/// The work estimate a Cholesky factorization reports to the batch policy.
+fn work<T: ScalarEntity>(n: usize) -> f64 {
+    weighted_muladds::<T>((n as f64).powi(3) / 6.0)
+}
+
 /// Bytes one batched Cholesky call needs in its borrowed workspace.
 ///
 /// # Errors
@@ -65,15 +77,24 @@ fn req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
 /// is `Op::Cholesky`), and the executor's refusal for a forced strategy this route cannot honor.
 pub fn cholesky_workspace<T: FaerScalar>(n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
-    let (lanes, item_threads) = batch::decide(Op::Cholesky, exec, batch, Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::Cholesky,
-        faer_req(req::<T::Entity>(n, par)),
-        lanes,
+    cholesky_bytes::<T>(Op::Cholesky, n, batch, exec)
+}
+
+/// [`cholesky_workspace`] with the caller's operation, so a wrapper reports its own `Op`.
+fn cholesky_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
         batch,
-    )
+        Some(n),
+        work::<T>(n),
+        || check_shape(op, n),
+        |par| faer_req(req::<T::Entity>(n, par)),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
 }
 
 /// Cholesky factors of every `n x n` Hermitian positive-definite matrix of a batch into
@@ -97,10 +118,17 @@ pub fn cholesky_into<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let l_len = checked_product(op, "L", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(req::<T::Entity>(n, par), input.batch());
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| faer_req(req::<T::Entity>(n, par)),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -156,8 +184,11 @@ pub fn cholesky<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let l_len = checked_product(op, "L", &[n, n])?;
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace = vec![MaybeUninit::<u8>::uninit(); cholesky_workspace::<T>(n, batch, exec)?];
+    let bytes = cholesky_bytes::<T>(op, n, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut l_out = VecOut::new(l, checked_product(op, "L", &[l_len, batch])?);
     cholesky_into(op, input.raw(), l_out.spare(), &mut workspace, exec)?;
     l_out.publish();

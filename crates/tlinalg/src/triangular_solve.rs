@@ -143,9 +143,24 @@ pub fn triangular_solve_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
+    triangular_solve_bytes::<T>(Op::TriangularSolve, n, b_rows, b_cols, flags, batch, exec)
+}
+
+/// [`triangular_solve_workspace`] with the caller's operation, so a wrapper reports its own `Op`.
+/// This family needs no scratch, so the answer is always `0` — the route is still resolved, and a
+/// forced strategy this route cannot honor is refused.
+fn triangular_solve_bytes<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    b_rows: usize,
+    b_cols: usize,
+    flags: TriangularSolveFlags,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
     let muladds = item_muladds::<T>(n, b_rows, b_cols, flags);
     let max_item_dim = Some(batch::auto_extent(n, b_rows.max(b_cols)));
-    batch::decide(Op::TriangularSolve, exec, batch, max_item_dim, muladds)?;
+    batch::decide(op, exec, batch, max_item_dim, muladds)?;
     Ok(0)
 }
 
@@ -277,11 +292,11 @@ pub fn triangular_solve<T: FaerScalar>(
         ));
     }
     let item_len = crate::util::checked_product(op, "X", &[b_rows, b_cols])?;
+    // The published order: operand validation before the route is resolved. No scratch is needed,
+    // so the query only resolves (and possibly refuses) the route.
     let batch = a.batch();
-    let mut workspace = vec![
-        MaybeUninit::<u8>::uninit();
-        triangular_solve_workspace::<T>(n, b_rows, b_cols, flags, batch, exec)?
-    ];
+    let bytes = triangular_solve_bytes::<T>(op, n, b_rows, b_cols, flags, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut x_out = VecOut::new(
         x,
         crate::util::checked_product(op, "X", &[item_len, batch])?,

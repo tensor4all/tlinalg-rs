@@ -40,7 +40,7 @@ use strided_view::RawStridedRef;
 use crate::batch::{self, fixed_out, BatchedRef, Push, Sink, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, push_identity, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -381,6 +381,77 @@ fn work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
     weighted_muladds::<T>(m as f64 * n as f64 * m.min(n) as f64)
 }
 
+/// Reject shapes whose products the lane requirement multiplies (faer's `svd_scratch` multiplies
+/// the dimensions itself).
+fn check_shape(op: Op, m: usize, n: usize, vectors: ComputeSvdVectors) -> Result<()> {
+    checked_product(op, "matrix", &[m, n])?;
+    let k = m.min(n);
+    let cols = v_cols(m, n, vectors);
+    checked_product(op, "workspace", &[n, cols])?;
+    checked_product(op, "workspace", &[m, k])?;
+    Ok(())
+}
+
+/// The output lengths of an `m x n` batch in `full` mode, with every product checked.
+fn svd_shape<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    full: bool,
+) -> Result<(usize, usize, usize, f64)> {
+    let (u_cols, v_cols, vectors) = mode(m, n, full);
+    check_shape(op, m, n, vectors)?;
+    let u_len = checked_product(op, "U", &[m, u_cols])?;
+    let vt_len = checked_product(op, "VH", &[v_cols, n])?;
+    Ok((u_len, vt_len, m.min(n), work::<T>(m, n)))
+}
+
+fn svd_values_bytes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(m.max(n)),
+        work::<T>(m, n),
+        || check_shape(op, m, n, ComputeSvdVectors::No),
+        |par| svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
+fn svd_bytes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    full: bool,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let vectors = mode(m, n, full).2;
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(m.max(n)),
+        work::<T>(m, n),
+        || check_shape(op, m, n, vectors),
+        |par| svd_req::<T::Entity>(m, n, vectors, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
 /// Bytes one batched singular-values call needs in its borrowed workspace.
 ///
 /// The canonical `Op` of a refusal is `Op::SvdValues`.
@@ -395,16 +466,7 @@ pub fn svd_values_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let item_muladds = work::<T>(m, n);
-    let (lanes, item_threads) =
-        batch::decide(Op::SvdValues, exec, batch, Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::SvdValues,
-        svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
-        lanes,
-        batch,
-    )
+    svd_values_bytes::<T>(Op::SvdValues, m, n, batch, exec)
 }
 
 /// Bytes one batched SVD call needs in its borrowed workspace.
@@ -423,15 +485,7 @@ pub fn svd_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let item_muladds = work::<T>(m, n);
-    let (lanes, item_threads) = batch::decide(Op::Svd, exec, batch, Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(
-        Op::Svd,
-        svd_req::<T::Entity>(m, n, mode(m, n, full).2, par),
-        lanes,
-        batch,
-    )
+    svd_bytes::<T>(Op::Svd, m, n, full, batch, exec)
 }
 
 /// Singular values of every matrix of a batch, without the vectors, into caller-owned storage.
@@ -453,14 +507,18 @@ pub fn svd_values_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
+    check_shape(op, m, n, ComputeSvdVectors::No)?;
     let item_muladds = work::<T>(m, n);
-    let (lanes, item_threads) =
-        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(
-        svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
+    let requirement = lane_requirement(
+        op,
+        exec,
         input.batch(),
-    );
+        Some(m.max(n)),
+        item_muladds,
+        || check_shape(op, m, n, ComputeSvdVectors::No),
+        |par| svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -512,10 +570,12 @@ pub fn svd_values<T: FaerScalar>(
 ) -> Result<()> {
     s.clear();
     let input = BatchedRef::new(op, "input", input)?;
+    // The published order: operand validation before any workspace query or allocation.
     let (m, n) = (input.rows(), input.cols());
+    check_shape(op, m, n, ComputeSvdVectors::No)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); svd_values_workspace::<T>(m, n, batch, exec)?];
+    let bytes = svd_values_bytes::<T>(op, m, n, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut s_out = VecOut::new(
         s,
         checked_product(op, "singular values", &[m.min(n), batch])?,
@@ -550,15 +610,18 @@ pub fn svd_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let (u_cols, v_cols, vectors) = mode(m, n, full);
-    let u_len = checked_product(op, "U", &[m, u_cols])?;
-    let vt_len = checked_product(op, "VH", &[v_cols, n])?;
-    let item_muladds = work::<T>(m, n);
-    let (lanes, item_threads) =
-        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(svd_req::<T::Entity>(m, n, vectors, par), input.batch());
+    let (u_len, vt_len, k, item_muladds) = svd_shape::<T>(op, m, n, full)?;
+    let vectors = mode(m, n, full).2;
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(m.max(n)),
+        item_muladds,
+        || check_shape(op, m, n, vectors),
+        |par| svd_req::<T::Entity>(m, n, vectors, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -622,15 +685,13 @@ pub fn svd<T: FaerScalar>(
     u.clear();
     s.clear();
     vt.clear();
+    // The published order: operand validation before any workspace query or allocation.
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let k = m.min(n);
-    let (u_cols, v_cols, _) = mode(m, n, full);
-    let u_len = checked_product(op, "U", &[m, u_cols])?;
-    let vt_len = checked_product(op, "VH", &[v_cols, n])?;
+    let (u_len, vt_len, k, _) = svd_shape::<T>(op, m, n, full)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); svd_workspace::<T>(m, n, full, batch, exec)?];
+    let bytes = svd_bytes::<T>(op, m, n, full, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut u_out = VecOut::new(u, checked_product(op, "U", &[u_len, batch])?);
     let mut s_out = VecOut::new(s, checked_product(op, "S", &[k, batch])?);
     let mut vt_out = VecOut::new(vt, checked_product(op, "VH", &[vt_len, batch])?);

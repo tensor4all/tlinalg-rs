@@ -27,7 +27,7 @@ use strided_view::RawStridedRef;
 use crate::batch::{self, fixed_out, BatchedRef, Push, VecOut};
 use crate::scalar::{EigScalar, ScalarEntity};
 use crate::util::{checked_product, weighted_muladds};
-use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -46,7 +46,7 @@ pub fn eig_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    workspace_bytes::<T>(n, vectors, batch, exec)
+    eig_bytes::<T>(Op::Eig, n, vectors, batch, exec)
 }
 
 /// [`eig_workspace`] for the values-only route (the canonical `Op` is `Op::EigValues`).
@@ -59,20 +59,41 @@ pub fn eig_values_workspace<T: FaerScalar>(
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    workspace_bytes::<T>(n, false, batch, exec)
+    eig_bytes::<T>(Op::EigValues, n, false, batch, exec)
 }
 
-fn workspace_bytes<T: FaerScalar>(
+/// Reject a shape whose square the lane requirement multiplies.
+fn check_shape(op: Op, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    Ok(())
+}
+
+/// The work estimate a general eigendecomposition reports to the batch policy.
+fn work<T: ScalarEntity>(n: usize) -> f64 {
+    weighted_muladds::<T>((n as f64).powi(3))
+}
+
+/// The query with the caller's operation, so a wrapper reports its own `Op`.
+fn eig_bytes<T: FaerScalar>(
+    op: Op,
     n: usize,
     vectors: bool,
     batch: usize,
     exec: Exec<'_>,
 ) -> Result<usize> {
-    let op = if vectors { Op::Eig } else { Op::EigValues };
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, batch, Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    total_bytes(op, T::eig_req(n, vectors, par), lanes, batch)
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(n),
+        work::<T>(n),
+        || check_shape(op, n),
+        |par| T::eig_req(n, vectors, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
 }
 
 /// Eigenvalues and eigenvectors of every `n x n` matrix of a batch, into caller-owned storage.
@@ -96,10 +117,17 @@ pub fn eig_into<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(T::eig_req(n, true, par), input.batch());
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| T::eig_req(n, true, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -139,10 +167,17 @@ pub fn eig_values_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
-    let par = batch::route_par(lanes, item_threads);
-    let per_lane = per_lane_bytes(T::eig_req(n, false, par), input.batch());
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| T::eig_req(n, false, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
     batch::run(
         op,
@@ -204,9 +239,11 @@ pub fn eig<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); eig_workspace::<T>(n, true, batch, exec)?];
+    let bytes = eig_bytes::<T>(op, n, true, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
     let mut vectors_out = VecOut::new(
         vectors,
@@ -263,9 +300,11 @@ pub fn eig_values<T: FaerScalar>(
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
     let batch = input.batch();
-    let mut workspace =
-        vec![MaybeUninit::<u8>::uninit(); eig_values_workspace::<T>(n, batch, exec)?];
+    let bytes = eig_bytes::<T>(op, n, false, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
     let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
     eig_values_into(op, input.raw(), values_out.spare(), &mut workspace, exec)?;
     values_out.publish();

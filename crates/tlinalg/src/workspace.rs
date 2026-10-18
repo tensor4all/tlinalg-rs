@@ -20,40 +20,50 @@ use core::mem::MaybeUninit;
 use faer::dyn_stack::{MemStack, StackReq};
 
 use crate::util::invalid;
-use crate::{Op, Result};
+use crate::{Error, Op, Result};
+use tcontract_exec::Exec;
 
-/// One lane's live scratch requirement for a `lanes`-lane route, in bytes.
+/// The resolved route and one lane's requirement, or `None` when the batch has no items.
 ///
-/// Computed as `lanes * unaligned_bytes_required(per_lane)`: every lane chunk then carries its own
-/// worst-case alignment padding, so a lane never depends on where the caller's buffer happens to
-/// start.
-pub(crate) fn lanes_bytes(op: Op, per_lane: StackReq, lanes: usize) -> Result<usize> {
-    let bytes = per_lane.unaligned_bytes_required();
-    if bytes == usize::MAX {
-        return Err(invalid(
-            op,
-            "workspace",
-            "the workspace requirement overflows usize",
-        ));
-    }
-    bytes
-        .checked_mul(lanes)
-        .ok_or_else(|| invalid(op, "workspace", "the workspace requirement overflows usize"))
-}
-
-/// One lane's live requirement, or zero when the call has no items at all (nothing runs, so no
-/// workspace is needed and a shape-only huge extent must not turn into a huge byte count).
-pub(crate) fn per_lane_bytes(req: StackReq, batch: usize) -> usize {
+/// The order is the borrowed-workspace contract, in one place for every family:
+///
+/// 1. resolve strategy availability (a forced route this provider cannot honor is refused even for
+///    an empty batch);
+/// 2. return `None` for `batch == 0`, before any requirement is built, so a shape-only huge extent
+///    never turns into a huge (or overflowing) byte count;
+/// 3. run the family's checked shape products — the values every requirement builder multiplies,
+///    including the ones inside faer's recommendation helpers;
+/// 4. build the requirement at the item width the route grants and return `(lanes, per_lane_bytes)`.
+pub(crate) fn lane_requirement(
+    op: Op,
+    exec: Exec<'_>,
+    batch: usize,
+    max_item_dim: Option<usize>,
+    item_muladds: f64,
+    check: impl FnOnce() -> Result<()>,
+    req: impl FnOnce(faer::Par) -> StackReq,
+) -> Result<Option<(usize, usize)>> {
+    let (lanes, item_threads) = crate::batch::decide(op, exec, batch, max_item_dim, item_muladds)?;
     if batch == 0 {
-        0
-    } else {
-        req.unaligned_bytes_required()
+        return Ok(None);
     }
+    check()?;
+    let par = crate::batch::route_par(lanes, item_threads);
+    let bytes = req(par).unaligned_bytes_required();
+    if bytes == usize::MAX {
+        return Err(overflow(op));
+    }
+    Ok(Some((lanes, bytes)))
 }
 
-/// The complete requirement of a `lanes`-lane, `batch`-item call.
-pub(crate) fn total_bytes(op: Op, req: StackReq, lanes: usize, batch: usize) -> Result<usize> {
-    lanes_bytes(op, req, if batch == 0 { 0 } else { lanes })
+/// One lane's requirement times the resolved lane count.
+pub(crate) fn total_of(op: Op, lanes: usize, per_lane: usize) -> Result<usize> {
+    per_lane.checked_mul(lanes).ok_or_else(|| overflow(op))
+}
+
+/// The typed refusal for a requirement that does not fit in `usize`.
+fn overflow(op: Op) -> Error {
+    invalid(op, "workspace", "the workspace requirement overflows usize")
 }
 
 /// A faer scratch requirement as one lane-layout component.

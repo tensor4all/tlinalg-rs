@@ -21,6 +21,12 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tlinalg-testkit = { workspace = true }
+# The published 0.3.0 release, used only by `tests/alloc_counts.rs` as the bitwise-compatibility
+# reference for the borrowed-workspace wrappers. It resolves its own registry `tcontract-exec`, so
+# the test names that `Exec` through the second dev-dependency (the two `Exec` types are distinct
+# packages: this crate consumes the git revision the 0.3 chain pins).
+tlinalg_030 = { package = "tlinalg", version = "=0.3.0" }
+tcontract_exec_030 = { package = "tcontract-exec", version = "=0.3.0" }
 
 [lints]
 workspace = true

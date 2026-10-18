@@ -425,13 +425,29 @@ where
     })
 }
 
+/// Mark `permutation[index]` as visited and return the zero-based position it points at.
+///
+/// Visited entries are stored **negated**: every valid pivot is positive (`1..=n`, and `n` fits the
+/// LAPACK `i32` interface), so negation is representable for every accepted value — adding `n`
+/// instead would overflow for an entry above `i32::MAX - n`. Returns `None` when the entry is
+/// already marked (a position another step has visited) and `-1` when it is not a representable
+/// index.
+fn mark_visited(permutation: &mut [i32], index: usize) -> Option<usize> {
+    let value = permutation[index];
+    if value < 0 {
+        return None;
+    }
+    permutation[index] = -value;
+    usize::try_from(value).ok().map(|one_based| one_based - 1)
+}
+
 /// Append a one-based `?geqp3` permutation as zero-based `i64` indices, rejecting anything that is
 /// not a permutation.
 ///
-/// The validation walks the cycles of the mapping in place, marking visited positions by adding
-/// `n` (the entries are `1..=n`, so a marked entry exceeds `n`), and restores them afterwards.
-/// Re-entering a marked position before closing the cycle means two positions map to the same
-/// entry, which is not a permutation. No separate `seen` buffer is needed.
+/// The validation walks the cycles of the mapping in place, marking visited positions with
+/// [`mark_visited`] (negation) and restoring them afterwards. Re-entering a marked position before
+/// closing the cycle means two positions map to the same entry, which is not a permutation. No
+/// separate `seen` buffer is needed.
 fn normalize_into(op: Op, permutation: &mut [i32], out: &mut Vec<i64>) -> Result<()> {
     let invalid = || Error::InvalidArgument {
         op,
@@ -439,34 +455,72 @@ fn normalize_into(op: Op, permutation: &mut [i32], out: &mut Vec<i64>) -> Result
         detail: "LAPACK GEQP3 returned an invalid pivot permutation".to_owned(),
     };
     let n = permutation.len();
-    let marked = i32::try_from(n).map_err(|_| invalid())?;
     for &value in permutation.iter() {
-        if value < 1 || value > marked {
+        if value < 1 || usize::try_from(value).map_or(true, |one_based| one_based > n) {
             return Err(invalid());
         }
     }
     for start in 0..n {
-        if permutation[start] > marked {
+        if permutation[start] < 0 {
             continue;
         }
         let mut index = start;
         loop {
-            let value = permutation[index];
-            if value > marked {
+            let Some(next) = mark_visited(permutation, index) else {
                 // The walk reached a position of an already validated cycle, so the mapping is not
-                // injective.
+                // injective (or the entry is not a usable index).
+                return Err(invalid());
+            };
+            if next >= n {
                 return Err(invalid());
             }
-            permutation[index] = value + marked;
-            index = (value - 1) as usize;
+            index = next;
             if index == start {
                 break;
             }
         }
     }
     for value in permutation.iter_mut() {
-        *value -= marked;
+        *value = -*value;
         out.push(i64::from(*value - 1));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mark_visited, normalize_into};
+    use crate::Op;
+
+    /// The visited marker must represent every pivot LAPACK may return, including the largest
+    /// `i32` value: negation is safe there, while the former `value + n` marker was not.
+    #[test]
+    fn the_visited_marker_does_not_overflow() {
+        let mut entries = [i32::MAX];
+        assert_eq!(mark_visited(&mut entries, 0), Some(i32::MAX as usize - 1));
+        assert_eq!(entries, [-i32::MAX]);
+        // A marked entry is a re-entry, not a second visit.
+        assert_eq!(mark_visited(&mut entries, 0), None);
+        assert_eq!(entries, [-i32::MAX]);
+    }
+
+    /// The cycle walk accepts a permutation, restores it, and rejects a duplicate target.
+    #[test]
+    fn the_permutation_check_restores_and_rejects_duplicates() {
+        let mut valid = [2_i32, 3, 1];
+        let mut out = Vec::new();
+        normalize_into(Op::RankRevealingQr, &mut valid, &mut out).unwrap();
+        assert_eq!(valid, [2, 3, 1], "the marker is restored");
+        assert_eq!(out, [1, 2, 0]);
+
+        // Two positions map to entry 1: not a permutation.
+        let mut duplicate = [1_i32, 1, 3];
+        let mut out = Vec::new();
+        assert!(normalize_into(Op::RankRevealingQr, &mut duplicate, &mut out).is_err());
+
+        // Out of range.
+        let mut out_of_range = [1_i32, 4, 3];
+        let mut out = Vec::new();
+        assert!(normalize_into(Op::RankRevealingQr, &mut out_of_range, &mut out).is_err());
+    }
 }

@@ -8,7 +8,7 @@
 //! table of `(items, n, k, budget)`, including RHS-heavy solves and reflector targets, and pin the
 //! exact nonempty partition, the forced routes and the typed vendor refusal.
 
-use crate::batch::{auto_extent_with, decide, out, run, ScratchArena};
+use crate::batch::{auto_extent_with, decide, fixed_out, run, ScratchArena, VecOut};
 use crate::Op;
 use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::cell::Cell;
@@ -77,6 +77,7 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
         };
         assert_eq!(lanes, want_lanes, "table row {batch}/{budget}/{dim:?}");
         let mut values = vec![99];
+        let mut values_out = VecOut::new(&mut values, batch);
         let scratch = AtomicUsize::new(0);
         let active = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
@@ -89,7 +90,7 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
             token(&pool, budget),
             dim,
             1.0,
-            &mut (out(&mut values, 1),),
+            &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |par, _| {
                 scratch.fetch_add(1, SeqCst);
@@ -123,6 +124,7 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
             "batch={batch}, budget={budget}, dim={dim:?}"
         );
         assert_eq!(scratch.load(SeqCst), lanes);
+        values_out.publish();
         assert_eq!(values, (0..batch).collect::<Vec<_>>());
         assert!(seen.iter().all(|n| n.load(SeqCst) == 1));
         assert_eq!(active.load(SeqCst), 0);
@@ -171,13 +173,14 @@ fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
         .install(|| check(token(&selected, 3), 3, false));
     foreign.rayon_pool().install(|| {
         let mut values = Vec::new();
+        let mut values_out = VecOut::new(&mut values, 8);
         run(
             Op::Qr,
             8,
             token(&selected, 2),
             Some(1),
             1.0,
-            &mut (out(&mut values, 1),),
+            &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |_, _| (),
             |index, (values,), (), par| {
@@ -189,6 +192,7 @@ fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
             },
         )
         .unwrap();
+        values_out.publish();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
     });
     assert_eq!(
@@ -218,6 +222,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
     ] {
         let exec = token(&pool, 4).with_batch_policy(BatchPolicy::new(strategy));
         let mut values = Vec::new();
+        let mut values_out = VecOut::new(&mut values, 8);
         let scratch_builds = AtomicUsize::new(0);
         let items = AtomicUsize::new(0);
         LAST_LANES.set(0);
@@ -227,7 +232,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             exec,
             Some(1),
             1.0,
-            &mut (out(&mut values, 1),),
+            &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |par, _| {
                 assert_eq!(par.degree(), item_threads, "scratch {strategy:?}");
@@ -245,6 +250,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
         // Exactly one scratch per lane and every item visited once.
         assert_eq!(scratch_builds.load(SeqCst), lanes, "{strategy:?}");
         assert_eq!(items.load(SeqCst), 8, "{strategy:?}");
+        values_out.publish();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
     }
 }
@@ -329,6 +335,8 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
     ));
     let pool = owned_pool(2);
     let exec = token(&pool, 2).with_batch_policy(policy);
+    let mut values: Vec<f64> = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 1);
     assert!(matches!(
         run(
             Op::Qr,
@@ -336,7 +344,7 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
             exec,
             Some(1),
             1.0,
-            &mut (out(&mut Vec::<f64>::new(), 1),),
+            &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |_, _| (),
             |_, _, _, _| Ok(()),
