@@ -653,4 +653,29 @@ fn rank_below_two_is_rejected() {
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }));
+
+    // The solve wrappers size their borrowed workspace from the descriptor's matrix shape, so a
+    // rank-one descriptor has to be refused before that access, not panic on it.
+    let mut x = [1.0_f64; 3];
+    let err = tlinalg::lu::solve(
+        Op::Solve,
+        RawStridedRef::new(&a, &[3], &[1], 0).unwrap(),
+        None,
+        RawStridedMut::new(&mut x, &[3], &[1], 0).unwrap(),
+        false,
+        Exec::serial(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
+    let mut x = Vec::new();
+    let err = tlinalg::full_piv_lu::full_piv_lu_solve(
+        Op::FullPivLuSolve,
+        RawStridedRef::new(&a, &[3], &[1], 0).unwrap(),
+        RawStridedRef::new(&a, &[3], &[1], 0).unwrap(),
+        false,
+        &mut x,
+        Exec::serial(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
 }

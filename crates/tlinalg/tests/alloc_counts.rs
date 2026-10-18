@@ -1,9 +1,20 @@
-//! Steady-state heap allocations per batched call, counted with a global allocator.
+//! Heap allocations per batched call, counted with a global allocator.
 //!
-//! The output vectors are reused with enough capacity, as a host recycling pooled buffers would.
-//! The batch driver allocates nothing on one lane; what remains is each family's faer lane
-//! scratch, independent of the batch size. This test pins those counts for one lane so a
-//! regression shows up as a number.
+//! Three layers, all in this one binary (one counting allocator):
+//!
+//! * `per_call_allocations_do_not_grow_with_the_batch` pins the **`Vec` wrappers**' steady-state
+//!   count: they reserve their outputs and allocate exactly one scratch block of `*_workspace`
+//!   bytes per call, independent of the batch size (zero when the family needs no scratch).
+//! * `into_is_allocation_free_for_every_family` is the gate the borrowed-workspace API exists for
+//!   (`tlinalg-rs#57` test 1): every family's `*_into` call, in all four scalar types, at sizes
+//!   {1, 2, 8}, batches {1, 64}, with contiguous **and** transposed input, on `Exec::serial()`,
+//!   allocates nothing at all.
+//! * `the_pool_route_adds_a_constant` is test 7: a pooled `Exec` adds the pool's own fixed cost,
+//!   which does not grow with the batch.
+//!
+//! Tests 2 (batch independence), 3 (layout independence) and the wrapper/`_into` bitwise equality
+//! check live here too: the layout variant compares the two input layouts bitwise, and the wrapper
+//! is re-run against the `_into` buffers.
 
 use strided_view::{RawStridedMut, RawStridedRef};
 use tcontract_exec::Exec;
@@ -165,6 +176,7 @@ fn triangular(left_side: bool, batch: usize) -> usize {
 /// scratch, built once per call and independent of the batch size.
 #[test]
 fn per_call_allocations_do_not_grow_with_the_batch() {
+    let _guard = serialised();
     let one = family_counts(1);
     let many = family_counts(64);
     for ((name, at_one), (_, at_many)) in one.iter().zip(&many) {
@@ -174,19 +186,1118 @@ fn per_call_allocations_do_not_grow_with_the_batch() {
     // Each count is at most the pre-extraction route's native allocations for the same call
     // (rank_revealing_qr was 7, solve 5, full_piv_lu_solve 7).
     let expected = [
-        // Borrowing the compact reflector column (#17) and factoring Cholesky in the output (#18)
-        // each remove one per-lane allocation; the rest are unchanged by this change.
-        ("compact_factor", 2),
+        // One scratch block of `*_workspace` bytes per call (the caller-owned lane storage the
+        // wrapper allocates for its `*_into` route); no per-family, per-lane allocations remain.
+        // `compact_factor`, `rank_revealing_qr`, `solve`, `full_piv_lu_solve`, `qr`, `eigh`, `svd`
+        // and `packed_lu factor` used to allocate 2/5/5/7/4/2/3/5 times: their work matrices,
+        // permutation vectors and faer buffers are now carved from that one block.
+        ("compact_factor", 1),
         ("cholesky", 1),
-        ("rank_revealing_qr", 5),
-        ("solve", 5),
-        ("full_piv_lu_solve", 7),
-        ("qr", 4),
-        ("eigh", 2),
-        ("svd", 3),
-        ("packed_lu factor", 5),
+        ("rank_revealing_qr", 1),
+        ("solve", 1),
+        ("full_piv_lu_solve", 1),
+        ("qr", 1),
+        ("eigh", 1),
+        ("svd", 1),
+        ("packed_lu factor", 1),
+        // No library scratch at all: the output chunk is the work matrix.
         ("triangular_solve left", 0),
         ("triangular_solve right", 0),
     ];
     assert_eq!(one, expected);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The borrowed-workspace gates (tlinalg-rs#57 tests 1-5, 7).
+// ---------------------------------------------------------------------------------------------
+
+use core::mem::MaybeUninit;
+
+use num_complex::{Complex32, Complex64};
+use tcontract_exec::Pool;
+use tlinalg::full_piv_lu::{
+    full_piv_lu, full_piv_lu_into, full_piv_lu_solve, full_piv_lu_solve_into,
+    full_piv_lu_solve_workspace, full_piv_lu_workspace, FullPivLuFactors,
+};
+use tlinalg::householder::{
+    apply_reflectors, apply_reflectors_into, apply_reflectors_workspace, compact_factor,
+    compact_factor_into, compact_factor_workspace, ReflectorShape,
+};
+use tlinalg::lu::{lu, lu_into, lu_solve_workspace, lu_workspace, solve, solve_into, LuFactors};
+use tlinalg::{cholesky, eig, eigh, packed_lu, qr, svd, triangular_solve, Error};
+use tlinalg_testkit::alloc::{allocations, allocations_all_threads};
+use tlinalg_testkit::TestScalar;
+
+/// Serialises the tests in this binary: the process-wide counter behind
+/// [`allocations_all_threads`] sees every thread, so the pool gate must not run next to another
+/// test's allocations.
+fn serialised() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The raw bytes of an output buffer: the bitwise comparison the workspace gates need (ordinary
+/// `==` on floats is not bitwise, and `NaN` payloads must compare).
+fn bytes_of<T: Copy>(values: &[T]) -> Vec<u8> {
+    // SAFETY: every `T` here is a plain `Copy` scalar (f32/f64/`Complex`/i32/i64), so reading the
+    // initialised slice as bytes is sound and exposes the exact bit patterns.
+    unsafe {
+        core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), core::mem::size_of_val(values))
+    }
+    .to_vec()
+}
+
+/// The raw bytes of a `MaybeUninit` output buffer the `*_into` call just filled.
+///
+/// # Safety
+///
+/// Every element must be initialised; the callers only use it after `Ok`.
+unsafe fn bytes_uninit<T: Copy>(buf: &[MaybeUninit<T>]) -> Vec<u8> {
+    // SAFETY: the caller guarantees full initialisation and `T` is a plain `Copy` scalar.
+    bytes_of(unsafe { core::slice::from_raw_parts(buf.as_ptr().cast::<T>(), buf.len()) })
+}
+
+/// Read a fully written `MaybeUninit` buffer.
+///
+/// # Safety
+///
+/// Every element was written by the `*_into` call that just returned `Ok`.
+unsafe fn assume<T>(buf: Vec<MaybeUninit<T>>) -> Vec<T> {
+    let len = buf.len();
+    let mut buf = core::mem::ManuallyDrop::new(buf);
+    // SAFETY: the caller guarantees every element is initialised; `MaybeUninit<T>` has the layout
+    // of `T` and the `ManuallyDrop` keeps the `MaybeUninit` allocation from being dropped twice.
+    unsafe { Vec::from_raw_parts(buf.as_mut_ptr().cast::<T>(), len, len) }
+}
+
+/// One dtype's full battery: the zero-allocation gate, batch independence, layout independence and
+/// the bitwise wrapper/`_into` equality.
+///
+/// The macro is expanded once per scalar type so every output buffer has its concrete type
+/// (`eigh_values` returns the real type, `eig` the complex one) without a public type mapping.
+macro_rules! dtype_battery {
+    ($t:ty, $real:ty, $cplx:ty) => {{
+        let seq = Exec::serial();
+        let value = |x: f64| <$t as TestScalar>::from_c64(Complex64::new(x, 0.0));
+        // Diagonally dominant and symmetric: SPD, nonsingular, and well conditioned enough for
+        // every decomposition to converge at these sizes.
+        let spd = |n: usize, batch: usize| -> Vec<$t> {
+            (0..n * n * batch)
+                .map(|k| {
+                    let (row, col) = (k % n, (k / n) % n);
+                    if row == col {
+                        value(n as f64 + 2.0)
+                    } else {
+                        value(0.05 * ((row + 1) * (col + 1) % 3) as f64)
+                    }
+                })
+                .collect()
+        };
+        // The same logical matrices in row-major storage, read through strides `[n, 1]`.
+        let transposed = |data: &[$t], n: usize| -> Vec<$t> {
+            (0..data.len())
+                .map(|k| {
+                    let (item, rest) = (k / (n * n), k % (n * n));
+                    let (row, col) = (rest % n, rest / n);
+                    data[item * n * n + col * n + row]
+                })
+                .collect()
+        };
+
+        // One full pass over every family for one shape, one batch size and one input layout.
+        // Returns the bit patterns of every output plus the zero-allocation assertions.
+        let run = |n: usize, batch: usize, transposed_layout: bool, compare_wrapper: bool| {
+            let data = spd(n, batch);
+            let (owned, dims, strides): (Vec<$t>, [usize; 3], [isize; 3]) = if transposed_layout {
+                (
+                    transposed(&data, n),
+                    [n, n, batch],
+                    [n as isize, 1, (n * n) as isize],
+                )
+            } else {
+                (
+                    data.clone(),
+                    [n, n, batch],
+                    [1, n as isize, (n * n) as isize],
+                )
+            };
+            let view = RawStridedRef::new(&owned, &dims, &strides, 0).unwrap();
+            let square = n * n;
+            let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+            macro_rules! zero_gate {
+                ($name:literal, $call:block) => {{
+                    let allocs = allocations(|| $call);
+                    assert_eq!(
+                        allocs, 0,
+                        "{}: `_into` allocated ({n}x{n}, batch {batch})",
+                        $name
+                    );
+                }};
+            }
+
+            // qr
+            {
+                let ws = qr::qr_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut q = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut r = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("qr", {
+                    qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, seq).unwrap()
+                });
+                out.push(("qr.q", unsafe { bytes_uninit(&q) }));
+                out.push(("qr.r", unsafe { bytes_uninit(&r) }));
+                if compare_wrapper {
+                    let (mut wq, mut wr) = (Vec::new(), Vec::new());
+                    qr::qr(Op::Qr, view, &mut wq, &mut wr, seq).unwrap();
+                    assert_eq!(unsafe { bytes_uninit(&q) }, bytes_of(&wq), "qr wrapper Q");
+                    assert_eq!(unsafe { bytes_uninit(&r) }, bytes_of(&wr), "qr wrapper R");
+                }
+            }
+            // rank_revealing_qr
+            {
+                let ws = qr::rank_revealing_qr_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut q = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut r = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut perm = vec![MaybeUninit::<i64>::uninit(); n * batch];
+                zero_gate!("rank_revealing_qr", {
+                    qr::rank_revealing_qr_into(
+                        Op::RankRevealingQr,
+                        view,
+                        &mut q,
+                        &mut r,
+                        &mut perm,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("rrqr.q", unsafe { bytes_uninit(&q) }));
+                out.push(("rrqr.r", unsafe { bytes_uninit(&r) }));
+                // SAFETY: `rank_revealing_qr_into` returned `Ok`.
+                let perm_values = unsafe { assume(perm) };
+                out.push(("rrqr.perm", bytes_of(&perm_values)));
+                if compare_wrapper {
+                    let (mut wq, mut wr, mut wp) = (Vec::new(), Vec::new(), Vec::new());
+                    qr::rank_revealing_qr(
+                        Op::RankRevealingQr,
+                        view,
+                        &mut wq,
+                        &mut wr,
+                        &mut wp,
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(unsafe { bytes_uninit(&q) }, bytes_of(&wq), "rrqr wrapper Q");
+                    assert_eq!(unsafe { bytes_uninit(&r) }, bytes_of(&wr), "rrqr wrapper R");
+                    assert_eq!(bytes_of(&perm_values), bytes_of(&wp), "rrqr wrapper perm");
+                }
+            }
+            // svd
+            {
+                let ws = svd::svd_workspace::<$t>(n, n, false, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut u = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut s = vec![MaybeUninit::<$t>::uninit(); n * batch];
+                let mut vt = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("svd", {
+                    svd::svd_into(
+                        Op::Svd,
+                        view,
+                        false,
+                        &mut u,
+                        &mut s,
+                        &mut vt,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("svd.u", unsafe { bytes_uninit(&u) }));
+                out.push(("svd.s", unsafe { bytes_uninit(&s) }));
+                out.push(("svd.vt", unsafe { bytes_uninit(&vt) }));
+                if compare_wrapper {
+                    let (mut wu, mut ws_, mut wv) = (Vec::new(), Vec::new(), Vec::new());
+                    svd::svd(Op::Svd, view, false, &mut wu, &mut ws_, &mut wv, seq).unwrap();
+                    assert_eq!(unsafe { bytes_uninit(&u) }, bytes_of(&wu), "svd wrapper U");
+                    assert_eq!(unsafe { bytes_uninit(&s) }, bytes_of(&ws_), "svd wrapper S");
+                    assert_eq!(
+                        unsafe { bytes_uninit(&vt) },
+                        bytes_of(&wv),
+                        "svd wrapper VH"
+                    );
+                }
+            }
+            // svd_values
+            {
+                let ws = svd::svd_values_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut s = vec![MaybeUninit::<$real>::uninit(); n * batch];
+                zero_gate!("svd_values", {
+                    svd::svd_values_into(Op::SvdValues, view, &mut s, &mut workspace, seq).unwrap()
+                });
+                // SAFETY: `svd_values_into` returned `Ok`.
+                let s_values = unsafe { assume(s) };
+                out.push(("svd_values.s", bytes_of(&s_values)));
+                if compare_wrapper {
+                    let mut ws_ = Vec::new();
+                    svd::svd_values(Op::SvdValues, view, &mut ws_, seq).unwrap();
+                    assert_eq!(bytes_of(&s_values), bytes_of(&ws_), "svd_values wrapper");
+                }
+            }
+            // eigh
+            {
+                let ws = eigh::eigh_workspace::<$t>(n, true, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut values = vec![MaybeUninit::<$t>::uninit(); n * batch];
+                let mut vectors = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("eigh", {
+                    eigh::eigh_into(
+                        Op::Eigh,
+                        view,
+                        &mut values,
+                        &mut vectors,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("eigh.values", unsafe { bytes_uninit(&values) }));
+                out.push(("eigh.vectors", unsafe { bytes_uninit(&vectors) }));
+                if compare_wrapper {
+                    let (mut wv, mut wm) = (Vec::new(), Vec::new());
+                    eigh::eigh(Op::Eigh, view, &mut wv, &mut wm, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&values) },
+                        bytes_of(&wv),
+                        "eigh wrapper values"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&vectors) },
+                        bytes_of(&wm),
+                        "eigh wrapper vectors"
+                    );
+                }
+            }
+            // eigh_values
+            {
+                let ws = eigh::eigh_values_workspace::<$t>(n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut values = vec![MaybeUninit::<$real>::uninit(); n * batch];
+                zero_gate!("eigh_values", {
+                    eigh::eigh_values_into(Op::EighValues, view, &mut values, &mut workspace, seq)
+                        .unwrap()
+                });
+                // SAFETY: `eigh_values_into` returned `Ok`.
+                let values_buf = unsafe { assume(values) };
+                out.push(("eigh_values.values", bytes_of(&values_buf)));
+                if compare_wrapper {
+                    let mut wv = Vec::new();
+                    eigh::eigh_values(Op::EighValues, view, &mut wv, seq).unwrap();
+                    assert_eq!(bytes_of(&values_buf), bytes_of(&wv), "eigh_values wrapper");
+                }
+            }
+            // eig
+            {
+                let ws = eig::eig_workspace::<$t>(n, true, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut values = vec![MaybeUninit::<$cplx>::uninit(); n * batch];
+                let mut vectors = vec![MaybeUninit::<$cplx>::uninit(); square * batch];
+                zero_gate!("eig", {
+                    eig::eig_into(
+                        Op::Eig,
+                        view,
+                        &mut values,
+                        &mut vectors,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("eig.values", unsafe { bytes_uninit(&values) }));
+                out.push(("eig.vectors", unsafe { bytes_uninit(&vectors) }));
+                if compare_wrapper {
+                    let (mut wv, mut wm) = (Vec::new(), Vec::new());
+                    eig::eig(Op::Eig, view, &mut wv, &mut wm, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&values) },
+                        bytes_of(&wv),
+                        "eig wrapper values"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&vectors) },
+                        bytes_of(&wm),
+                        "eig wrapper vectors"
+                    );
+                }
+            }
+            // eig_values
+            {
+                let ws = eig::eig_values_workspace::<$t>(n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut values = vec![MaybeUninit::<$cplx>::uninit(); n * batch];
+                zero_gate!("eig_values", {
+                    eig::eig_values_into(Op::EigValues, view, &mut values, &mut workspace, seq)
+                        .unwrap()
+                });
+                out.push(("eig_values.values", unsafe { bytes_uninit(&values) }));
+                if compare_wrapper {
+                    let mut wv = Vec::new();
+                    eig::eig_values(Op::EigValues, view, &mut wv, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&values) },
+                        bytes_of(&wv),
+                        "eig_values wrapper"
+                    );
+                }
+            }
+            // lu
+            {
+                let ws = lu_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut p = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut l = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut u = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut parity = vec![MaybeUninit::<$t>::uninit(); batch];
+                zero_gate!("lu", {
+                    lu_into(
+                        Op::Lu,
+                        view,
+                        &mut p,
+                        &mut l,
+                        &mut u,
+                        &mut parity,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("lu.p", unsafe { bytes_uninit(&p) }));
+                out.push(("lu.l", unsafe { bytes_uninit(&l) }));
+                out.push(("lu.u", unsafe { bytes_uninit(&u) }));
+                out.push(("lu.parity", unsafe { bytes_uninit(&parity) }));
+                if compare_wrapper {
+                    let (mut wp, mut wl, mut wu, mut wpar) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    lu(
+                        Op::Lu,
+                        view,
+                        LuFactors {
+                            p: &mut wp,
+                            l: &mut wl,
+                            u: &mut wu,
+                            parity: &mut wpar,
+                        },
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(unsafe { bytes_uninit(&p) }, bytes_of(&wp), "lu wrapper P");
+                    assert_eq!(unsafe { bytes_uninit(&l) }, bytes_of(&wl), "lu wrapper L");
+                    assert_eq!(unsafe { bytes_uninit(&u) }, bytes_of(&wu), "lu wrapper U");
+                    assert_eq!(
+                        unsafe { bytes_uninit(&parity) },
+                        bytes_of(&wpar),
+                        "lu wrapper parity"
+                    );
+                }
+            }
+            // lu::solve
+            {
+                let ws = lu_solve_workspace::<$t>(n, n, false, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut x = vec![value(1.0); square * batch];
+                let out_dims = [n, n, batch];
+                let out_strides = [1isize, n as isize, (n * n) as isize];
+                zero_gate!("solve", {
+                    let destination =
+                        RawStridedMut::new(&mut x, &out_dims, &out_strides, 0).unwrap();
+                    solve_into(
+                        Op::Solve,
+                        view,
+                        Some(view),
+                        destination,
+                        false,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("solve.x", bytes_of(&x)));
+                if compare_wrapper {
+                    let mut wx = vec![value(1.0); square * batch];
+                    let destination =
+                        RawStridedMut::new(&mut wx, &out_dims, &out_strides, 0).unwrap();
+                    solve(Op::Solve, view, Some(view), destination, false, seq).unwrap();
+                    assert_eq!(bytes_of(&x), bytes_of(&wx), "solve wrapper");
+                }
+            }
+            // full_piv_lu
+            {
+                let ws = full_piv_lu_workspace::<$t>(n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut p = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut l = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut u = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut q = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut parity = vec![MaybeUninit::<$t>::uninit(); batch];
+                zero_gate!("full_piv_lu", {
+                    full_piv_lu_into(
+                        Op::FullPivLu,
+                        view,
+                        &mut p,
+                        &mut l,
+                        &mut u,
+                        &mut q,
+                        &mut parity,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("full_piv_lu.p", unsafe { bytes_uninit(&p) }));
+                out.push(("full_piv_lu.l", unsafe { bytes_uninit(&l) }));
+                out.push(("full_piv_lu.u", unsafe { bytes_uninit(&u) }));
+                out.push(("full_piv_lu.q", unsafe { bytes_uninit(&q) }));
+                out.push(("full_piv_lu.parity", unsafe { bytes_uninit(&parity) }));
+                if compare_wrapper {
+                    let (mut wp, mut wl, mut wu, mut wq, mut wpar) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    full_piv_lu(
+                        Op::FullPivLu,
+                        view,
+                        FullPivLuFactors {
+                            p: &mut wp,
+                            l: &mut wl,
+                            u: &mut wu,
+                            q: &mut wq,
+                            parity: &mut wpar,
+                        },
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&p) },
+                        bytes_of(&wp),
+                        "full_piv_lu wrapper P"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&l) },
+                        bytes_of(&wl),
+                        "full_piv_lu wrapper L"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&u) },
+                        bytes_of(&wu),
+                        "full_piv_lu wrapper U"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&q) },
+                        bytes_of(&wq),
+                        "full_piv_lu wrapper Q"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&parity) },
+                        bytes_of(&wpar),
+                        "full_piv_lu wrapper parity"
+                    );
+                }
+            }
+            // full_piv_lu_solve
+            {
+                let ws = full_piv_lu_solve_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut x = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("full_piv_lu_solve", {
+                    full_piv_lu_solve_into(
+                        Op::FullPivLuSolve,
+                        view,
+                        view,
+                        false,
+                        &mut x,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("full_piv_lu_solve.x", unsafe { bytes_uninit(&x) }));
+                if compare_wrapper {
+                    let mut wx = Vec::new();
+                    full_piv_lu_solve(Op::FullPivLuSolve, view, view, false, &mut wx, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&x) },
+                        bytes_of(&wx),
+                        "full_piv_lu_solve wrapper"
+                    );
+                }
+            }
+            // cholesky
+            {
+                let ws = cholesky::cholesky_workspace::<$t>(n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut l = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("cholesky", {
+                    cholesky::cholesky_into(Op::Cholesky, view, &mut l, &mut workspace, seq)
+                        .unwrap()
+                });
+                out.push(("cholesky.l", unsafe { bytes_uninit(&l) }));
+                if compare_wrapper {
+                    let mut wl = Vec::new();
+                    cholesky::cholesky(Op::Cholesky, view, &mut wl, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&l) },
+                        bytes_of(&wl),
+                        "cholesky wrapper"
+                    );
+                }
+            }
+            // triangular_solve
+            {
+                let flags = TriangularSolveFlags {
+                    left_side: true,
+                    lower: true,
+                    transpose_a: false,
+                    unit_diagonal: false,
+                };
+                let ws =
+                    triangular_solve::triangular_solve_workspace::<$t>(n, n, n, flags, batch, seq)
+                        .unwrap();
+                assert_eq!(ws, 0, "triangular_solve needs no workspace");
+                let mut workspace = Vec::new();
+                let mut x = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                zero_gate!("triangular_solve", {
+                    triangular_solve::triangular_solve_into(
+                        Op::TriangularSolve,
+                        view,
+                        view,
+                        flags,
+                        &mut x,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("triangular_solve.x", unsafe { bytes_uninit(&x) }));
+                if compare_wrapper {
+                    let mut wx = Vec::new();
+                    triangular_solve(Op::TriangularSolve, view, view, flags, &mut wx, seq).unwrap();
+                    assert_eq!(
+                        unsafe { bytes_uninit(&x) },
+                        bytes_of(&wx),
+                        "triangular_solve wrapper"
+                    );
+                }
+            }
+            // packed_lu::factor
+            {
+                let ws = packed_lu::factor_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut lu = owned.clone();
+                let mut pivots = vec![0_i32; n * batch];
+                let mut parity = vec![value(0.0); batch];
+                zero_gate!("packed_lu::factor", {
+                    packed_lu::factor_into(
+                        Op::LuFactor,
+                        n,
+                        n,
+                        &mut lu,
+                        &mut pivots,
+                        &mut parity,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("packed_lu.lu", bytes_of(&lu)));
+                out.push(("packed_lu.pivots", bytes_of(&pivots)));
+                out.push(("packed_lu.parity", bytes_of(&parity)));
+                if compare_wrapper {
+                    let (mut wlu, mut wpiv, mut wpar) = (
+                        owned.clone(),
+                        vec![0_i32; n * batch],
+                        vec![value(0.0); batch],
+                    );
+                    packed_lu::factor(Op::LuFactor, n, n, &mut wlu, &mut wpiv, &mut wpar, seq)
+                        .unwrap();
+                    assert_eq!(bytes_of(&lu), bytes_of(&wlu), "packed_lu wrapper lu");
+                    assert_eq!(
+                        bytes_of(&pivots),
+                        bytes_of(&wpiv),
+                        "packed_lu wrapper pivots"
+                    );
+                    assert_eq!(
+                        bytes_of(&parity),
+                        bytes_of(&wpar),
+                        "packed_lu wrapper parity"
+                    );
+                }
+            }
+            // packed_lu::solve_prepared
+            {
+                let mut factored = owned.clone();
+                let mut pivots = vec![0_i32; n * batch];
+                let mut parity = vec![value(0.0); batch];
+                {
+                    let mut ws = vec![
+                        MaybeUninit::<u8>::uninit();
+                        packed_lu::factor_workspace::<$t>(n, n, batch, seq).unwrap()
+                    ];
+                    packed_lu::factor_into(
+                        Op::LuFactor,
+                        n,
+                        n,
+                        &mut factored,
+                        &mut pivots,
+                        &mut parity,
+                        &mut ws,
+                        seq,
+                    )
+                    .unwrap();
+                }
+                let factor_dims = [n, n, batch];
+                let factor_strides = [1isize, n as isize, (n * n) as isize];
+                let factor_view =
+                    RawStridedRef::new(&factored, &factor_dims, &factor_strides, 0).unwrap();
+                let pivot_dims = [n, batch];
+                let pivot_strides = [1isize, n as isize];
+                let pivot_view =
+                    RawStridedRef::new(&pivots, &pivot_dims, &pivot_strides, 0).unwrap();
+                let mut x = owned.clone();
+                let mut empty: [MaybeUninit<u8>; 0] = [];
+                zero_gate!("packed_lu::solve_prepared", {
+                    packed_lu::solve_prepared_into(
+                        Op::LuSolvePrepared,
+                        factor_view,
+                        pivot_view,
+                        n,
+                        &mut x,
+                        false,
+                        false,
+                        &mut empty,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("packed_lu.solve.x", bytes_of(&x)));
+                if compare_wrapper {
+                    let mut wx = owned.clone();
+                    packed_lu::solve_prepared(
+                        Op::LuSolvePrepared,
+                        factor_view,
+                        pivot_view,
+                        n,
+                        &mut wx,
+                        false,
+                        false,
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(bytes_of(&x), bytes_of(&wx), "packed_lu solve wrapper");
+                }
+            }
+            // householder::compact_factor and apply_reflectors
+            {
+                let ws = compact_factor_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut state = owned.clone();
+                let mut coeff = vec![MaybeUninit::<$t>::uninit(); n * batch];
+                zero_gate!("compact_factor", {
+                    compact_factor_into(
+                        Op::HouseholderQr,
+                        n,
+                        n,
+                        batch,
+                        &mut state,
+                        &mut coeff,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("compact_factor.state", bytes_of(&state)));
+                out.push(("compact_factor.coeff", unsafe { bytes_uninit(&coeff) }));
+                if compare_wrapper {
+                    let (mut wstate, mut wcoeff) = (owned.clone(), Vec::new());
+                    compact_factor(
+                        Op::HouseholderQr,
+                        n,
+                        n,
+                        batch,
+                        &mut wstate,
+                        &mut wcoeff,
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        bytes_of(&state),
+                        bytes_of(&wstate),
+                        "compact_factor wrapper state"
+                    );
+                    assert_eq!(
+                        unsafe { bytes_uninit(&coeff) },
+                        bytes_of(&wcoeff),
+                        "compact_factor wrapper coeff"
+                    );
+                }
+                let shape = ReflectorShape {
+                    rows: n,
+                    a_cols: n,
+                    cols: n,
+                    k: n,
+                };
+                let coeff_values = unsafe { bytes_uninit(&coeff) };
+                let _ = coeff_values;
+                // SAFETY: `compact_factor_into` returned `Ok`.
+                let coeff_values = unsafe { assume(coeff) };
+                let ws = apply_reflectors_workspace::<$t>(shape, batch, false, seq).unwrap();
+                let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+                let mut c = state.clone();
+                zero_gate!("apply_reflectors", {
+                    apply_reflectors_into(
+                        Op::HouseholderQrQColumns,
+                        shape,
+                        batch,
+                        &state,
+                        &coeff_values,
+                        &mut c,
+                        false,
+                        &mut workspace,
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("apply_reflectors.c", bytes_of(&c)));
+                if compare_wrapper {
+                    let mut wc = state.clone();
+                    apply_reflectors(
+                        Op::HouseholderQrQColumns,
+                        shape,
+                        batch,
+                        &state,
+                        &coeff_values,
+                        &mut wc,
+                        false,
+                        seq,
+                    )
+                    .unwrap();
+                    assert_eq!(bytes_of(&c), bytes_of(&wc), "apply_reflectors wrapper");
+                }
+            }
+
+            out
+        };
+
+        // Tests 1, 2 and 3: zero allocations for every family at every size, batch and layout;
+        // the batch size does not change the count (both are zero) and the input layout does not
+        // change a single bit of the result.
+        for n in [1usize, 2, 8] {
+            for batch in [1usize, 64] {
+                let contiguous = run(n, batch, false, true);
+                let transposed = run(n, batch, true, false);
+                assert_eq!(
+                    contiguous.len(),
+                    transposed.len(),
+                    "layout comparison is per output"
+                );
+                for ((name, left), (_, right)) in contiguous.iter().zip(&transposed) {
+                    assert_eq!(
+                        left, right,
+                        "{name}: transposed input changed the bits (n={n})"
+                    );
+                }
+            }
+        }
+    }};
+}
+
+/// Test 1/2/3: `_into` allocates nothing; the batch size and the input layout change nothing;
+/// `_into` and the `Vec` wrapper agree bitwise.
+#[test]
+fn into_is_allocation_free_for_every_family_and_layout() {
+    let _guard = serialised();
+    dtype_battery!(f32, f32, Complex32);
+    dtype_battery!(f64, f64, Complex64);
+    dtype_battery!(Complex32, f32, Complex32);
+    dtype_battery!(Complex64, f64, Complex64);
+}
+
+/// Test 7: a pooled `Exec` adds the pool's own fixed cost (one scratch chunk per lane, task
+/// creation), not a per-item cost, so the count is the same for batch 2 and batch 64.
+#[test]
+fn the_pool_route_adds_a_constant() {
+    let _guard = serialised();
+    let n = 6;
+    let batch = |count: usize| -> Vec<f64> {
+        (0..n * n * count)
+            .map(|k| {
+                let (row, col) = (k % n, (k / n) % n);
+                if row == col {
+                    4.0 + row as f64
+                } else {
+                    0.05
+                }
+            })
+            .collect()
+    };
+    let tp = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let pool = Pool::borrow(&tp);
+    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let measure = |count: usize| {
+        let data = batch(count);
+        let dims = [n, n, count];
+        let strides = [1isize, n as isize, (n * n) as isize];
+        let view = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+        let ws = qr::qr_workspace::<f64>(n, n, count, exec).unwrap();
+        let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+        let mut q = vec![MaybeUninit::<f64>::uninit(); n * n * count];
+        let mut r = vec![MaybeUninit::<f64>::uninit(); n * n * count];
+        for _ in 0..3 {
+            qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+        }
+        allocations_all_threads(|| {
+            qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+        })
+    };
+    let two = measure(2);
+    let many = measure(64);
+    println!("pool qr allocations: batch 2 = {two}, batch 64 = {many}");
+    assert_eq!(
+        two,
+        many,
+        "the pooled route added {} allocations for 62 more items",
+        many.saturating_sub(two)
+    );
+}
+
+/// The refusal is a typed error and precedes every output write, on each output flavour: fresh
+/// (`MaybeUninit`) buffers, a strided caller-owned destination, and an in-place caller buffer.
+#[test]
+fn an_undersized_workspace_is_refused_before_any_write() {
+    let _guard = serialised();
+    let n = 4;
+    let batch = 3;
+    let seq = Exec::serial();
+    let data: Vec<f64> = (0..n * n * batch)
+        .map(|k| {
+            let (row, col) = (k % n, (k / n) % n);
+            if row == col {
+                4.0 + row as f64
+            } else {
+                0.05
+            }
+        })
+        .collect();
+    let dims = [n, n, batch];
+    let strides = [1isize, n as isize, (n * n) as isize];
+    let view = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+    let sentinel = 7.0_f64;
+
+    // Fresh `MaybeUninit` outputs: fill them with a sentinel and read it back.
+    let ws = qr::qr_workspace::<f64>(n, n, batch, seq).unwrap();
+    assert!(ws > 0);
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws - 1];
+    let mut q = vec![MaybeUninit::new(sentinel); n * n * batch];
+    let mut r = vec![MaybeUninit::new(sentinel); n * n * batch];
+    let error = qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, seq).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InsufficientWorkspace {
+                op: Op::Qr,
+                needed,
+                have,
+            } if needed == ws && have == ws - 1
+        ),
+        "unexpected error: {error:?}"
+    );
+    // SAFETY: every element still holds the sentinel the test wrote.
+    let q = unsafe { assume(q) };
+    // SAFETY: as above.
+    let r = unsafe { assume(r) };
+    assert!(q.iter().all(|&x| x == sentinel), "qr wrote Q on refusal");
+    assert!(r.iter().all(|&x| x == sentinel), "qr wrote R on refusal");
+
+    // A strided caller-owned destination (lu::solve).
+    let ws = lu_solve_workspace::<f64>(n, n, false, batch, seq).unwrap();
+    assert!(ws > 0);
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws - 1];
+    let mut x = vec![sentinel; n * n * batch];
+    let destination = RawStridedMut::new(&mut x, &dims, &strides, 0).unwrap();
+    let error = solve_into(
+        Op::Solve,
+        view,
+        Some(view),
+        destination,
+        false,
+        &mut workspace,
+        seq,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::InsufficientWorkspace { op: Op::Solve, .. }),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        x.iter().all(|&value| value == sentinel),
+        "solve wrote on refusal"
+    );
+
+    // An in-place caller buffer (packed LU).
+    let ws = packed_lu::factor_workspace::<f64>(n, n, batch, seq).unwrap();
+    assert!(ws > 0);
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws - 1];
+    let mut lu = data.clone();
+    let mut pivots = vec![0_i32; n * batch];
+    let mut parity = vec![0.0_f64; batch];
+    let error = packed_lu::factor_into(
+        Op::LuFactor,
+        n,
+        n,
+        &mut lu,
+        &mut pivots,
+        &mut parity,
+        &mut workspace,
+        seq,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::InsufficientWorkspace {
+                op: Op::LuFactor,
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert_eq!(lu, data, "packed LU factor wrote on refusal");
+    assert!(pivots.iter().all(|&p| p == 0), "packed LU wrote pivots");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Test 6: the GEMM path (tlinalg-rs#57 item 4 / tcontract-rs#121).
+// ---------------------------------------------------------------------------------------------
+
+/// The faer matmul backend this host dispatches to for an `m x n x k` product, mirroring
+/// `t4a-faer-0.24.6/src/linalg/matmul/mod.rs`: `nano-gemm` at or below the 16³ threshold, then
+/// `private-gemm-x86` on x86_64 when AVX2+FMA or AVX-512 is available, else the crates.io `gemm`
+/// fallback (the one whose `gemm-common` packing is tcontract-rs#121's subject).
+#[cfg(target_arch = "x86_64")]
+fn matmul_backend(mnk: usize) -> &'static str {
+    if mnk <= 16 * 16 * 16 {
+        "nano-gemm"
+    } else if std::arch::is_x86_feature_detected!("avx512f")
+        || (std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma"))
+    {
+        "private-gemm-x86"
+    } else {
+        "gemm (crates.io 0.19, gemm-common packing)"
+    }
+}
+
+/// Allocations of one `compact_factor_into` call at `n x n`, `batch` items, on `Exec::serial()`.
+#[cfg(target_arch = "x86_64")]
+fn compact_factor_allocs(n: usize, batch: usize) -> usize {
+    let seq = Exec::serial();
+    let data: Vec<f64> = (0..n * n * batch)
+        .map(|k| {
+            let (row, col) = (k % n, (k / n) % n);
+            if row == col {
+                4.0 + row as f64
+            } else {
+                0.05
+            }
+        })
+        .collect();
+    let ws = compact_factor_workspace::<f64>(n, n, batch, seq).unwrap();
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
+    let mut state = data.clone();
+    let mut coeff = vec![MaybeUninit::<f64>::uninit(); n * batch];
+    // Warm every lazily built internal state first; the gate is the steady-state count.
+    for _ in 0..2 {
+        state.copy_from_slice(&data);
+        compact_factor_into(
+            Op::HouseholderQr,
+            n,
+            n,
+            batch,
+            &mut state,
+            &mut coeff,
+            &mut workspace,
+            seq,
+        )
+        .unwrap();
+    }
+    allocations(|| {
+        state.copy_from_slice(&data);
+        compact_factor_into(
+            Op::HouseholderQr,
+            n,
+            n,
+            batch,
+            &mut state,
+            &mut coeff,
+            &mut workspace,
+            seq,
+        )
+        .unwrap();
+    })
+}
+
+/// The **active upper bound** on today's GEMM-path allocations at sizes 64 and 256.
+///
+/// The blocked compact-Householder trailing update runs through faer's matmul. On this host the
+/// dispatch takes `private-gemm-x86` (AVX2/FMA), which needs no heap buffer, so today's count is
+/// zero and the bound is zero: a regression that adds a packing buffer per call fails here. The
+/// crates.io `gemm` fallback (no AVX) and `nano-gemm` on other architectures pack into per-call
+/// buffers instead; the bound there is the two `gemm-common` packing vectors, which is exactly
+/// tcontract-rs#121's subject. The measured backend is printed, and the count must not grow with
+/// the batch on any of them (a per-item packing allocation is what #121 has to remove).
+#[test]
+#[cfg(target_arch = "x86_64")]
+fn gemm_path_allocations_are_a_pinned_upper_bound() {
+    let _guard = serialised();
+    for n in [64usize, 256] {
+        let one = compact_factor_allocs(n, 1);
+        let many = compact_factor_allocs(n, 64);
+        // The compact-Householder block is capped at 16, so the trailing update is roughly
+        // `n x (n - 16) x 16`: above nano-gemm's 16³ threshold at both sizes.
+        let backend = matmul_backend(n * n.saturating_sub(16).max(1) * 16);
+        println!(
+            "compact_factor n={n}: batch 1 = {one}, batch 64 = {many} (matmul backend: {backend})"
+        );
+        let bound = usize::from(backend.starts_with("gemm (crates.io")) * 2;
+        assert_eq!(
+            one, many,
+            "n={n}: the GEMM path allocates per item (that is tcontract-rs#121)"
+        );
+        assert!(
+            one <= bound,
+            "n={n}: {one} allocations on {backend} exceed the pinned upper bound {bound}"
+        );
+    }
+}
+
+/// The zero-allocation assertion this site is working toward, kept separately from the active bound.
+///
+/// On this host's `private-gemm-x86` path it already holds. It is `#[ignore]`d because the
+/// crates.io `gemm 0.19` fallback (and `nano-gemm` per item on other architectures) packs into
+/// per-call buffers, so the assertion is a gate only once tcontract-rs#121 lands — and the pointer
+/// is what keeps this test from being deleted as unreachable.
+#[test]
+#[ignore = "waits for tcontract-rs#121 (crates.io gemm 0.19 packs into per-call buffers)"]
+#[cfg(target_arch = "x86_64")]
+fn gemm_path_is_allocation_free() {
+    let _guard = serialised();
+    for n in [64usize, 256] {
+        assert_eq!(
+            compact_factor_allocs(n, 64),
+            0,
+            "n={n}: the GEMM path still allocates (tcontract-rs#121)"
+        );
+    }
 }
