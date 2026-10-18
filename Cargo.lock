@@ -1608,10 +1608,8 @@ dependencies = [
  "rayon",
  "strided-view",
  "t4a-faer",
- "tcontract-exec 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tcontract-exec 0.3.0 (git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df)",
  "thiserror 2.0.21",
- "tlinalg 0.3.0",
  "tlinalg-testkit",
 ]
 
@@ -1663,7 +1661,9 @@ dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
+ "tcontract-exec 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tcontract-exec 0.3.0 (git+https://github.com/tensor4all/tcontract-rs.git?rev=3239c86de62262586854c9dc4fc18095b00916df)",
+ "tlinalg 0.3.0",
  "tlinalg 0.3.1",
  "tlinalg-blas",
  "tlinalg-testkit",

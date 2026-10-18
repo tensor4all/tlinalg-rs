@@ -24,5 +24,13 @@ num-complex = { workspace = true }
 rayon = { workspace = true }
 strided-view = { workspace = true }
 
+[dev-dependencies]
+# The published 0.3.0 release: the bitwise-compatibility reference for the tlinalg wrappers
+# (`tests/compat_030.rs`). It resolves its own registry `tcontract-exec`, named through the second
+# dev-dependency. Kept here, not in `tlinalg`, because `cargo publish` rejects a crate that depends
+# on `tcontract-exec` twice under different names.
+tlinalg_030 = { package = "tlinalg", version = "=0.3.0" }
+tcontract_exec_030 = { package = "tcontract-exec", version = "=0.3.0" }
+
 [lints]
 workspace = true
