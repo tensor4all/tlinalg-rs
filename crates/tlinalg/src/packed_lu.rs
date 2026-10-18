@@ -8,28 +8,36 @@
 //!
 //! Every entry point operates on a whole batch, with library-owned Auto lanes (see
 //! `docs/design/batched-api.md`): the factors and right-hand sides are the host's compact,
-//! batch-contiguous buffers, updated in place, and the batch is split into
-//! `batch.div_ceil(lanes)`-item chunks that run as tasks on the caller's pool. This replaces the
-//! host-side chunk fan-out the pre-extraction code used. The prepared solve reads its factors and
-//! pivots through strided descriptors, so a host can broadcast one factorization (stride 0 on a batch
-//! axis) against many right-hand sides.
+//! batch-contiguous buffers, updated in place. The prepared solve reads its factors and pivots
+//! through strided descriptors, so a host can broadcast one factorization (stride 0 on a batch axis)
+//! against many right-hand sides.
 //!
-//! Scratch is native and per lane: four permutation vectors and one faer `MemBuffer`, reused across
-//! every matrix of the lane.
+//! Scratch is native and per lane: four permutation vectors and one faer `MemBuffer` region, carved
+//! from the caller's borrowed workspace for the `*_into` routes and reused across every matrix of
+//! the lane.
 //!
 //! In-place buffers are not rolled back on error: items before the failing one (and items of other
 //! lanes) may already hold their results.
+//!
+//! # Borrowed workspace
+//!
+//! [`factor_workspace`] reports the bytes a factor call needs; [`factor_into`] runs it from
+//! caller-owned storage and [`factor`] is its wrapper. [`solve_prepared_into`] and
+//! [`factor_solve_into`] take the same borrowed workspace; the prepared solve needs none (the
+//! triangular solves take no scratch), and it accepts an empty slice.
 
-use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 
-use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::dyn_stack::{MemStack, StackReq};
 use faer::prelude::ReborrowMut;
 use faer::{Conj, MatMut, MatRef};
 
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, in_place, same_batch, BatchAxes, BatchedRef};
+use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, weighted_muladds};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -37,38 +45,56 @@ use tcontract_exec::Exec;
 ///
 /// Typed by the scalar it was sized for, so mixing a scratch with another scalar is a compile
 /// error. The batch driver builds one per lane for the call's shape.
-pub(crate) struct FactorScratch<T: FaerScalar> {
+pub(crate) struct FactorScratch<'w, T: FaerScalar> {
+    scalar: core::marker::PhantomData<T>,
     m: usize,
     k: usize,
-    perm: Vec<usize>,
-    perm_inv: Vec<usize>,
-    current: Vec<usize>,
-    position: Vec<usize>,
-    mem: MemBuffer,
-    scalar: PhantomData<T>,
+    perm: &'w mut [usize],
+    perm_inv: &'w mut [usize],
+    current: &'w mut [usize],
+    position: &'w mut [usize],
+    mem: &'w mut [MaybeUninit<u8>],
 }
 
-impl<T: FaerScalar> FactorScratch<T> {
-    /// Size the scratch for `m x n` matrices and the given parallelism.
+/// faer's own factor scratch for `m x n`.
+fn factor_req<T: FaerScalar>(m: usize, n: usize, par: faer::Par) -> StackReq {
+    faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, T::Entity>(
+        m,
+        n,
+        par,
+        Default::default(),
+    )
+}
+
+/// One lane's complete requirement for a factorization: four permutations and faer's scratch. The
+/// matrix is the caller's in-place buffer, not scratch.
+fn factor_lane_req<T: FaerScalar>(m: usize, n: usize, par: faer::Par) -> StackReq {
+    StackReq::new::<usize>(m)
+        .and(StackReq::new::<usize>(m))
+        .and(StackReq::new::<usize>(m))
+        .and(StackReq::new::<usize>(m))
+        .and(faer_req(factor_req::<T>(m, n, par)))
+}
+
+impl<'w, T: FaerScalar> FactorScratch<'w, T> {
+    /// Size the scratch for `m x n` matrices from one lane's borrowed workspace chunk.
     ///
     /// The parallelism participates because faer sizes its scratch per thread.
-    fn new(m: usize, n: usize, par: faer::Par) -> Self {
+    fn new(m: usize, n: usize, par: faer::Par, stack: &'w mut MemStack) -> Self {
+        let (perm, stack) = zeros::<usize>(stack, m, &0);
+        let (perm_inv, stack) = zeros::<usize>(stack, m, &0);
+        let (current, stack) = zeros::<usize>(stack, m, &0);
+        let (position, stack) = zeros::<usize>(stack, m, &0);
+        let (mem, _) = bytes(stack, factor_req::<T>(m, n, par).unaligned_bytes_required());
         Self {
+            scalar: core::marker::PhantomData,
             m,
             k: m.min(n),
-            perm: vec![0; m],
-            perm_inv: vec![0; m],
-            current: vec![0; m],
-            position: vec![0; m],
-            mem: MemBuffer::new(
-                faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, T::Entity>(
-                    m,
-                    n,
-                    par,
-                    Default::default(),
-                ),
-            ),
-            scalar: PhantomData,
+            perm,
+            perm_inv,
+            current,
+            position,
+            mem,
         }
     }
 
@@ -81,11 +107,11 @@ impl<T: FaerScalar> FactorScratch<T> {
         ipiv: &mut [i32],
         op: Op,
     ) -> Result<bool> {
-        let stack = MemStack::new(&mut self.mem);
+        let stack = MemStack::new(&mut *self.mem);
         let info = faer::linalg::lu::partial_pivoting::factor::lu_in_place(
             matrix,
-            &mut self.perm,
-            &mut self.perm_inv,
+            &mut *self.perm,
+            &mut *self.perm_inv,
             par,
             stack,
             Default::default(),
@@ -140,11 +166,209 @@ fn check_batches(op: Op, buffers: [(usize, usize); 3], batch: usize) -> Result<(
     Ok(())
 }
 
+/// The work estimate a packed partial-pivot factorization reports to the batch policy.
+fn work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
+    let k = m.min(n);
+    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
+    weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0)
+}
+
+/// Reject shapes whose products the lane requirement multiplies.
+fn check_shape(op: Op, m: usize, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[m, n])?;
+    checked_product(op, "workspace", &[m, m])?;
+    Ok(())
+}
+
+/// Reject shapes whose products the fused requirement multiplies.
+fn check_solve_shape(op: Op, n: usize, nrhs: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    checked_product(op, "rhs", &[n, nrhs])?;
+    Ok(())
+}
+
+/// The validated shape of a packed-LU factor call: `(matrix_len, k, batch, work estimate)`.
+fn factor_shape<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    lu_len: usize,
+    pivots_len: usize,
+    parity_len: usize,
+) -> Result<(usize, usize, usize, f64)> {
+    check_shape(op, m, n)?;
+    let k = m.min(n);
+    let matrix_len = checked_product(op, "matrix shape", &[m, n])?;
+    let batch = parity_len;
+    check_batches(
+        op,
+        [(matrix_len, lu_len), (k, pivots_len), (1, parity_len)],
+        batch,
+    )?;
+    Ok((matrix_len, k, batch, work::<T>(m, n)))
+}
+
+/// The validated shape of a fused packed-LU factor+solve.
+fn factor_solve_shape<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    nrhs: usize,
+    packed_lu_len: usize,
+    pivots_len: usize,
+    output_len: usize,
+) -> Result<(usize, usize, usize, f64)> {
+    check_solve_shape(op, n, nrhs)?;
+    let matrix_len = checked_product(op, "matrix", &[n, n])?;
+    let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
+    let batch = packed_lu_len / matrix_len.max(1);
+    check_batches(
+        op,
+        [
+            (matrix_len, packed_lu_len),
+            (n, pivots_len),
+            (rhs_len, output_len),
+        ],
+        batch,
+    )?;
+    let nf = n as f64;
+    let muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
+    Ok((matrix_len, rhs_len, batch, muladds))
+}
+
+fn factor_bytes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        None,
+        work::<T>(m, n),
+        || check_shape(op, m, n),
+        |par| factor_lane_req::<T>(m, n, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
+fn factor_solve_bytes<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    nrhs: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let nf = n as f64;
+    let muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        None,
+        muladds,
+        || check_solve_shape(op, n, nrhs),
+        |par| factor_lane_req::<T>(n, n, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
+/// Bytes one batched packed-LU factor call needs in its borrowed workspace.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
+/// is `Op::LuFactor`), and the executor's refusal for a forced strategy this route cannot honor.
+pub fn factor_workspace<T: FaerScalar>(
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    factor_bytes::<T>(Op::LuFactor, m, n, batch, exec)
+}
+
+/// Factor every compact column-major `m x n` matrix of `lu` in place, into caller-owned workspace
+/// storage.
+///
+/// `lu` holds `batch = parity.len()` matrices; `pivots` receives `min(m, n)` one-based pivots per
+/// matrix and `parity` one permutation parity per matrix. Exactly singular matrices are **not** an
+/// error, matching LAPACK `?getrf` with positive `info`. Workspace contract as
+/// [`crate::qr::qr_into`] (`factor_workspace`).
+///
+/// # Errors
+///
+/// Returns [`Error::Inconsistent`] when the buffers describe different batches,
+/// [`Error::InvalidArgument`] when faer returns an invalid row permutation (lowest-indexed item),
+/// and [`crate::Error::InsufficientWorkspace`] for a short workspace (before any write).
+// INVARIANT: shape, the three in-place batch buffers, workspace, token are distinct operands.
+#[allow(clippy::too_many_arguments)]
+pub fn factor_into<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    lu: &mut [T],
+    pivots: &mut [i32],
+    parity: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let (matrix_len, k, batch, item_muladds) =
+        factor_shape::<T>(op, m, n, lu.len(), pivots.len(), parity.len())?;
+    // Resolve the route even when there is nothing to factor, so a forced strategy this route
+    // cannot honor is refused rather than silently accepted (tlinalg-rs#57/#58).
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        None,
+        item_muladds,
+        || check_shape(op, m, n),
+        |par| factor_lane_req::<T>(m, n, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    if matrix_len == 0 || batch == 0 {
+        return Ok(());
+    }
+    batch::run(
+        op,
+        batch,
+        exec,
+        None,
+        item_muladds,
+        &mut (
+            in_place(lu, matrix_len, "packed LU"),
+            in_place(pivots, k, "pivots"),
+            in_place(parity, 1, "parity"),
+        ),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| FactorScratch::<T>::new(m, n, par, MemStack::new(stack)),
+        |_index, (lu, pivots, parity), scratch, par| {
+            let mat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(lu), m, n);
+            let odd = scratch.factor(par, mat, pivots, op)?;
+            parity[0] = T::parity(odd);
+            Ok(())
+        },
+    )
+}
+
 /// Factor every compact column-major `m x n` matrix of `lu` in place.
 ///
 /// `lu` holds `batch = parity.len()` matrices; `pivots` receives `min(m, n)` one-based pivots per
 /// matrix and `parity` one permutation parity per matrix. Exactly singular matrices are **not** an
 /// error, matching LAPACK `?getrf` with positive `info`.
+///
+/// This is the wrapper of [`factor_into`]: it allocates one scratch block of [`factor_workspace`]
+/// bytes per call.
 ///
 /// # Errors
 ///
@@ -173,43 +397,11 @@ pub fn factor<T: FaerScalar>(
     parity: &mut [T],
     exec: Exec<'_>,
 ) -> Result<()> {
-    let k = m.min(n);
-    let matrix_len = checked_product(op, "matrix shape", &[m, n])?;
-    let batch = parity.len();
-    check_batches(
-        op,
-        [(matrix_len, lu.len()), (k, pivots.len()), (1, parity.len())],
-        batch,
-    )?;
-    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
-    let item_muladds =
-        weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0);
-    // Resolve the route even when there is nothing to factor, so a forced strategy this route
-    // cannot honor is refused rather than silently accepted (tlinalg-rs#57/#58).
-    batch::check_route(op, exec, batch, item_muladds)?;
-    if matrix_len == 0 || batch == 0 {
-        return Ok(());
-    }
-    batch::run(
-        op,
-        batch,
-        exec,
-        None,
-        item_muladds,
-        &mut (
-            in_place(lu, matrix_len, "packed LU"),
-            in_place(pivots, k, "pivots"),
-            in_place(parity, 1, "parity"),
-        ),
-        |par| FactorScratch::<T>::new(m, n, par),
-        |index, (lu, pivots, parity), scratch, par| {
-            let mat =
-                MatMut::from_column_major_slice_mut(T::entity_slice_mut(lu.item(index)), m, n);
-            let odd = scratch.factor(par, mat, pivots.item(index), op)?;
-            parity.item(index)[0] = T::parity(odd);
-            Ok(())
-        },
-    )
+    // The published order: shape and buffer validation before any workspace query or allocation.
+    let (_, _, batch, _) = factor_shape::<T>(op, m, n, lu.len(), pivots.len(), parity.len())?;
+    let bytes = factor_bytes::<T>(op, m, n, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+    factor_into(op, m, n, lu, pivots, parity, &mut workspace, exec)
 }
 
 /// Apply a one-based LAPACK swap sequence to the rows of a compact column-major `n x nrhs` block,
@@ -362,6 +554,9 @@ impl<'a> BatchedPivots<'a> {
 /// `n x nrhs` right-hand-side batch; it enters holding `B` and leaves holding `X`. The factors must
 /// be nonsingular.
 ///
+/// The triangular solves take no workspace, so `workspace` may be empty; a forced strategy this
+/// route cannot honor is still refused.
+///
 /// # Errors
 ///
 /// Returns [`Error::InvalidArgument`] for a pivot outside `1..=n` or a malformed descriptor, and
@@ -399,13 +594,48 @@ pub fn solve_prepared<T: FaerScalar>(
     conjugate_a: bool,
     exec: Exec<'_>,
 ) -> Result<()> {
+    solve_prepared_into(
+        op,
+        packed_lu,
+        pivots,
+        nrhs,
+        output,
+        transpose_a,
+        conjugate_a,
+        &mut [],
+        exec,
+    )
+}
+
+/// [`solve_prepared`] with the borrowed workspace made explicit.
+///
+/// The prepared solve needs no library scratch, so any workspace length is accepted (an empty slice
+/// is the natural argument); the route is still resolved first, so a forced strategy this route
+/// cannot honor is refused before any write.
+///
+/// # Errors
+///
+/// As [`solve_prepared`].
+#[allow(clippy::too_many_arguments)]
+pub fn solve_prepared_into<T: FaerScalar>(
+    op: Op,
+    packed_lu: RawStridedRef<'_, T>,
+    pivots: RawStridedRef<'_, i32>,
+    nrhs: usize,
+    output: &mut [T],
+    transpose_a: bool,
+    conjugate_a: bool,
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
     let lu = BatchedRef::square(op, "packed LU", packed_lu)?;
     let n = lu.rows();
     let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
     // A prepared solve is the triangular solves alone; the factorization happened in `factor`.
     let item_muladds = weighted_muladds::<T>(n as f64 * n as f64 * nrhs as f64);
     let batch = lu.batch();
-    batch::check_route(op, exec, batch, item_muladds)?;
+    let (lanes, _item_threads) = batch::decide(op, exec, batch, None, item_muladds)?;
+    batch::check_workspace(op, workspace, 0, lanes)?;
     if rhs_len == 0 {
         return Ok(());
     }
@@ -436,7 +666,8 @@ pub fn solve_prepared<T: FaerScalar>(
         None,
         item_muladds,
         &mut (in_place(output, rhs_len, "rhs batch"),),
-        |_| (),
+        batch::ScratchArena::new(workspace, 0),
+        |_par, _stack| (),
         |index, (output,), (), par| {
             // INVARIANT: every pivot was validated above, so `apply_row_swaps` stays in range.
             solve_one::<T>(
@@ -444,9 +675,97 @@ pub fn solve_prepared<T: FaerScalar>(
                 (n, nrhs),
                 lu.item(index),
                 pivots.item(index),
-                output.item(index),
+                output,
                 (transpose_a, conjugate_a),
             );
+            Ok(())
+        },
+    )
+}
+
+/// Bytes one batched fused factor+solve call needs in its borrowed workspace.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
+/// is `Op::LuFactorSolve`), and the executor's refusal for a forced strategy this route cannot
+/// honor.
+pub fn factor_solve_workspace<T: FaerScalar>(
+    n: usize,
+    nrhs: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    factor_solve_bytes::<T>(Op::LuFactorSolve, n, nrhs, batch, exec)
+}
+
+/// Factor and solve `A X = B` for every system of a batch, keeping the packed factors, into
+/// caller-owned workspace storage.
+///
+/// `packed_lu` enters holding the compact `n x n` `A` batch and leaves holding the packed factors;
+/// `pivots` receives one-based pivots; `output` enters holding the compact `n x nrhs` RHS batch and
+/// leaves holding `X`. Workspace contract as [`crate::qr::qr_into`] (`factor_solve_workspace`).
+///
+/// # Errors
+///
+/// Returns [`Error::Singular`] for the lowest-indexed item whose factor has an exactly zero `U`
+/// diagonal when there is a nonempty RHS to solve, [`Error::Inconsistent`] when the buffers
+/// describe different batches, and [`crate::Error::InsufficientWorkspace`] for a short workspace.
+/// A zero-column RHS only factors, matching [`factor`] on singular input.
+// INVARIANT: shape, the three in-place batch buffers, workspace, token are distinct operands.
+#[allow(clippy::too_many_arguments)]
+pub fn factor_solve_into<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    nrhs: usize,
+    packed_lu: &mut [T],
+    pivots: &mut [i32],
+    output: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let (matrix_len, rhs_len, batch, item_muladds) =
+        factor_solve_shape::<T>(op, n, nrhs, packed_lu.len(), pivots.len(), output.len())?;
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        None,
+        item_muladds,
+        || check_solve_shape(op, n, nrhs),
+        |par| factor_lane_req::<T>(n, n, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    if matrix_len == 0 {
+        return Ok(());
+    }
+    let zero = T::default();
+    batch::run(
+        op,
+        batch,
+        exec,
+        None,
+        item_muladds,
+        &mut (
+            in_place(packed_lu, matrix_len, "packed LU"),
+            in_place(pivots, n, "pivots"),
+            in_place(output, rhs_len, "rhs batch"),
+        ),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| FactorScratch::<T>::new(n, n, par, MemStack::new(stack)),
+        |_index, (lu, ipiv, output), scratch, par| {
+            {
+                let mat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(lu), n, n);
+                scratch.factor(par, mat, ipiv, op)?;
+            }
+            if rhs_len > 0 {
+                if (0..n).any(|i| lu[i + i * n] == zero) {
+                    return Err(Error::Singular { op });
+                }
+                let lu = MatRef::from_column_major_slice(T::entity_slice(lu), n, n);
+                solve_one::<T>(par, (n, nrhs), lu, ipiv, output, (false, false));
+            }
             Ok(())
         },
     )
@@ -458,12 +777,13 @@ pub fn solve_prepared<T: FaerScalar>(
 /// `pivots` receives one-based pivots; `output` enters holding the compact `n x nrhs` RHS batch and
 /// leaves holding `X`.
 ///
+/// This is the wrapper of [`factor_solve_into`].
+///
 /// # Errors
 ///
-/// Returns [`Error::Singular`] for the lowest-indexed item whose factor has an exactly zero `U`
-/// diagonal when there is a nonempty RHS to solve, and [`Error::Inconsistent`] when the buffers
-/// describe different batches. A zero-column RHS only factors, matching [`factor`] on singular
-/// input.
+/// Returns [`Error::Singular`] when a matrix is exactly singular and there is a nonempty RHS to
+/// solve, [`Error::Inconsistent`] for inconsistent buffers, and [`Error::InvalidArgument`] for a
+/// malformed shape.
 ///
 /// # Examples
 ///
@@ -488,53 +808,10 @@ pub fn factor_solve<T: FaerScalar>(
     output: &mut [T],
     exec: Exec<'_>,
 ) -> Result<()> {
-    let matrix_len = checked_product(op, "matrix", &[n, n])?;
-    let rhs_len = checked_product(op, "rhs", &[n, nrhs])?;
-    let batch = packed_lu.len() / matrix_len.max(1);
-    // A fused route factors and then solves, so its estimate is the factor plus the solve.
-    let nf = n as f64;
-    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
-    batch::check_route(op, exec, batch, item_muladds)?;
-    if matrix_len == 0 {
-        return Ok(());
-    }
-    check_batches(
-        op,
-        [
-            (matrix_len, packed_lu.len()),
-            (n, pivots.len()),
-            (rhs_len, output.len()),
-        ],
-        batch,
-    )?;
-    let zero = T::default();
-    batch::run(
-        op,
-        batch,
-        exec,
-        None,
-        item_muladds,
-        &mut (
-            in_place(packed_lu, matrix_len, "packed LU"),
-            in_place(pivots, n, "pivots"),
-            in_place(output, rhs_len, "rhs batch"),
-        ),
-        |par| FactorScratch::<T>::new(n, n, par),
-        |index, (lu, pivots, output), scratch, par| {
-            let matrix = lu.item(index);
-            let ipiv = pivots.item(index);
-            {
-                let mat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(matrix), n, n);
-                scratch.factor(par, mat, ipiv, op)?;
-            }
-            if rhs_len > 0 {
-                if (0..n).any(|i| matrix[i + i * n] == zero) {
-                    return Err(Error::Singular { op });
-                }
-                let lu = MatRef::from_column_major_slice(T::entity_slice(matrix), n, n);
-                solve_one::<T>(par, (n, nrhs), lu, ipiv, output.item(index), (false, false));
-            }
-            Ok(())
-        },
-    )
+    // The published order: shape and buffer validation before any workspace query or allocation.
+    let (_, _, batch, _) =
+        factor_solve_shape::<T>(op, n, nrhs, packed_lu.len(), pivots.len(), output.len())?;
+    let bytes = factor_solve_bytes::<T>(op, n, nrhs, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+    factor_solve_into(op, n, nrhs, packed_lu, pivots, output, &mut workspace, exec)
 }

@@ -422,7 +422,6 @@ where
     let mut lu = workspace.acquire_capacity(matrix_len);
     let mut ipiv = workspace.acquire_zeroed_index(k);
     common::check_scratch(op, ipiv.len(), k)?;
-    let mut permutation: Vec<usize> = Vec::with_capacity(m);
     for offset in input.layout.offsets() {
         lu.clear();
         input.gather(offset, &mut lu);
@@ -434,8 +433,13 @@ where
         }
         common::check_info(op, "getrf", info.min(0))?;
 
-        permutation.clear();
-        permutation.extend(0..m);
+        // `P` is the identity with each `?getrf` swap applied to its rows, so it is built in place
+        // from the pivots: no permutation vector (and no per-call allocation) is needed.
+        let start = out.p.len();
+        out.p.resize(start + p_len, T::default());
+        for row in 0..m {
+            out.p[start + row + row * m] = T::one();
+        }
         let mut swap_count = 0usize;
         for (idx, &pivot_one_based) in ipiv.iter().take(k).enumerate() {
             let pivot = match usize::try_from(pivot_one_based - 1) {
@@ -454,15 +458,11 @@ where
                 });
             }
             if pivot != idx {
-                permutation.swap(idx, pivot);
+                for col in 0..m {
+                    out.p.swap(start + idx + col * m, start + pivot + col * m);
+                }
                 swap_count += 1;
             }
-        }
-
-        let start = out.p.len();
-        out.p.resize(start + p_len, T::default());
-        for (row, &source_row) in permutation.iter().enumerate() {
-            out.p[start + row + source_row * m] = T::one();
         }
         out.parity.push(if swap_count.is_multiple_of(2) {
             T::one()

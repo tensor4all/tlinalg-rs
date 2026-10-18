@@ -22,6 +22,16 @@
 //! provider has no vendor batched call. A failing call returns the error of its lowest-indexed
 //! failing item and leaves every library-created output vector empty.
 //!
+//! # Borrowed workspace
+//!
+//! Every family has a `*_workspace(<shape args>, batch, exec)` query that returns the number of
+//! caller-owned bytes one call needs (worst-case alignment padding included, at the item width the
+//! batch decision grants the same call) and a `*_into(..., workspace: &mut [MaybeUninit<u8>], exec)`
+//! entry that carves all of its per-lane scratch from that region. The `Vec` entry points are
+//! wrappers: they reserve their outputs and allocate one block of the queried size. An undersized
+//! workspace is refused with [`Error::InsufficientWorkspace`] before any output is written. The
+//! full contract, including the family inventory, is `docs/design/borrowed-workspace.md`.
+//!
 //! # Conventions
 //!
 //! Callers and their tests depend on these:
@@ -72,6 +82,7 @@ pub mod triangular_solve;
 mod batch;
 mod scalar;
 mod util;
+mod workspace;
 
 pub use error::{Error, NonFiniteRole, Op, Result};
 pub use scalar::FaerScalar;

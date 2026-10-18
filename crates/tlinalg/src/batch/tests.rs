@@ -1,7 +1,9 @@
 mod scheduling;
 pub(super) use scheduling::record_lanes;
 
-use super::{is_injective, out, run, BatchAxes, BatchedMut, BatchedRef};
+use super::{
+    fixed_out, is_injective, run, BatchAxes, BatchedMut, BatchedRef, ScratchArena, VecOut,
+};
 use crate::{Error, Op};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use strided_view::{RawStridedMut, RawStridedRef};
@@ -21,15 +23,18 @@ fn owned_pool(threads: usize) -> Pool<'static> {
 fn a_failing_lane_does_not_stop_the_later_ones() {
     let pool = owned_pool(3);
     let ran = AtomicUsize::new(0);
+    // The production output path: a reserved vector plus the `FixedOut` view of its spare capacity.
     let mut values: Vec<usize> = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 6);
     let err = run(
         Op::Svd,
         6,
         Exec::rayon(&pool).with_budget(3).unwrap(),
         Some(1),
         1.0,
-        &mut (out(&mut values, 1),),
-        |_| (),
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |_, _| (),
         |index, (values,), (), _| {
             if index == 1 {
                 return Err(Error::Inconsistent {
@@ -63,14 +68,16 @@ fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
         let exec = Exec::rayon(&pool).with_budget(budget).unwrap();
         for _ in 0..20 {
             let mut values = vec![9usize; 3];
+            let mut values_out = VecOut::new(&mut values, 8);
             let err = run(
                 Op::Svd,
                 8,
                 exec,
                 Some(1),
                 1.0,
-                &mut (out(&mut values, 1),),
-                |_| (),
+                &mut (fixed_out(values_out.spare(), 1, "values"),),
+                ScratchArena::new(&mut [], 0),
+                |_, _| (),
                 |index, (values,), (), _| {
                     if index == 2 || index == 5 {
                         return Err(Error::Inconsistent {
@@ -99,14 +106,17 @@ fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
 #[test]
 fn a_kernel_that_writes_too_little_is_an_error() {
     let mut values: Vec<u8> = Vec::new();
+    // Two items of two elements each; the kernel writes one, so each sink is incomplete.
+    let mut values_out = VecOut::new(&mut values, 4);
     let err = run(
         Op::Svd,
         2,
         Exec::serial(),
         Some(1),
         1.0,
-        &mut (out(&mut values, 2),),
-        |_| (),
+        &mut (fixed_out(values_out.spare(), 2, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |_, _| (),
         |_, (values,), (), _| {
             values.push(1);
             Ok(())

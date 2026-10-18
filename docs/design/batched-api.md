@@ -38,8 +38,10 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 * **faer 0.24.4 does not guarantee a strict active-thread bound from that count.** Its wide-RHS
   recursion and rounded-up splitting can exceed the requested count. This accepted limitation is
   not hidden by serial fallback or replacement pools; no hard bound on all native work is claimed.
-* Scratch is per lane and reused across the items of that lane (faer `MemBuffer` sized once for the
-  item shape; host `Workspace` where the family already uses it).
+* Scratch is per lane and reused across the items of that lane. Each family also has a
+  `*_workspace` byte query and a `*_into` route that carves that scratch from caller-owned storage
+  (see [borrowed-workspace.md](borrowed-workspace.md)); the `Vec` entry points are wrappers that
+  allocate one block of the queried size and reserve their outputs.
 * Errors: each lane stops at its own first failure and does **not** stop because another lane
   failed; the returned error is the one from the lowest-indexed failing lane, i.e. the
   lowest-indexed failing item — deterministic regardless of scheduling.
@@ -108,20 +110,26 @@ Recorded with the implementation; they refine, not replace, the contract above.
   absolute stride, every stride exceeds the span of the smaller axes. Input/output overlap cannot
   be expressed: inputs borrow `&[T]` and destinations `&mut [T]`.
 * **No driver allocation, within the inline bound.** Normalised batch axes are stored inline (up to
-  8 axes; heap only beyond, independently of the numerical workspace). Lane views are derived from
-  the lane range on demand, never collected into a list, and a multi-lane run records the lowest
+  8 axes; heap only beyond, independently of the numerical workspace). Item views are derived from
+  the item index on demand, never collected into a list, and a multi-lane run records the lowest
   failing lane in a mutex instead of a per-lane result vector. On one lane the driver allocates
-  nothing; `tests/alloc_counts.rs` pins the remaining per-call allocations of compact Householder,
-  Cholesky, QR, rank-revealing QR, LU solve, full-pivot LU solve, eigh, SVD, packed LU and
-  triangular solve (their faer lane scratch), which do not grow with the batch. The families the
-  table does not name are not pinned yet. Worker allocations are observed by
-  `tlinalg_testkit::alloc::allocations_all_threads`, which the thread-local counter cannot see.
-* **Output assembly.** Library-created vectors are cleared, reserved, and their spare capacity is
-  split into disjoint per-lane `MaybeUninit` chunks written sequentially. `set_len` runs only after
-  every lane returned `Ok` with its chunk full; otherwise the vectors stay empty.
-* **Scratch.** faer work matrices and `MemBuffer`s are built once per lane and reused; buffers
-  whose prior contents faer could observe (decomposition outputs, QR block coefficients, the thin
-  `Q` seed) are reset per item to the state the pre-batching code allocated them in.
+  nothing. `tests/alloc_counts.rs` pins two levels: every `*_into` call allocates **nothing** in
+  all four scalar types, at sizes {1, 2, 8}, batches {1, 64} and both input layouts, on a serial
+  `Exec`; and each `Vec` wrapper allocates exactly one block of `*_workspace` bytes (zero for
+  triangular solve), independent of the batch. A pooled `Exec` adds the pool's own constant, also
+  independent of the batch. The GEMM path of the blocked compact Householder update is pinned as an
+  upper bound (test 6) because crates.io `gemm 0.19` packs into per-call buffers (tcontract-rs#121).
+  Worker allocations are observed by `tlinalg_testkit::alloc::allocations_all_threads`, which the
+  thread-local counter cannot see.
+* **Output assembly.** A `_into` route writes each item into its own caller-owned slice (compact,
+  `item_len` elements per item) through the same sequential `Sink`; an item that does not write its
+  whole slice is a detected `Error::Inconsistent`, never uninitialised memory handed back. A `Vec`
+  wrapper clears and reserves its vector and hands the spare capacity to the same route, so
+  `set_len` runs only after every item was full; otherwise the vector stays empty.
+* **Scratch.** faer work matrices and `MemStack`s are carved once per lane from the caller's
+  borrowed bytes and reused; buffers whose prior contents faer could observe (decomposition
+  outputs, QR block coefficients, the thin `Q` seed) are reset per item to the state the
+  pre-batching code allocated them in.
 * **Empty `full` SVD.** For a matrix with a zero dimension in `full` mode the two providers differ,
   as they did before the extraction: faer emits the identity `U` and `Vᴴ` blocks while `tlinalg-blas`
   returns empty factors and leaves those blocks to the host.

@@ -6,17 +6,19 @@
 //! * walks the batch dimensions of a rank-`2 + B` strided descriptor ([`BatchedRef`],
 //!   [`BatchedMut`]),
 //! * selects Auto lanes within the requested width and runs them on the caller's pool ([`run`]),
-//! * assembles the compact, batch-contiguous outputs without a zero-fill pass ([`Out`]) or hands
-//!   out disjoint chunks of a caller-owned compact buffer ([`InPlace`]).
+//! * hands every batch item its own disjoint output view: spare capacity of a library-owned vector
+//!   ([`VecOut`]), a caller-owned uninitialised slice ([`FixedOut`]), or a caller-owned compact
+//!   in-place buffer ([`InPlace`]),
+//! * carves each lane's scratch out of the caller's borrowed workspace ([`ScratchArena`]).
 //!
 //! # Output soundness
 //!
-//! A [`Out`] output is cleared, reserved, and its spare capacity is split into one disjoint
-//! `MaybeUninit` chunk per lane. Each lane writes its chunk strictly sequentially through a [`Sink`],
-//! so "the sink reached the end of its chunk" is exactly "every element of the chunk was written".
-//! The driver checks that for every lane and calls `set_len` only when **every** lane succeeded and
-//! filled its chunk; otherwise the vector stays at length zero, so a caller never observes a
-//! partially initialised vector.
+//! Every output is addressed **per item** (`item_len` elements per batch item), and each lane writes
+//! the items the driver gives it strictly sequentially through a [`Sink`] — or, for an in-place
+//! buffer, straight into that item's slice. So "the sink reached the end of the item's chunk" is
+//! exactly "every element of the item was written", whether that chunk is a caller-owned buffer or
+//! spare capacity. The driver checks it per item; for a library-owned vector it calls `set_len` only
+//! when **every** item was full, so a caller never observes a partially initialised vector.
 
 use core::mem::MaybeUninit;
 use std::sync::Mutex;
@@ -222,6 +224,11 @@ impl<'a, T: ScalarEntity> BatchedRef<'a, T> {
         &self.input.dims()[2..]
     }
 
+    /// The descriptor this view was built from.
+    pub(crate) fn raw(&self) -> RawStridedRef<'a, T> {
+        self.input
+    }
+
     /// Batch item `index` as a faer matrix over the scalar's faer entity.
     ///
     /// `index` must be below [`BatchedRef::batch`].
@@ -414,7 +421,7 @@ impl<'a, T: ScalarEntity> BatchedMut<'a, T> {
     }
 }
 
-/// Sequential writer over one lane's uninitialised output chunk.
+/// Sequential writer over one item's uninitialised output chunk.
 pub(crate) struct Sink<'a, U> {
     buf: &'a mut [MaybeUninit<U>],
     pos: usize,
@@ -447,7 +454,7 @@ impl<U> Sink<'_, U> {
     }
 }
 
-/// Something a per-item kernel can append output elements to, the lane it writes into.
+/// Something a per-item kernel can append output elements to, the item it writes into.
 ///
 /// A trait rather than the concrete [`Sink`] so `EigScalar::eig_into` can take a `&mut dyn Push` and
 /// erase the lane's lifetime. `pub` only so the crate-internal `EigScalar` can name it; this module
@@ -463,21 +470,6 @@ impl<U> Push<U> for Sink<'_, U> {
     }
 }
 
-/// One lane's chunk of a caller-owned compact buffer.
-pub(crate) struct Chunk<'a, U> {
-    slice: &'a mut [U],
-    item_len: usize,
-    first: usize,
-}
-
-impl<U> Chunk<'_, U> {
-    /// The elements of batch item `index` (a global index inside this lane's range).
-    pub(crate) fn item(&mut self, index: usize) -> &mut [U] {
-        let start = (index - self.first) * self.item_len;
-        &mut self.slice[start..start + self.item_len]
-    }
-}
-
 /// Lane `lane`'s half-open item range when `batch` items are split into `lanes` nonempty
 /// contiguous ranges. `lanes <= batch`, so every range is nonempty. Computed from the quotient and
 /// remainder so `lane * batch` cannot overflow for a huge valid batch.
@@ -489,99 +481,47 @@ fn lane_bounds(batch: usize, lanes: usize, lane: usize) -> (usize, usize) {
     (first, last)
 }
 
-/// The outputs of one batched call, handed out per lane.
+/// The outputs of one batched call, handed out per batch item.
 ///
-/// A lane's view is derived from its index on demand ([`Outputs::lane`]), so the driver builds no
+/// An item's view is derived from its index on demand ([`Outputs::item`]), so the driver builds no
 /// per-lane list: a single-lane run allocates nothing, and a multi-lane run creates each view inside
-/// its own task.
+/// its own task. Items are addressed by index, so a lane touches only the indices the driver gives
+/// it.
 pub(crate) trait Outputs {
     /// Raw handles to every output, shared by the lane tasks.
     type Parts: Sync;
-    /// One lane's view of every output.
-    type Lane: Send;
+    /// One batch item's view of every output.
+    type Item: Send;
 
-    /// Clear and reserve the vector outputs, check the in-place ones.
+    /// Clear and reserve the vector outputs, check the caller-owned ones.
     fn prepare(&mut self, op: Op, batch: usize) -> Result<()>;
 
-    /// The raw handles the lanes are carved from.
+    /// The raw handles the items are carved from.
     ///
     /// # Safety
     ///
-    /// [`Outputs::prepare`] succeeded for this `batch`; `self` is not used again until every lane
+    /// [`Outputs::prepare`] succeeded for this `batch`; `self` is not used again until every item
     /// derived from the returned handles has been dropped.
     unsafe fn parts(&mut self, batch: usize) -> Self::Parts;
 
-    /// Lane `lane`'s view: items `first..last`.
+    /// Item `index`'s view.
     ///
     /// # Safety
     ///
-    /// `parts` came from [`Outputs::parts`] for this `batch`, and no two live views are given
-    /// overlapping `first..last` ranges (the driver partitions `0..batch` into disjoint ranges).
-    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Self::Lane;
+    /// `parts` came from [`Outputs::parts`] for this `batch`, `index` is below it, and no two live
+    /// views are given the same `index` (the driver partitions `0..batch` into disjoint ranges).
+    unsafe fn item(parts: &Self::Parts, index: usize) -> Self::Item;
 
-    /// Whether a lane wrote every element it owns.
-    fn lane_complete(lane: &Self::Lane) -> bool;
+    /// Whether a kernel wrote every element of the item it was given.
+    fn item_complete(item: &Self::Item) -> bool;
 
     /// Publish the written vector outputs.
     ///
     /// # Safety
     ///
-    /// Every lane `0..batch.div_ceil(chunk)` was created once, completed (see
-    /// [`Outputs::lane_complete`]) and has been dropped.
+    /// Every index `0..batch` was created once, completed (see [`Outputs::item_complete`]) and has
+    /// been dropped.
     unsafe fn commit(&mut self, batch: usize);
-}
-
-/// A vector output, cleared and then filled with `item_len` elements per batch item.
-pub(crate) struct Out<'a, U> {
-    vec: &'a mut Vec<U>,
-    item_len: usize,
-}
-
-/// A vector output of `item_len` elements per batch item.
-pub(crate) fn out<U>(vec: &mut Vec<U>, item_len: usize) -> Out<'_, U> {
-    Out { vec, item_len }
-}
-
-impl<'a, U: Send> Outputs for Out<'a, U> {
-    type Parts = (SharedPtr<MaybeUninit<U>>, usize);
-    type Lane = Sink<'a, U>;
-
-    fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
-        self.vec.clear();
-        let total = checked_product(op, "output", &[self.item_len, batch])?;
-        self.vec.reserve(total);
-        Ok(())
-    }
-
-    unsafe fn parts(&mut self, _: usize) -> Self::Parts {
-        (
-            SharedPtr(self.vec.spare_capacity_mut().as_mut_ptr()),
-            self.item_len,
-        )
-    }
-
-    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Sink<'a, U> {
-        let (ptr, item_len) = *parts;
-        let (start, end) = (first * item_len, last * item_len);
-        // SAFETY: `prepare` cleared the vector and reserved `item_len * batch`, so its spare
-        // capacity starting at `ptr` covers that many elements and `start..end` lies inside it;
-        // the vector is not touched until the lanes are gone, and distinct `first..last` ranges
-        // are disjoint.
-        let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(start), end - start) };
-        Sink { buf, pos: 0 }
-    }
-
-    fn lane_complete(lane: &Sink<'a, U>) -> bool {
-        lane.is_full()
-    }
-
-    unsafe fn commit(&mut self, batch: usize) {
-        // SAFETY: `prepare` reserved `item_len * batch`; the lanes covered the first
-        // `item_len * batch` spare elements exactly, as disjoint ranges, and the caller guarantees
-        // every lane wrote its whole range (each `Sink` writes sequentially, so a full sink means
-        // every element was initialised) and is gone.
-        unsafe { self.vec.set_len(self.item_len * batch) };
-    }
 }
 
 /// A caller-owned compact buffer of `item_len` elements per batch item, updated in place.
@@ -605,8 +545,8 @@ pub(crate) fn in_place<'a, U>(
 }
 
 impl<'a, U: Send> Outputs for InPlace<'a, U> {
-    type Parts = (SharedPtr<U>, usize, usize);
-    type Lane = Chunk<'a, U>;
+    type Parts = (SharedPtr<U>, usize);
+    type Item = &'a mut [U];
 
     fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
         if self.slice.len() != checked_product(op, self.role, &[self.item_len, batch])? {
@@ -619,38 +559,123 @@ impl<'a, U: Send> Outputs for InPlace<'a, U> {
     }
 
     unsafe fn parts(&mut self, _: usize) -> Self::Parts {
-        (
-            SharedPtr(self.slice.as_mut_ptr()),
-            self.slice.len(),
-            self.item_len,
-        )
+        (SharedPtr(self.slice.as_mut_ptr()), self.item_len)
     }
 
-    unsafe fn lane(parts: &Self::Parts, first: usize, last: usize) -> Chunk<'a, U> {
-        let (ptr, _len, item_len) = *parts;
-        let (start, end) = (first * item_len, last * item_len);
-        // SAFETY: the slice is exclusively borrowed for `'a` and holds `len` elements, `start..end`
-        // lies inside it, it is not touched until the lanes are gone, and distinct `first..last`
-        // ranges are disjoint.
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(start), end - start) };
-        Chunk {
-            slice,
-            item_len,
-            first,
-        }
+    unsafe fn item(parts: &Self::Parts, index: usize) -> &'a mut [U] {
+        let (ptr, item_len) = *parts;
+        // SAFETY: the slice is exclusively borrowed for `'a` and holds `batch * item_len` elements,
+        // `index * item_len..` lies inside it, it is not touched until the items are gone, and
+        // distinct indices are disjoint.
+        unsafe { core::slice::from_raw_parts_mut(ptr.0.add(index * item_len), item_len) }
     }
 
-    fn lane_complete(_: &Chunk<'a, U>) -> bool {
+    fn item_complete(_: &&'a mut [U]) -> bool {
         true
     }
 
     unsafe fn commit(&mut self, _: usize) {}
 }
 
+/// A caller-owned buffer of `item_len` elements per batch item, written from uninitialised storage.
+///
+/// This is the output side of the `*_into` entry points: the caller owns the storage, the kernel
+/// initialises every element, and a kernel that writes fewer elements than the item holds is a
+/// detected bug rather than uninitialised memory handed back to the caller.
+pub(crate) struct FixedOut<'a, U> {
+    slice: &'a mut [MaybeUninit<U>],
+    item_len: usize,
+    role: &'static str,
+}
+
+/// A caller-owned output buffer of `item_len` elements per batch item.
+pub(crate) fn fixed_out<'a, U>(
+    slice: &'a mut [MaybeUninit<U>],
+    item_len: usize,
+    role: &'static str,
+) -> FixedOut<'a, U> {
+    FixedOut {
+        slice,
+        item_len,
+        role,
+    }
+}
+
+impl<'a, U: Send> Outputs for FixedOut<'a, U> {
+    type Parts = (SharedPtr<MaybeUninit<U>>, usize);
+    type Item = Sink<'a, U>;
+
+    fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
+        let expected = checked_product(op, self.role, &[self.item_len, batch])?;
+        if self.slice.len() != expected {
+            return Err(invalid(
+                op,
+                "output",
+                format!(
+                    "{role} has {} elements, expected {expected} ({item_len} x {batch})",
+                    self.slice.len(),
+                    role = self.role,
+                    item_len = self.item_len,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    unsafe fn parts(&mut self, _: usize) -> Self::Parts {
+        (SharedPtr(self.slice.as_mut_ptr()), self.item_len)
+    }
+
+    unsafe fn item(parts: &Self::Parts, index: usize) -> Sink<'a, U> {
+        let (ptr, item_len) = *parts;
+        // SAFETY: as for `Out`: the caller's slice holds `batch * item_len` elements and distinct
+        // indices cover disjoint ranges.
+        let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(index * item_len), item_len) };
+        Sink { buf, pos: 0 }
+    }
+
+    fn item_complete(item: &Sink<'a, U>) -> bool {
+        item.is_full()
+    }
+
+    unsafe fn commit(&mut self, _: usize) {}
+}
+
+/// A caller-owned `Vec` output whose spare capacity a `*_into` call writes into.
+///
+/// The vector is cleared and reserved here; the call writes exactly `len` elements into the spare
+/// capacity and [`VecOut::publish`] sets the length. An error leaves the vector at length zero, so a
+/// wrapper keeps the "empty on error" contract without a second pass over the data.
+pub(crate) struct VecOut<'v, U> {
+    vec: &'v mut Vec<U>,
+    len: usize,
+}
+
+impl<'v, U> VecOut<'v, U> {
+    /// Clear `vec` and reserve room for `len` elements.
+    pub(crate) fn new(vec: &'v mut Vec<U>, len: usize) -> Self {
+        vec.clear();
+        vec.reserve(len);
+        Self { vec, len }
+    }
+
+    /// The `len` spare elements the call writes.
+    pub(crate) fn spare(&mut self) -> &mut [MaybeUninit<U>] {
+        &mut self.vec.spare_capacity_mut()[..self.len]
+    }
+
+    /// Publish the written elements.
+    pub(crate) fn publish(self) {
+        // SAFETY: the matching `*_into` call wrote every one of the `len` elements (the driver
+        // rejects an item that did not fill its output), and `reserve` gave the capacity.
+        unsafe { self.vec.set_len(self.len) }
+    }
+}
+
 /// No outputs beyond what the item closure captures itself (a [`BatchedMut`] destination).
 impl Outputs for () {
     type Parts = ();
-    type Lane = ();
+    type Item = ();
 
     fn prepare(&mut self, _: Op, _: usize) -> Result<()> {
         Ok(())
@@ -658,9 +683,9 @@ impl Outputs for () {
 
     unsafe fn parts(&mut self, _: usize) {}
 
-    unsafe fn lane(_: &(), _: usize, _: usize) {}
+    unsafe fn item(_: &(), _: usize) {}
 
-    fn lane_complete(_: &()) -> bool {
+    fn item_complete(_: &()) -> bool {
         true
     }
 
@@ -671,7 +696,7 @@ macro_rules! impl_outputs_tuple {
     ($($name:ident $index:tt),+) => {
         impl<$($name: Outputs),+> Outputs for ($($name,)+) {
             type Parts = ($($name::Parts,)+);
-            type Lane = ($($name::Lane,)+);
+            type Item = ($($name::Item,)+);
 
             fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
                 $(self.$index.prepare(op, batch)?;)+
@@ -683,17 +708,13 @@ macro_rules! impl_outputs_tuple {
                 ($(unsafe { self.$index.parts(batch) },)+)
             }
 
-            unsafe fn lane(
-                parts: &Self::Parts,
-                first: usize,
-                last: usize,
-            ) -> Self::Lane {
+            unsafe fn item(parts: &Self::Parts, index: usize) -> Self::Item {
                 // SAFETY: forwarded; the caller's guarantee covers every component.
-                ($(unsafe { $name::lane(&parts.$index, first, last) },)+)
+                ($(unsafe { $name::item(&parts.$index, index) },)+)
             }
 
-            fn lane_complete(lane: &Self::Lane) -> bool {
-                true $(&& $name::lane_complete(&lane.$index))+
+            fn item_complete(item: &Self::Item) -> bool {
+                true $(&& $name::item_complete(&item.$index))+
             }
 
             unsafe fn commit(&mut self, batch: usize) {
@@ -709,6 +730,67 @@ impl_outputs_tuple!(A 0, B 1);
 impl_outputs_tuple!(A 0, B 1, C 2);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3, E 4);
+
+/// The per-lane chunks of a caller-owned workspace, handed to the lane tasks.
+///
+/// Lane `l` owns exactly `[l * per_lane, (l + 1) * per_lane)`. `per_lane` includes the worst-case
+/// alignment padding of one lane's requirement, so a sub-buffer carved out of any lane chunk is
+/// correctly aligned whatever the caller buffer's own alignment is.
+pub(crate) struct ScratchArena<'w> {
+    base: *mut MaybeUninit<u8>,
+    per_lane: usize,
+    _borrow: core::marker::PhantomData<&'w mut [MaybeUninit<u8>]>,
+}
+
+// SAFETY: lanes touch disjoint byte ranges, and [`ScratchArena::lane`] hands each index out once.
+unsafe impl Sync for ScratchArena<'_> {}
+
+impl<'w> ScratchArena<'w> {
+    /// Partition `workspace` into equal lane chunks of `per_lane` bytes.
+    pub(crate) fn new(workspace: &'w mut [MaybeUninit<u8>], per_lane: usize) -> Self {
+        Self {
+            base: workspace.as_mut_ptr(),
+            per_lane,
+            _borrow: core::marker::PhantomData,
+        }
+    }
+
+    /// Lane `lane`'s chunk.
+    ///
+    /// # Safety
+    ///
+    /// No two live chunks are requested for the same `lane`, and the chunk does not outlive the
+    /// workspace it was carved from.
+    pub(crate) unsafe fn lane(&self, lane: usize) -> &'w mut [MaybeUninit<u8>] {
+        // SAFETY: the caller guarantees a distinct lane index per live chunk and `new` sized the
+        // arena from a workspace of at least `lanes * per_lane` bytes, so this range is inside the
+        // exclusively borrowed workspace.
+        unsafe {
+            core::slice::from_raw_parts_mut(self.base.add(lane * self.per_lane), self.per_lane)
+        }
+    }
+}
+
+/// Check that `workspace` covers the requirement of a `lanes`-lane route, or report the typed
+/// refusal the borrowed-workspace contract specifies.
+pub(crate) fn check_workspace(
+    op: Op,
+    workspace: &[MaybeUninit<u8>],
+    per_lane: usize,
+    lanes: usize,
+) -> Result<()> {
+    let needed = per_lane
+        .checked_mul(lanes)
+        .ok_or_else(|| invalid(op, "workspace", "the workspace requirement overflows usize"))?;
+    if workspace.len() < needed {
+        return Err(Error::InsufficientWorkspace {
+            op,
+            needed,
+            have: workspace.len(),
+        });
+    }
+    Ok(())
+}
 
 /// The pre-0.3 Auto cutoff: ordinary families fan out on a pool only while the largest item
 /// extent is at most this. Packed LU keeps its no-cutoff exception (`None`).
@@ -769,7 +851,7 @@ fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usi
 /// forced strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget;
 /// `item_muladds` is the family's work estimate, reported for the forced routes and the future
 /// shared-model `Auto`. `max_item_dim` is the legacy Auto measure.
-fn decide(
+pub(crate) fn decide(
     op: Op,
     exec: Exec<'_>,
     batch: usize,
@@ -786,6 +868,20 @@ fn decide(
     }
 }
 
+/// The faer parallelism token a resolved route runs its items with.
+///
+/// This is exactly what [`run`] passes to the item closure and to `make_scratch`: one lane stays on
+/// the caller at width one (`faer::Par::Seq`), otherwise the item width the decision granted is
+/// installed on the pool. The workspace queries size their faer scratch with it, so a query and the
+/// matching call resolve the same width.
+pub(crate) fn route_par(lanes: usize, item_threads: usize) -> faer::Par {
+    if lanes > 1 || item_threads > 1 {
+        faer::Par::rayon(item_threads.max(1))
+    } else {
+        faer::Par::Seq
+    }
+}
+
 /// The one mapping from the executor's forced-route refusal to this crate's typed error.
 fn strategy_error(op: Op, error: ExecError) -> Error {
     match error {
@@ -798,13 +894,6 @@ fn strategy_error(op: Op, error: ExecError) -> Error {
     }
 }
 
-/// Resolve the route for this batch and discard it, so a caller that returns early on an empty or
-/// zero-length route still refuses a forced strategy this route cannot honor. The refusal precedes
-/// any write.
-pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f64) -> Result<()> {
-    decide(op, exec, batch, None, item_muladds).map(|_| ())
-}
-
 /// Run the batch on one caller-owned resource.
 ///
 /// The route comes from [`decide`]: `lanes` nonempty contiguous ranges of the batch, each item run
@@ -815,9 +904,11 @@ pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f6
 /// `max_item_dim` is the legacy Auto measure (see [`decide`]); `item_muladds` is the family's work
 /// estimate, used by the forced strategies and the future shared-model Auto.
 ///
-/// `make_scratch` builds one lane's scratch, reused for every item of that lane. It is called with
-/// the item width the decision granted, so scratch sized per thread matches the width the items
-/// actually run at.
+/// `make_scratch` builds one lane's scratch from that lane's borrowed workspace chunk, reused for
+/// every item of that lane. It is called with the item width the decision granted, so scratch sized
+/// per thread matches the width the items actually run at. `ScratchArena` hands each lane its own
+/// chunk of a caller-owned byte region; a `Vec` wrapper passes a zero-length arena for a family
+/// whose route needs no scratch.
 ///
 /// Each lane stops at its own first failure and is not stopped by another lane's. The returned
 /// error is the lowest-indexed failing lane's, which is the lowest-indexed failing item, so the
@@ -829,20 +920,21 @@ pub(crate) fn check_route(op: Op, exec: Exec<'_>, batch: usize, item_muladds: f6
 /// can expose more intra-item tasks than requested (see [`tcontract_exec::Exec`]'s contract).
 /// Admission across simultaneous calls is the resource owner's.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run<O, S, MK, F>(
+pub(crate) fn run<'w, O, S, MK, F>(
     op: Op,
     batch: usize,
     exec: Exec<'_>,
     max_item_dim: Option<usize>,
     item_muladds: f64,
     outputs: &mut O,
+    workspace: ScratchArena<'w>,
     make_scratch: MK,
     item: F,
 ) -> Result<()>
 where
     O: Outputs,
-    MK: Fn(faer::Par) -> S + Sync,
-    F: Fn(usize, &mut O::Lane, &mut S, faer::Par) -> Result<()> + Sync,
+    MK: Fn(faer::Par, &'w mut [MaybeUninit<u8>]) -> S + Sync,
+    F: Fn(usize, &mut O::Item, &mut S, faer::Par) -> Result<()> + Sync,
 {
     // Resolve availability **before** touching the outputs: a forced `WholeBatchVendor` is
     // refused even when the batch is empty, and a huge-but-valid batch must not reach
@@ -860,27 +952,28 @@ where
     #[cfg(test)]
     tests::record_lanes(lanes);
     let result = {
-        // SAFETY: `prepare` succeeded above; every lane is created once from its own range and
+        // SAFETY: `prepare` succeeded above; every item is created once from its own index and
         // consumed inside this block, before `outputs` is touched again by `commit`.
         let parts = unsafe { outputs.parts(batch) };
         let parts = &parts;
         let run_lane = |lane: usize, faer_par: faer::Par| -> Result<()> {
             let (first, last) = lane_bounds(batch, lanes, lane);
-            // SAFETY: each call site passes a distinct lane index, whose range is disjoint from the
+            // SAFETY: each call site passes a distinct lane index, whose chunk is disjoint from the
             // others'.
-            let mut out = unsafe { O::lane(parts, first, last) };
-            let mut scratch = make_scratch(faer_par);
+            let region = unsafe { workspace.lane(lane) };
+            let mut scratch = make_scratch(faer_par, region);
             for index in first..last {
-                item(index, &mut out, &mut scratch, faer_par)?;
+                // SAFETY: `index` is below the batch count and the lane ranges are disjoint.
+                let mut item_out = unsafe { O::item(parts, index) };
+                item(index, &mut item_out, &mut scratch, faer_par)?;
+                if !O::item_complete(&item_out) {
+                    return Err(Error::Inconsistent {
+                        op,
+                        detail: "a kernel did not fill its output",
+                    });
+                }
             }
-            if O::lane_complete(&out) {
-                Ok(())
-            } else {
-                Err(Error::Inconsistent {
-                    op,
-                    detail: "a kernel did not fill its output",
-                })
-            }
+            Ok(())
         };
         if lanes == 1 {
             // One lane, item-parallel: `install` enters the pool for `item_threads > 1` and stays
@@ -919,8 +1012,8 @@ where
         }
     };
     if result.is_ok() {
-        // SAFETY: every lane `0..lanes` was created once and returned `Ok`, which it does only
-        // after `O::lane_complete` confirmed it filled its outputs; each lane view was dropped at
+        // SAFETY: every item `0..batch` was created once and returned `Ok`, which it does only
+        // after `O::item_complete` confirmed it filled its output; each item view was dropped at
         // the end of its run.
         unsafe { outputs.commit(batch) };
     }

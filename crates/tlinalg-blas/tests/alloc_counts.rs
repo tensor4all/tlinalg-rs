@@ -16,7 +16,8 @@ use core::mem::MaybeUninit;
 use strided_view::RawStridedRef;
 use tlinalg_blas::cholesky::cholesky;
 use tlinalg_blas::eigh::eigh;
-use tlinalg_blas::lu::lu_factor;
+use tlinalg_blas::full_piv_lu::{full_piv_lu, FullPivLuOutputs};
+use tlinalg_blas::lu::{lu, lu_factor, LuOutputs};
 use tlinalg_blas::qr::{qr, rank_revealing_qr, RankRevealingQrOutputs};
 use tlinalg_blas::solve::solve;
 use tlinalg_blas::svd::{svd, SvdMode, SvdOutputs};
@@ -141,9 +142,9 @@ fn row(name: &str, count: usize) -> usize {
         "solve" => measure(|| solve(Op::Solve, false, a, b, &mut o1, &mut ws).unwrap()),
         "qr" => measure(|| qr(Op::Qr, a, &mut o1, &mut o2, &mut ws).unwrap()),
         "rank_revealing_qr" => {
-            // This family allocates its own `tau`, `jpvt`, per-item permutation check and
-            // `?geqp3`/`?orgqr` scratch instead of acquiring them from the host workspace; the
-            // count is pinned here so a regression shows up. See `tlinalg-blas/src/scratch.rs`.
+            // `jpvt` is `i32` and `IndexWorkspace` is not in this entry point's published bound, so
+            // it stays a per-call allocation; `tau` is now pooled and the duplicate check marks
+            // `jpvt` in place. One is an **upper bound** for this site (tlinalg-rs#57).
             let mut permutation = Vec::with_capacity(N * count);
             measure(|| {
                 let outputs = RankRevealingQrOutputs {
@@ -172,6 +173,32 @@ fn row(name: &str, count: usize) -> usize {
                 lu_factor(Op::LuFactor, N, N, &mut lu, &mut pivots, &mut parity).unwrap()
             })
         }
+        "lu" => {
+            let mut parity = Vec::with_capacity(count);
+            measure(|| {
+                let outputs = LuOutputs {
+                    p: &mut o1,
+                    l: &mut o2,
+                    u: &mut o3,
+                    parity: &mut parity,
+                };
+                lu(Op::Lu, a, outputs, &mut ws).unwrap()
+            })
+        }
+        "full_piv_lu" => {
+            let mut o4 = Vec::with_capacity(big);
+            let mut parity = Vec::with_capacity(count);
+            measure(|| {
+                let outputs = FullPivLuOutputs {
+                    p: &mut o1,
+                    l: &mut o2,
+                    u: &mut o3,
+                    q: &mut o4,
+                    parity: &mut parity,
+                };
+                full_piv_lu(Op::FullPivLu, a, outputs, &mut ws).unwrap()
+            })
+        }
         _ => unreachable!(),
     }
 }
@@ -186,10 +213,15 @@ fn steady_state_allocations_do_not_grow_with_the_batch() {
         ("triangular_solve", 0),
         ("solve", 0),
         ("qr", 0),
-        ("rank_revealing_qr", 3),
+        // Upper bound: one `jpvt` buffer (see the row above); one is what remains.
+        ("rank_revealing_qr", 1),
         ("eigh", 0),
         ("svd", 0),
         ("lu_factor", 0),
+        // The permutation matrices are written straight from the LAPACK pivots (identity plus
+        // in-place row/column swaps), so both families are steady-state allocation free.
+        ("lu", 0),
+        ("full_piv_lu", 0),
     ];
     println!("| family | batch 1 | batch 64 |");
     println!("|---|---|---|");

@@ -5,18 +5,21 @@
 //!
 //! Implementations obtain every reusable buffer through [`Workspace`]. The host implements it over
 //! its own pool, so the pool's identity, retention policy and steady-state allocation behaviour are
-//! preserved and no second allocator is introduced. A few short-lived **index** buffers are still
-//! allocated per call rather than pooled, because they are `usize` permutations the `i32`
-//! [`IndexWorkspace`] cannot hand out; they are enumerated here so the inventory is complete and
-//! `tests/alloc_counts.rs` pins their count:
+//! preserved and no second allocator is introduced.
 //!
-//! * rank-revealing QR: `tau` (`T`), `jpvt` (`i32`) and the per-item permutation-check `seen`
-//!   (`bool`) — three allocations;
-//! * partial-pivot LU factor: the `usize` `permutation` — one allocation;
-//! * full-pivot LU factor: the `usize` `row_perm` and `col_perm` — two allocations.
+//! One short-lived **index** buffer is still allocated per call rather than pooled, because it is
+//! `i32` scratch that the `Workspace<T>` bound of its entry point cannot hand out:
 //!
-//! General-eigendecomposition real-eigenvector assembly no longer adds a per-item staging column:
-//! it pushes each output element straight into the caller's reserved vector.
+//! * rank-revealing QR: `jpvt` (`i32`) — one allocation, pinned as an **upper bound** in
+//!   `tests/alloc_counts.rs` (tlinalg-rs#57 leaves this site open for an `IndexWorkspace` route in
+//!   a breaking release). Its `tau` is pooled and its duplicate check marks `jpvt` in place, so the
+//!   former `tau`/`seen` allocations are gone.
+//!
+//! The permutation matrices of the explicit partial-pivot and full-pivot LU are written straight
+//! from the LAPACK pivots (an identity block plus in-place row/column swaps), so those `usize`
+//! permutation buffers are gone as well. General-eigendecomposition real-eigenvector assembly never
+//! added a per-item staging column: it pushes each output element straight into the caller's
+//! reserved vector.
 //!
 //! # Ownership
 //!

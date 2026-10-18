@@ -1,7 +1,8 @@
 //! faer-backed general (non-Hermitian) eigendecomposition.
 //!
 //! Moved from `tenferro-linalg`'s faer backend (same project, MIT OR Apache-2.0). Faer's work
-//! storage is lane scratch, reused for every item of the lane.
+//! storage is per-lane scratch carved from the caller's borrowed workspace, reused for every item of
+//! the lane.
 //!
 //! # Conventions
 //!
@@ -14,23 +15,194 @@
 //!   eigenvectors `u_j ± i·u_{j+1}`.
 //! * [`eig_values`] copies the real and imaginary parts as faer returned them, without that test.
 
-use faer::diag::Diag;
-use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+use core::mem::MaybeUninit;
+
+use faer::diag::DiagMut;
+use faer::dyn_stack::{MemStack, StackReq};
 use faer::linalg::evd::ComputeEigenvectors;
-use faer::{Mat, MatRef};
+use faer::{MatMut, MatRef};
 use num_complex::{Complex32, Complex64};
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, out, BatchedRef, Push};
+use crate::batch::{self, fixed_out, BatchedRef, Push, VecOut};
 use crate::scalar::{EigScalar, ScalarEntity};
 use crate::util::{checked_product, weighted_muladds};
+use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
+
+/// Bytes one batched eigendecomposition call needs in its borrowed workspace.
+///
+/// `vectors` selects the route: `false` sizes the values-only decomposition. The canonical `Op` of
+/// a refusal is `Op::Eig` (`Op::EigValues` for the values-only query).
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows, and the
+/// executor's refusal for a forced strategy this route cannot honor.
+pub fn eig_workspace<T: FaerScalar>(
+    n: usize,
+    vectors: bool,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    eig_bytes::<T>(Op::Eig, n, vectors, batch, exec)
+}
+
+/// [`eig_workspace`] for the values-only route (the canonical `Op` is `Op::EigValues`).
+///
+/// # Errors
+///
+/// As [`eig_workspace`].
+pub fn eig_values_workspace<T: FaerScalar>(
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    eig_bytes::<T>(Op::EigValues, n, false, batch, exec)
+}
+
+/// Reject a shape whose square the lane requirement multiplies.
+fn check_shape(op: Op, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[n, n])?;
+    Ok(())
+}
+
+/// The work estimate a general eigendecomposition reports to the batch policy.
+fn work<T: ScalarEntity>(n: usize) -> f64 {
+    weighted_muladds::<T>((n as f64).powi(3))
+}
+
+/// The query with the caller's operation, so a wrapper reports its own `Op`.
+fn eig_bytes<T: FaerScalar>(
+    op: Op,
+    n: usize,
+    vectors: bool,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let requirement = lane_requirement(
+        op,
+        exec,
+        batch,
+        Some(n),
+        work::<T>(n),
+        || check_shape(op, n),
+        |par| T::eig_req(n, vectors, par),
+    )?;
+    match requirement {
+        None => Ok(0),
+        Some((lanes, per_lane)) => total_of(op, lanes, per_lane),
+    }
+}
+
+/// Eigenvalues and eigenvectors of every `n x n` matrix of a batch, into caller-owned storage.
+///
+/// `values` holds `n` and `vectors` `n * n` uninitialised elements per batch item, in the complex
+/// type of the input scalar. Workspace contract as [`crate::qr::qr_into`].
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when `input` is not a batch of square matrices, an output length does
+/// not match, or the vector count overflows, [`crate::Error::InsufficientWorkspace`] for a short
+/// workspace, and [`Error::NonConvergence`] for the lowest-indexed item faer fails to converge on.
+pub fn eig_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    values: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
+    vectors: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::square(op, "input", input)?;
+    let n = input.rows();
+    let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| T::eig_req(n, true, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(n),
+        item_muladds,
+        &mut (
+            fixed_out(values, n, "eigenvalues"),
+            fixed_out(vectors, v_len, "eigenvectors"),
+        ),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| T::eig_scratch(n, true, par, MemStack::new(stack)),
+        |index, (values, vectors), scratch, par| {
+            if n == 0 {
+                return Ok(());
+            }
+            T::eig_into(op, input.item(index), values, Some(vectors), scratch, par)
+        },
+    )
+}
+
+/// Eigenvalues of every `n x n` matrix of a batch, into caller-owned storage.
+///
+/// `values` holds `n` uninitialised complex elements per batch item. Workspace contract as
+/// [`crate::qr::qr_into`].
+///
+/// # Errors
+///
+/// As [`eig_into`], without the eigenvector count.
+pub fn eig_values_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    values: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::square(op, "input", input)?;
+    let n = input.rows();
+    let item_muladds = work::<T>(n);
+    let requirement = lane_requirement(
+        op,
+        exec,
+        input.batch(),
+        Some(n),
+        item_muladds,
+        || check_shape(op, n),
+        |par| T::eig_req(n, false, par),
+    )?;
+    let (lanes, per_lane) = requirement.unwrap_or((1, 0));
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(n),
+        item_muladds,
+        &mut (fixed_out(values, n, "eigenvalues"),),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| T::eig_scratch(n, false, par, MemStack::new(stack)),
+        |index, (values,), scratch, par| {
+            if n == 0 {
+                return Ok(());
+            }
+            T::eig_into(op, input.item(index), values, None, scratch, par)
+        },
+    )
+}
 
 /// Eigenvalues and eigenvectors of every `n x n` matrix of a batch, `A V = V diag(w)`.
 ///
 /// `input` is `[n, n, b...]`. Per item, `values` receives `n` values and `vectors` the column-major
 /// `n x n` eigenvectors, in the complex type of the input scalar.
+///
+/// This is the `Vec` wrapper of [`eig_into`].
 ///
 /// # Errors
 ///
@@ -67,28 +239,35 @@ pub fn eig<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    batch::run(
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
+    let batch = input.batch();
+    let bytes = eig_bytes::<T>(op, n, true, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+    let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
+    let mut vectors_out = VecOut::new(
+        vectors,
+        checked_product(op, "eigenvectors", &[v_len, batch])?,
+    );
+    eig_into(
         op,
-        input.batch(),
+        input.raw(),
+        values_out.spare(),
+        vectors_out.spare(),
+        &mut workspace,
         exec,
-        Some(n),
-        item_muladds,
-        &mut (out(values, n), out(vectors, v_len)),
-        |par| T::eig_scratch(n, true, par),
-        |index, (values, vectors), scratch, par| {
-            if n == 0 {
-                return Ok(());
-            }
-            T::eig_into(op, input.item(index), values, Some(vectors), scratch, par)
-        },
-    )
+    )?;
+    values_out.publish();
+    vectors_out.publish();
+    Ok(())
 }
 
 /// Eigenvalues of every `n x n` matrix of a batch, without the eigenvectors.
 ///
 /// `input` is `[n, n, b...]`; `values` receives `n` values per item in the complex type of the
 /// input scalar.
+///
+/// This is the `Vec` wrapper of [`eig_values_into`].
 ///
 /// # Errors
 ///
@@ -121,22 +300,15 @@ pub fn eig_values<T: FaerScalar>(
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3));
-    batch::run(
-        op,
-        input.batch(),
-        exec,
-        Some(n),
-        item_muladds,
-        &mut (out(values, n),),
-        |par| T::eig_scratch(n, false, par),
-        |index, (values,), scratch, par| {
-            if n == 0 {
-                return Ok(());
-            }
-            T::eig_into(op, input.item(index), values, None, scratch, par)
-        },
-    )
+    // The published order: operand validation before any workspace query or allocation.
+    check_shape(op, n)?;
+    let batch = input.batch();
+    let bytes = eig_bytes::<T>(op, n, false, batch, exec)?;
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+    let mut values_out = VecOut::new(values, checked_product(op, "eigenvalues", &[n, batch])?);
+    eig_values_into(op, input.raw(), values_out.spare(), &mut workspace, exec)?;
+    values_out.publish();
+    Ok(())
 }
 
 /// `|im| <= ε · max(|re|, 1)`, the test for treating a real-input eigenvalue as real.
@@ -145,8 +317,8 @@ fn imag_is_effectively_zero(real: f64, imag: f64, eps: f64) -> bool {
 }
 
 /// faer's eigensolver scratch for `n x n` (empty for `n == 0`, which is never decomposed).
-fn evd_mem<E: faer::traits::ComplexField>(n: usize, vectors: bool, par: faer::Par) -> MemBuffer {
-    let req = if n == 0 {
+fn evd_req<E: faer::traits::ComplexField>(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+    if n == 0 {
         StackReq::EMPTY
     } else {
         let right = if vectors {
@@ -161,29 +333,29 @@ fn evd_mem<E: faer::traits::ComplexField>(n: usize, vectors: bool, par: faer::Pa
             par,
             Default::default(),
         )
-    };
-    MemBuffer::new(req)
+    }
 }
 
 /// Lane storage types, public only so the crate-internal `EigScalar` can name them.
 mod lane_storage {
-    use faer::diag::Diag;
-    use faer::dyn_stack::MemBuffer;
-    use faer::Mat;
+    use core::mem::MaybeUninit;
+
+    use faer::diag::DiagMut;
+    use faer::MatMut;
 
     /// Lane storage of the real eigensolver.
-    pub struct RealEigScratch<R: faer::traits::RealField> {
-        pub(super) u: Mat<R>,
-        pub(super) s_re: Diag<R>,
-        pub(super) s_im: Diag<R>,
-        pub(super) mem: MemBuffer,
+    pub struct RealEigScratch<'w, R: faer::traits::ComplexField> {
+        pub(super) u: MatMut<'w, R>,
+        pub(super) s_re: DiagMut<'w, R>,
+        pub(super) s_im: DiagMut<'w, R>,
+        pub(super) mem: &'w mut [MaybeUninit<u8>],
     }
 
     /// Lane storage of the complex eigensolver.
-    pub struct ComplexEigScratch<E: faer::traits::ComplexField> {
-        pub(super) u: Mat<E>,
-        pub(super) s: Diag<E>,
-        pub(super) mem: MemBuffer,
+    pub struct ComplexEigScratch<'w, E: faer::traits::ComplexField> {
+        pub(super) u: MatMut<'w, E>,
+        pub(super) s: DiagMut<'w, E>,
+        pub(super) mem: &'w mut [MaybeUninit<u8>],
         /// Whether an earlier item has written `u` and `s`, so the next one has to be reset first.
         pub(super) reused: bool,
     }
@@ -194,14 +366,39 @@ use lane_storage::{ComplexEigScratch, RealEigScratch};
 macro_rules! impl_eig_real {
     ($real:ty, $complex:ty) => {
         impl EigScalar for $real {
-            type EigScratch = RealEigScratch<$real>;
+            type EigScratch<'w> = RealEigScratch<'w, $real>;
 
-            fn eig_scratch(n: usize, vectors: bool, par: faer::Par) -> Self::EigScratch {
+            fn eig_req(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+                StackReq::new::<$real>(n * if vectors { n } else { 0 })
+                    .and(StackReq::new::<$real>(n))
+                    .and(StackReq::new::<$real>(n))
+                    .and(faer_req(evd_req::<$real>(n, vectors, par)))
+            }
+
+            fn eig_scratch<'w>(
+                n: usize,
+                vectors: bool,
+                par: faer::Par,
+                stack: &'w mut MemStack,
+            ) -> Self::EigScratch<'w> {
+                let (u, stack) = if vectors {
+                    let (u, stack) = zeros::<$real>(stack, n * n, &0.0);
+                    (MatMut::from_column_major_slice_mut(u, n, n), stack)
+                } else {
+                    let (u, stack) = zeros::<$real>(stack, 0, &0.0);
+                    (MatMut::from_column_major_slice_mut(u, n, 0), stack)
+                };
+                let (s_re, stack) = zeros::<$real>(stack, n, &0.0);
+                let (s_im, stack) = zeros::<$real>(stack, n, &0.0);
+                let (mem, _) = bytes(
+                    stack,
+                    evd_req::<$real>(n, vectors, par).unaligned_bytes_required(),
+                );
                 RealEigScratch {
-                    u: Mat::zeros(n, if vectors { n } else { 0 }),
-                    s_re: Diag::zeros(n),
-                    s_im: Diag::zeros(n),
-                    mem: evd_mem::<$real>(n, vectors, par),
+                    u,
+                    s_re: DiagMut::from_slice_mut(s_re),
+                    s_im: DiagMut::from_slice_mut(s_im),
+                    mem,
                 }
             }
 
@@ -210,7 +407,7 @@ macro_rules! impl_eig_real {
                 mat: MatRef<'_, $real>,
                 values: &mut dyn Push<$complex>,
                 vectors: Option<&mut dyn Push<$complex>>,
-                scratch: &mut Self::EigScratch,
+                scratch: &mut Self::EigScratch<'_>,
                 par: faer::Par,
             ) -> Result<()> {
                 let n = mat.nrows();
@@ -230,7 +427,7 @@ macro_rules! impl_eig_real {
                     None,
                     u_out,
                     par,
-                    MemStack::new(mem),
+                    MemStack::new(&mut **mem),
                     Default::default(),
                 )
                 .map_err(|_| Error::NonConvergence { op })?;
@@ -276,13 +473,35 @@ macro_rules! impl_eig_real {
 macro_rules! impl_eig_complex {
     ($complex:ty, $entity:ty) => {
         impl EigScalar for $complex {
-            type EigScratch = ComplexEigScratch<$entity>;
+            type EigScratch<'w> = ComplexEigScratch<'w, $entity>;
 
-            fn eig_scratch(n: usize, vectors: bool, par: faer::Par) -> Self::EigScratch {
+            fn eig_req(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+                StackReq::new::<$entity>(n * if vectors { n } else { 0 })
+                    .and(StackReq::new::<$entity>(n))
+                    .and(faer_req(evd_req::<$entity>(n, vectors, par)))
+            }
+
+            fn eig_scratch<'w>(
+                n: usize,
+                vectors: bool,
+                par: faer::Par,
+                stack: &'w mut MemStack,
+            ) -> Self::EigScratch<'w> {
+                let zero = <$entity>::new(0.0, 0.0);
+                let (u, stack) = if vectors {
+                    zeros::<$entity>(stack, n * n, &zero)
+                } else {
+                    zeros::<$entity>(stack, 0, &zero)
+                };
+                let (s, stack) = zeros::<$entity>(stack, n, &zero);
+                let (mem, _) = bytes(
+                    stack,
+                    evd_req::<$entity>(n, vectors, par).unaligned_bytes_required(),
+                );
                 ComplexEigScratch {
-                    u: Mat::zeros(n, if vectors { n } else { 0 }),
-                    s: Diag::zeros(n),
-                    mem: evd_mem::<$entity>(n, vectors, par),
+                    u: MatMut::from_column_major_slice_mut(u, n, if vectors { n } else { 0 }),
+                    s: DiagMut::from_slice_mut(s),
+                    mem,
                     reused: false,
                 }
             }
@@ -292,14 +511,14 @@ macro_rules! impl_eig_complex {
                 mat: MatRef<'_, $entity>,
                 values: &mut dyn Push<$complex>,
                 vectors: Option<&mut dyn Push<$complex>>,
-                scratch: &mut Self::EigScratch,
+                scratch: &mut Self::EigScratch<'_>,
                 par: faer::Par,
             ) -> Result<()> {
                 let n = mat.nrows();
                 let zero = <$entity>::new(0.0, 0.0);
                 let ComplexEigScratch { u, s, mem, reused } = scratch;
-                // `Diag::zeros`/`Mat::zeros` already zeroed these; only a scratch that an earlier
-                // item wrote needs resetting.
+                // The carved buffers are already zeroed; only a scratch that an earlier item wrote
+                // needs resetting.
                 if *reused {
                     s.as_mut().fill(zero);
                     if vectors.is_some() {
@@ -318,7 +537,7 @@ macro_rules! impl_eig_complex {
                     None,
                     u_out,
                     par,
-                    MemStack::new(mem),
+                    MemStack::new(&mut **mem),
                     Default::default(),
                 )
                 .map_err(|_| Error::NonConvergence { op })?;
