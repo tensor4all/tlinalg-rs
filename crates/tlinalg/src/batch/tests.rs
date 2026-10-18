@@ -1,7 +1,7 @@
 mod scheduling;
 pub(super) use scheduling::record_lanes;
 
-use super::{is_injective, out, run, BatchAxes, BatchedMut, BatchedRef};
+use super::{is_injective, out, run, BatchAxes, BatchedMut, BatchedRef, ScratchArena};
 use crate::{Error, Op};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use strided_view::{RawStridedMut, RawStridedRef};
@@ -29,7 +29,8 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
         Some(1),
         1.0,
         &mut (out(&mut values, 1),),
-        |_| (),
+        ScratchArena::new(&mut [], 0),
+        |_, _| (),
         |index, (values,), (), _| {
             if index == 1 {
                 return Err(Error::Inconsistent {
@@ -70,7 +71,8 @@ fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
                 Some(1),
                 1.0,
                 &mut (out(&mut values, 1),),
-                |_| (),
+                ScratchArena::new(&mut [], 0),
+                |_, _| (),
                 |index, (values,), (), _| {
                     if index == 2 || index == 5 {
                         return Err(Error::Inconsistent {
@@ -106,7 +108,8 @@ fn a_kernel_that_writes_too_little_is_an_error() {
         Some(1),
         1.0,
         &mut (out(&mut values, 2),),
-        |_| (),
+        ScratchArena::new(&mut [], 0),
+        |_, _| (),
         |_, (values,), (), _| {
             values.push(1);
             Ok(())

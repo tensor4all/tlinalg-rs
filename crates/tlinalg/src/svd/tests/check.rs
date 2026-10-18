@@ -2,13 +2,16 @@
 
 use std::cell::Cell;
 
+use core::mem::MaybeUninit;
+
+use faer::dyn_stack::MemStack;
 use faer::linalg::svd::ComputeSvdVectors;
-use faer::{c64, Mat};
+use faer::{c64, Mat, MatMut};
 use num_complex::Complex64;
 use strided_view::RawStridedRef;
 use tlinalg_testkit::{clustered_spectrum, with_singular_values, TestScalar};
 
-use crate::svd::{divides, reproduces, residual_bound, svd, Check, SvdScratch};
+use crate::svd::{divides, reproduces, residual_bound, svd, svd_req, Check, SvdScratch};
 use crate::{FaerScalar, Op};
 use tcontract_exec::Exec;
 
@@ -93,12 +96,21 @@ fn only_decompositions_that_can_divide_are_checked() {
     let threshold = 128usize;
     assert!(!divides::<c64>(threshold - 1));
     assert!(divides::<c64>(threshold));
-    let scratch = |m, n, vectors| SvdScratch::<c64>::new(m, n, vectors, faer::Par::Seq);
-    assert!(scratch(127, 400, ComputeSvdVectors::Thin).check.is_none());
-    assert!(scratch(128, 128, ComputeSvdVectors::Thin).check.is_some());
-    assert!(scratch(400, 128, ComputeSvdVectors::Full).check.is_some());
+    let checked = |m: usize, n: usize, vectors| {
+        let mut bytes = vec![
+            MaybeUninit::<u8>::uninit();
+            svd_req::<c64>(m, n, vectors, faer::Par::Seq)
+                .unaligned_bytes_required()
+        ];
+        SvdScratch::<c64>::new(m, n, vectors, faer::Par::Seq, MemStack::new(&mut bytes))
+            .check
+            .is_some()
+    };
+    assert!(!checked(127, 400, ComputeSvdVectors::Thin));
+    assert!(checked(128, 128, ComputeSvdVectors::Thin));
+    assert!(checked(400, 128, ComputeSvdVectors::Full));
     // Without vectors there is nothing to check.
-    assert!(scratch(400, 400, ComputeSvdVectors::No).check.is_none());
+    assert!(!checked(400, 400, ComputeSvdVectors::No));
 }
 
 /// Whether the check accepts `u diag(values) vᴴ` as a decomposition of `a`.
@@ -112,12 +124,20 @@ fn accepts<E: faer::traits::ComplexField>(
     let s = faer::Col::<E>::from_fn(values.len(), |index| {
         faer::traits::math_utils::from_f64::<E>(values[index])
     });
+    let (m, n) = (a.nrows(), a.ncols());
+    let k = m.min(n);
+    let mut scaled = vec![E::zero_impl(); m * k];
+    let mut residual = vec![E::zero_impl(); m * n];
+    let mut check = Check {
+        scaled: MatMut::from_column_major_slice_mut(&mut scaled, m, k),
+        residual: MatMut::from_column_major_slice_mut(&mut residual, m, n),
+    };
     reproduces(
         a.as_ref(),
         u.as_ref(),
         s.as_diagonal(),
         v.as_ref(),
-        &mut Check::new(a.nrows(), a.ncols()),
+        &mut check,
         epsilon,
         faer::Par::Seq,
     )

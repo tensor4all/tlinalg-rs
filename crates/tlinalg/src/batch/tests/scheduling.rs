@@ -8,7 +8,7 @@
 //! table of `(items, n, k, budget)`, including RHS-heavy solves and reflector targets, and pin the
 //! exact nonempty partition, the forced routes and the typed vendor refusal.
 
-use crate::batch::{auto_extent_with, check_route, out, run};
+use crate::batch::{auto_extent_with, decide, out, run, ScratchArena};
 use crate::Op;
 use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::cell::Cell;
@@ -90,7 +90,8 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
             dim,
             1.0,
             &mut (out(&mut values, 1),),
-            |par| {
+            ScratchArena::new(&mut [], 0),
+            |par, _| {
                 scratch.fetch_add(1, SeqCst);
                 assert_eq!(par.degree(), hint);
             },
@@ -177,7 +178,8 @@ fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
             Some(1),
             1.0,
             &mut (out(&mut values, 1),),
-            |_| (),
+            ScratchArena::new(&mut [], 0),
+            |_, _| (),
             |index, (values,), (), par| {
                 assert_eq!(par.degree(), 1);
                 assert!(selected.rayon_pool().current_thread_index().is_some());
@@ -226,7 +228,8 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             Some(1),
             1.0,
             &mut (out(&mut values, 1),),
-            |par| {
+            ScratchArena::new(&mut [], 0),
+            |par, _| {
                 assert_eq!(par.degree(), item_threads, "scratch {strategy:?}");
                 scratch_builds.fetch_add(1, SeqCst);
             },
@@ -318,7 +321,7 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
     let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
     let exec = Exec::serial().with_batch_policy(policy);
     assert!(matches!(
-        check_route(Op::Svd, exec, 0, 1.0),
+        decide(Op::Svd, exec, 0, None, 1.0),
         Err(crate::Error::StrategyUnavailable {
             op: Op::Svd,
             strategy: BatchStrategy::WholeBatchVendor,
@@ -334,7 +337,8 @@ fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
             Some(1),
             1.0,
             &mut (out(&mut Vec::<f64>::new(), 1),),
-            |_| (),
+            ScratchArena::new(&mut [], 0),
+            |_, _| (),
             |_, _, _, _| Ok(()),
         ),
         Err(crate::Error::StrategyUnavailable { .. })

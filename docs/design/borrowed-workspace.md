@@ -1,94 +1,118 @@
-# Borrowed workspace contract for the faer lane (design, 0.3)
+# Borrowed workspace contract for the faer lane (0.3.x)
 
-Status: **contracted, ships additively in 0.3.x**. `tlinalg-rs#57`/`#58` require every family to
-grow a `*_workspace(...) -> WorkspaceReq` query and a `*_into(..., &mut Workspace)` entry whose
-live scratch comes from caller-owned storage. #57 classifies these additions as non-breaking, so
-they land after 0.3.0 without a major bump and #57 stays open. The independent pre-review flagged
-that the borrowing contract must be defined *before* that implementation (alignment, disjoint lane
-regions, execution-dependent sizing, insufficient-space behaviour); this note is that definition.
-The existing `Vec`-output wrappers stay as they are until it lands.
+Status: **implemented, additive (0.3.1)**. `tlinalg-rs#57` requires every family to grow a
+`*_workspace(...)` query and a `*_into(...)` entry whose live scratch comes from caller-owned
+storage; #57 classifies these additions as non-breaking. The `Vec` entry points stay exactly as
+they were — they become wrappers that reserve their outputs and allocate one block of the queried
+size per call. The independent pre-review flagged that the borrowing contract must be defined
+*before* the implementation (alignment, disjoint lane regions, execution-dependent sizing,
+insufficient-space behaviour); this note is that definition, in the form that landed.
 
 ## The requirement
 
 ```text
-pub struct WorkspaceReq {
-    pub per_lane_bytes: usize,   // one lane's live scratch, alignment-padded
-    pub align: usize,            // the strictest alignment any family buffer needs
-    pub lanes: usize,            // lanes the decided route may run
-}
+pub fn <family>_workspace(<shape args>, batch, exec: Exec<'_>) -> Result<usize>
 ```
 
-* `per_lane_bytes` is a **conservative bound** over the routes a family can take on this shape and
-  `Exec`, not the execution's exact size: it is the maximum live scratch of one lane, including the
-  family's complete inventory (see below) and the maximum of a default/fallback pair where a family
-  may run twice (SVD's divide-and-conquer check and its QR repeat share one buffer sized to the
-  larger request). It is component-wise per family, not a scalar `len`: different families carve
-  different buffers.
-* `lanes` is the lane count the route may use, `min(exec.budget(), batch)`; a query therefore takes
-  the `Exec` as well as the shape. `Auto`'s lane count is already resolved by `batch_decision`, so
-  the query calls the same function; it never returns a route-dependent under-estimate.
-* A family whose scratch does not depend on the decided item width reports the same requirement for
-  every route; a family that sizes faer scratch per item thread (`faer::Par`) uses the item width the
-  route can grant (`Split`/`Inner`), because that is the widest one.
+* The value is the number of **bytes** one call needs, worst-case alignment padding included. It
+  is `lanes * unaligned_bytes_required(per_lane)`, where `per_lane` is the family's complete
+  per-lane inventory (see below) and `lanes` is the lane count the resolved route may use. The
+  count does not depend on where the caller's buffer happens to start, so a caller can size once.
+* It takes the `Exec` because the requirement is execution-dependent: faer sizes part of its
+  scratch per item thread, so `per_lane` is computed at the `item_threads` width the batch decision
+  grants — the *same* `batch::decide` call the execution makes, with the same work estimate and
+  Auto measure. A query and its matching call therefore resolve the same width and the same lanes.
+* A family whose scratch does not depend on the route (cholesky has only a faer `MemStack`) reports
+  the same number for every route; triangular solve and the packed-LU prepared solve need no
+  scratch at all and report `0`.
+* `batch == 0` reports `0` (nothing runs), after the route was resolved, so a forced strategy this
+  route cannot honor is still refused.
+
+Why bytes and not a layout type: `tcontract_exec::WorkspaceReq` describes GEMM arena components
+and is deliberately checked component-wise, so it is the wrong contract for a generic borrowed
+byte region. The requirement is one lane's complete inventory at a route-specific width — not a
+provider-independent shape (see the pre-review disposition in the campaign proxy log).
 
 ## The storage
 
-`Workspace<'w>` is a caller-owned, **page-aligned** (4096-byte) byte region:
+```text
+pub fn <family>_into(<inputs>, <outputs as caller-owned mut>, workspace: &mut [MaybeUninit<u8>],
+                     exec: Exec<'_>) -> Result<()>
+```
 
-* base alignment `max(WorkspaceReq::align, 4096)`, so every lane region and every typed sub-buffer
-  starts aligned for its element (`align_of::<T>()`) and for faer's internal `Align`;
-* lane `l` of `lanes` owns exactly `[l * per_lane_bytes, (l + 1) * per_lane_bytes)`, and no two lanes
-  share a byte. A lane's sub-slices are carved in a fixed order, so a re-run of the same shape maps
-  the same offsets. Lanes are joined before the storage is reused or read by the caller.
-* the region is **disjoint from every input and output**: inputs borrow `&[T]`, outputs are either
-  library-owned `Vec`s or caller-owned `RawStridedMut`s, and the `Workspace` is a third, distinct
-  borrow. No family may alias workspace memory with an operand.
+* `workspace` is a caller-owned byte region of **at least** the queried length. Lane `l` owns
+  exactly `[l * per_lane, (l + 1) * per_lane)`, and no two lanes share a byte. Each lane chunk
+  carries its own worst-case alignment padding, and every sub-buffer is carved from it with faer's
+  `MemStack`, so each typed buffer and each faer scratch region is correctly aligned whatever the
+  caller buffer's own alignment is.
+* The sub-buffers are carved in a fixed order, so a re-run of the same shape maps the same
+  offsets. Lanes are joined before the storage is reused by the caller.
+* The region is **disjoint from every input and output**: inputs borrow `&[T]`, outputs are either
+  library-owned vectors or caller-owned buffers, and the `Workspace` is a third, distinct borrow.
+* A family that needs no scratch accepts an empty slice.
+
+### Outputs
+
+* Fresh-output families take `&mut [MaybeUninit<T>]` (or the real/complex element type of the
+  output) holding exactly `item_len * batch` elements, compact column-major in batch order. The
+  kernel initialises every element; an item that writes fewer than its `item_len` is a detected
+  `Error::Inconsistent` rather than uninitialised memory handed back.
+* In-place families keep their existing caller-owned buffers (`&mut [T]`, a `RawStridedMut`
+  destination, the packed LU factor/RHS arrays).
+* The `Vec` wrappers hand the vector's reserved spare capacity to the same `*_into` route, so
+  `set_len` runs only when every item is complete; a failure leaves the vector empty.
 
 ## Checked before any write
 
-`*_into` checks `have.covered_by(&req)` **component-wise** (`per_lane_bytes <= have`, `align >=`,
-`lanes >=`) after clearing/reserving library-owned outputs and after resolving the route, but
-*before* writing any item. A shortage is a typed refusal:
+`_into` resolves the route and checks `workspace.len() >= lanes * per_lane` **before** any output
+is touched. A shortage is a typed refusal:
 
 ```text
-Error::InsufficientWorkspace { op, needed: usize, have: usize }
+Error::InsufficientWorkspace { op, needed, have }
 ```
 
-and it leaves every library-created output empty and every caller-owned output unchanged — the same
-"no partial writes on refusal" rule the driver already has for a forced unavailable strategy. A
-larger workspace never stands in for a missing component.
-
-`have` is the caller's actual capacity, not the requirement it was sized to: a call with a bigger
-workspace than it asked for passes, and a call with the matching requirement but a different route
-that needs more refuses.
+It leaves every library-created vector empty and every caller-owned output unchanged. A larger
+workspace than queried passes; a smaller one refuses, even if it matches a different (narrower)
+route's requirement. After an error *during* execution, a caller-owned output may hold the items
+already completed (the same "in-place buffers are not rolled back" rule the packed LU and solve
+families already document).
 
 ## Initialization and errors
 
-* Each sub-buffer is initialised exactly as the `Vec` wrapper initialises its counterpart today:
-  zeroed where faer reads before writing, full-overwrite where it does not, capacity-only where the
-  family populates with `push`. The reset-per-item policy (decomposition outputs, QR block
-  coefficients, the thin-`Q` seed) is preserved.
-* On success the storage stays the caller's; nothing is freed. On an error, a lane's scratch is
+* Each sub-buffer is initialised exactly as the `Vec` wrapper's counterpart used to be built:
+  zeroed where faer reads before writing, full-overwrite where it does not. The reset-per-item
+  policy (decomposition outputs, QR block coefficients, the thin-`Q` seed) is preserved.
+* On success the storage stays the caller's; nothing is freed. On an error a lane's scratch is
   **abandoned**, not returned or freed: the host owns in-flight accounting and unwind
-  replenishment. A provider must not release on a path where the `Vec` wrapper would drop.
+  replenishment.
 * No `Sync` requirement: lanes own disjoint regions, and scratch is not shared across lanes.
 
 ## Family inventory
 
-The per-lane live scratch that must move into the borrowed region, family by family:
+The per-lane live scratch that moved into the borrowed region, family by family:
 
 | family | live scratch |
 |---|---|
-| cholesky | `MemBuffer` |
-| lu (factor / solve) | `Mat`, four `Vec<usize>` permutations, `MemBuffer` |
-| full_piv_lu | `Mat`, four `Vec<usize>` permutations, `MemBuffer` (factor and solve) |
-| qr / rank_revealing_qr | `Mat` work, `Mat` coefficients, permutation vectors, `MemBuffer`s; rank-revealing adds `jpvt` and the per-item check |
-| householder compact/apply | `Mat` compact-WY factor, `MemBuffer` |
-| eigh | `Diag` values, `MemBuffer` |
-| eig | real: `Mat`, two `Diag`, `MemBuffer`; complex: `Mat`, `Diag`, `MemBuffer` |
-| svd | `Mat` V, `Diag` S, `MemBuffer` (the max of the default/fallback scratch), the `Check` pair when vectors are computed |
-| packed_lu | four `Vec<usize>` permutations, `MemBuffer` |
+| cholesky | faer `MemStack` |
+| lu (factor) | `Mat` work matrix, two `usize` permutations, faer `MemStack` |
+| lu (solve) | the factor scratch, plus the solve `MemStack` |
+| full_piv_lu | `Mat` work matrix, four `usize` permutations, faer `MemStack` (factor and solve) |
+| qr / rank_revealing_qr | `Mat` work, `Mat` block coefficients, permutation vectors, factor/apply `MemStack`s |
+| householder compact / apply | `Mat` compact-WY factor, apply `MemStack` |
+| eigh | `Diag` values, faer `MemStack` |
+| eig | real: `Mat`, two `Diag`, `MemStack`; complex: `Mat`, `Diag`, `MemStack` |
+| svd / svd_values | `Mat` V, `Diag` S, `MemStack` (the max of the default/fallback requests), the check pair when vectors are computed |
+| packed_lu | four `usize` permutations, faer `MemStack` (factor and fused factor+solve) |
+| triangular_solve | none (the output chunk is the work matrix; faer's triangular solve takes no workspace) |
 
-The SVD row is the one where "execution-dependent sizing" matters: the buffer must be sized to the
+The SVD row is the one where "execution-dependent sizing" matters: the buffer is sized to the
 *larger* of the default and QR-algorithm requests, because a checked decomposition can run both in
 the same storage.
+
+## Wrappers
+
+Each `Vec` entry point reserves its outputs and allocates exactly one block of `*_workspace`
+bytes per call (zero for triangular solve). With reserved outputs that is the only allocation it
+makes; cold outputs allocate for their own capacity. `tests/alloc_counts.rs` pins both the
+wrapper's one-allocation steady state and the `*_into` zero-allocation gate, and
+`tlinalg-bench/benches/overhead_smoke.rs` (L1) gates the wrapper/`_into` timing ratio.

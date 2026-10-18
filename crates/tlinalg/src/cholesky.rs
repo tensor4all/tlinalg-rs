@@ -4,22 +4,31 @@
 //!
 //! The factorization reads the **lower** triangle of each `A` and returns the lower-triangular `L`
 //! with `A = L Lᴴ`, column-major, zero above the diagonal. The output chunk is the destructive
-//! work matrix and faer's stack scratch is lane scratch, reused for every item of the lane.
+//! work matrix and faer's stack scratch is per-lane scratch carved from the caller's borrowed
+//! workspace, reused for every item of the lane.
+//!
+//! # Borrowed workspace
+//!
+//! [`cholesky_workspace`] reports the bytes a call needs and [`cholesky_into`] runs it from
+//! caller-owned storage; [`cholesky`] is the wrapper.
 
-use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::{MatMut, MatRef};
+use core::mem::MaybeUninit;
+
+use faer::dyn_stack::{MemStack, StackReq};
+use faer::MatMut;
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, out, BatchedRef, Sink};
+use crate::batch::{self, fixed_out, BatchedRef, Sink, VecOut};
 use crate::util::{checked_product, weighted_muladds};
+use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
 fn cholesky_item<T: FaerScalar>(
     op: Op,
-    mat: MatRef<'_, T::Entity>,
+    mat: faer::MatRef<'_, T::Entity>,
     l: &mut Sink<'_, T>,
-    mem: &mut MemBuffer,
+    mem: &mut [MaybeUninit<u8>],
     par: faer::Par,
 ) -> Result<()> {
     let n = mat.nrows();
@@ -44,9 +53,77 @@ fn cholesky_item<T: FaerScalar>(
     Ok(())
 }
 
+/// faer's own factor scratch for `n x n`.
+fn req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
+    faer::linalg::cholesky::llt::factor::cholesky_in_place_scratch::<E>(n, par, Default::default())
+}
+
+/// Bytes one batched Cholesky call needs in its borrowed workspace.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
+/// is `Op::Cholesky`), and the executor's refusal for a forced strategy this route cannot honor.
+pub fn cholesky_workspace<T: FaerScalar>(n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
+    let (lanes, item_threads) = batch::decide(Op::Cholesky, exec, batch, Some(n), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    total_bytes(
+        Op::Cholesky,
+        faer_req(req::<T::Entity>(n, par)),
+        lanes,
+        batch,
+    )
+}
+
+/// Cholesky factors of every `n x n` Hermitian positive-definite matrix of a batch into
+/// caller-owned storage.
+///
+/// `l` holds `n * n` uninitialised elements per batch item. Workspace contract as
+/// [`crate::qr::qr_into`].
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when `input` is not a batch of square matrices or an output length
+/// does not match, [`crate::Error::InsufficientWorkspace`] for a short workspace, and
+/// [`Error::NonConvergence`] for the lowest-indexed item that is not numerically positive definite.
+pub fn cholesky_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    l: &mut [MaybeUninit<T>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::square(op, "input", input)?;
+    let n = input.rows();
+    let l_len = checked_product(op, "L", &[n, n])?;
+    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
+    let (lanes, item_threads) = batch::decide(op, exec, input.batch(), Some(n), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    let per_lane = per_lane_bytes(req::<T::Entity>(n, par), input.batch());
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(n),
+        item_muladds,
+        &mut (fixed_out(l, l_len, "L"),),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| {
+            let stack = MemStack::new(stack);
+            let (mem, _) = bytes(stack, req::<T::Entity>(n, par).unaligned_bytes_required());
+            mem
+        },
+        |index, (l,), mem, par| cholesky_item::<T>(op, input.item(index), l, mem, par),
+    )
+}
+
 /// Cholesky factors of every `n x n` Hermitian positive-definite matrix of a batch.
 ///
 /// `input` is `[n, n, b_1, ..., b_B]`; `l` receives `n * n` elements per item.
+///
+/// This is the `Vec` wrapper of [`cholesky_into`].
 ///
 /// # Errors
 ///
@@ -79,23 +156,10 @@ pub fn cholesky<T: FaerScalar>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let l_len = checked_product(op, "L", &[n, n])?;
-    let item_muladds = weighted_muladds::<T>((n as f64).powi(3) / 6.0);
-    batch::run(
-        op,
-        input.batch(),
-        exec,
-        Some(n),
-        item_muladds,
-        &mut (out(l, l_len),),
-        |par| {
-            MemBuffer::new(
-                faer::linalg::cholesky::llt::factor::cholesky_in_place_scratch::<T::Entity>(
-                    n,
-                    par,
-                    Default::default(),
-                ),
-            )
-        },
-        |index, (l,), mem, par| cholesky_item::<T>(op, input.item(index), l, mem, par),
-    )
+    let batch = input.batch();
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); cholesky_workspace::<T>(n, batch, exec)?];
+    let mut l_out = VecOut::new(l, checked_product(op, "L", &[l_len, batch])?);
+    cholesky_into(op, input.raw(), l_out.spare(), &mut workspace, exec)?;
+    l_out.publish();
+    Ok(())
 }

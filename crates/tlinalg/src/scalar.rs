@@ -85,11 +85,20 @@ pub trait ScalarEntity: crate::Scalar + Default + PartialEq {
 /// the complex one. The two need different faer entry points, so each scalar implements this in
 /// `crate::eig`.
 pub trait EigScalar: ScalarEntity {
-    /// One lane's eigensolver storage for `n x n` matrices.
-    type EigScratch: Send;
+    /// One lane's eigensolver storage for `n x n` matrices, carved from borrowed bytes.
+    type EigScratch<'w>;
 
-    /// Size the lane scratch.
-    fn eig_scratch(n: usize, vectors: bool, par: faer::Par) -> Self::EigScratch;
+    /// One lane's complete byte requirement for the route (`vectors` selects
+    /// values-and-vectors or values only).
+    fn eig_req(n: usize, vectors: bool, par: faer::Par) -> faer::dyn_stack::StackReq;
+
+    /// Carve the lane scratch from a borrowed workspace chunk.
+    fn eig_scratch<'w>(
+        n: usize,
+        vectors: bool,
+        par: faer::Par,
+        stack: &'w mut faer::dyn_stack::MemStack,
+    ) -> Self::EigScratch<'w>;
 
     /// Eigenvalues (and, when `vectors` is `Some`, column-major eigenvectors) of `mat`, pushed.
     fn eig_into(
@@ -97,7 +106,7 @@ pub trait EigScalar: ScalarEntity {
         mat: faer::MatRef<'_, Self::Entity>,
         values: &mut dyn crate::batch::Push<Self::Complex>,
         vectors: Option<&mut dyn crate::batch::Push<Self::Complex>>,
-        scratch: &mut Self::EigScratch,
+        scratch: &mut Self::EigScratch<'_>,
         par: faer::Par,
     ) -> crate::Result<()>;
 }

@@ -186,6 +186,24 @@ pub enum Error {
         detail: &'static str,
     },
 
+    /// The caller's borrowed workspace is too small for the route this call resolves to.
+    ///
+    /// Reported by the `*_into` entry points **before** any output is written; the query
+    /// (`*_workspace`) returns the byte count a matching call needs, worst-case alignment padding
+    /// included.
+    #[error(
+        "{op}: workspace of {have} bytes is too small, {needed} bytes are required",
+        op = .op.as_str()
+    )]
+    InsufficientWorkspace {
+        /// Operation being executed.
+        op: Op,
+        /// Bytes the resolved route requires (all lanes).
+        needed: usize,
+        /// Bytes the caller supplied.
+        have: usize,
+    },
+
     /// The caller forced a batch route this operation has no implementation for.
     ///
     /// Resolved before any output is written. This provider has no vendor batched call, so a

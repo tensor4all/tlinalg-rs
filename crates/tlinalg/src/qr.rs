@@ -9,60 +9,122 @@
 //! is the diagonal measure it was computed with. An all-zero item is not factored: it gets the
 //! leading identity columns as `Q`, a zero `R` and the identity permutation, exactly as
 //! `tlinalg-blas` and the pre-extraction host did.
+//!
+//! # Borrowed workspace
+//!
+//! [`qr_workspace`] reports the bytes a call needs and [`qr_into`] runs it from caller-owned
+//! storage; [`qr`] is the `Vec`-in/`Vec`-out wrapper (one scratch allocation per call, none once
+//! the caller reserves its outputs).
 
-use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::{Conj, Mat, MatMut, MatRef};
+use core::mem::MaybeUninit;
+
+use faer::dyn_stack::{MemStack, StackReq};
+use faer::{Conj, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, out, BatchedRef, Push, Sink};
+use crate::batch::{self, fixed_out, BatchedRef, Push, Sink, VecOut};
 use crate::util::{checked_product, invalid, push_masked, weighted_muladds};
+use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
 use crate::{FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
 /// Lane scratch for `m x n` QR factorizations, plain or column-pivoted.
-struct QrScratch<E: faer::traits::ComplexField> {
-    work: Mat<E>,
-    coeff: Mat<E>,
-    permutation: Vec<usize>,
-    inverse_permutation: Vec<usize>,
-    factor_mem: MemBuffer,
-    apply_mem: MemBuffer,
+struct QrScratch<'w, E: faer::traits::ComplexField> {
+    work: MatMut<'w, E>,
+    coeff: MatMut<'w, E>,
+    permutation: &'w mut [usize],
+    inverse_permutation: &'w mut [usize],
+    factor_mem: &'w mut [MaybeUninit<u8>],
+    apply_mem: &'w mut [MaybeUninit<u8>],
 }
 
-impl<E: faer::traits::ComplexField> QrScratch<E> {
-    fn new(m: usize, n: usize, pivoting: bool, par: faer::Par) -> Self {
+/// The block size faer recommends for an `m x n` QR factorization.
+fn block_size<E: faer::traits::ComplexField>(m: usize, n: usize) -> usize {
+    faer::linalg::qr::no_pivoting::factor::recommended_block_size::<E>(m, n)
+}
+
+/// One lane's complete requirement: the work matrix, the block coefficients, the permutations and
+/// faer's factor/apply scratch.
+fn qr_req<E: faer::traits::ComplexField>(
+    m: usize,
+    n: usize,
+    pivoting: bool,
+    par: faer::Par,
+) -> StackReq {
+    let k = m.min(n);
+    let block = block_size::<E>(m, n);
+    let factor_req = if pivoting {
+        faer::linalg::qr::col_pivoting::factor::qr_in_place_scratch::<usize, E>(
+            m,
+            n,
+            block,
+            par,
+            Default::default(),
+        )
+    } else {
+        faer::linalg::qr::no_pivoting::factor::qr_in_place_scratch::<E>(
+            m,
+            n,
+            block,
+            par,
+            Default::default(),
+        )
+    };
+    let apply_req =
+        faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
+            m, block, k,
+        );
+    // On 64-bit targets the permutation is written straight into the `i64` output, so only the
+    // inverse needs lane storage.
+    let permutation = if pivoting && !PERMUTATION_IN_OUTPUT {
+        n
+    } else {
+        0
+    };
+    let inverse_permutation = if pivoting { n } else { 0 };
+    StackReq::new::<E>(m * n)
+        .and(StackReq::new::<E>(block * k))
+        .and(StackReq::new::<usize>(permutation))
+        .and(StackReq::new::<usize>(inverse_permutation))
+        .and(faer_req(factor_req))
+        .and(faer_req(apply_req))
+}
+
+impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
+    /// Carve the lane's buffers from its borrowed workspace chunk.
+    fn new(
+        m: usize,
+        n: usize,
+        pivoting: bool,
+        par: faer::Par,
+        stack: &'w mut MemStack,
+    ) -> QrScratch<'w, E> {
         let k = m.min(n);
-        let block_size = faer::linalg::qr::no_pivoting::factor::recommended_block_size::<E>(m, n);
-        let factor_req = if pivoting {
-            faer::linalg::qr::col_pivoting::factor::qr_in_place_scratch::<usize, E>(
-                m,
-                n,
-                block_size,
-                par,
-                Default::default(),
-            )
+        let block = block_size::<E>(m, n);
+        let zero = <E as faer::traits::ComplexField>::zero_impl();
+        let (work, stack) = zeros::<E>(stack, m * n, &zero);
+        let (coeff, stack) = zeros::<E>(stack, block * k, &zero);
+        let permutation = if pivoting && !PERMUTATION_IN_OUTPUT {
+            n
         } else {
-            faer::linalg::qr::no_pivoting::factor::qr_in_place_scratch::<E>(
-                m,
-                n,
-                block_size,
-                par,
-                Default::default(),
-            )
+            0
         };
-        Self {
-            work: Mat::zeros(m, n),
-            coeff: Mat::zeros(block_size, k),
-            // On 64-bit targets the permutation is written straight into the `i64` output, so only
-            // the inverse needs lane storage.
-            permutation: vec![0; if pivoting && !PERMUTATION_IN_OUTPUT { n } else { 0 }],
-            inverse_permutation: vec![0; if pivoting { n } else { 0 }],
-            factor_mem: MemBuffer::new(factor_req),
-            apply_mem: MemBuffer::new(
-                faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
-                    m, block_size, k,
-                ),
-            ),
+        let (permutation, stack) = zeros::<usize>(stack, permutation, &0);
+        let (inverse_permutation, stack) = zeros::<usize>(stack, if pivoting { n } else { 0 }, &0);
+        let factor_req = qr_req_factor::<E>(m, n, pivoting, par);
+        let (factor_mem, stack) = bytes(stack, factor_req.unaligned_bytes_required());
+        let apply_req =
+            faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_scratch::<E>(
+                m, block, k,
+            );
+        let (apply_mem, _) = bytes(stack, apply_req.unaligned_bytes_required());
+        QrScratch {
+            work: MatMut::from_column_major_slice_mut(work, m, n),
+            coeff: MatMut::from_column_major_slice_mut(coeff, block, k),
+            permutation,
+            inverse_permutation,
+            factor_mem,
+            apply_mem,
         }
     }
 
@@ -83,12 +145,39 @@ impl<E: faer::traits::ComplexField> QrScratch<E> {
             Conj::No,
             MatMut::from_column_major_slice_mut(region, m, k),
             par,
-            MemStack::new(&mut self.apply_mem),
+            MemStack::new(&mut *self.apply_mem),
         );
     }
 }
 
-fn push_factors<T: FaerScalar>(scratch: &QrScratch<T::Entity>, r: &mut impl Push<T>) {
+/// faer's own factor scratch for the chosen variant (shared by the query and the carve).
+fn qr_req_factor<E: faer::traits::ComplexField>(
+    m: usize,
+    n: usize,
+    pivoting: bool,
+    par: faer::Par,
+) -> StackReq {
+    let block = block_size::<E>(m, n);
+    if pivoting {
+        faer::linalg::qr::col_pivoting::factor::qr_in_place_scratch::<usize, E>(
+            m,
+            n,
+            block,
+            par,
+            Default::default(),
+        )
+    } else {
+        faer::linalg::qr::no_pivoting::factor::qr_in_place_scratch::<E>(
+            m,
+            n,
+            block,
+            par,
+            Default::default(),
+        )
+    }
+}
+
+fn push_factors<T: FaerScalar>(scratch: &QrScratch<'_, T::Entity>, r: &mut impl Push<T>) {
     let k = scratch.work.nrows().min(scratch.work.ncols());
     push_masked(
         r,
@@ -103,7 +192,7 @@ fn qr_item<T: FaerScalar>(
     mat: MatRef<'_, T::Entity>,
     q: &mut Sink<'_, T>,
     r: &mut impl Push<T>,
-    scratch: &mut QrScratch<T::Entity>,
+    scratch: &mut QrScratch<'_, T::Entity>,
     par: faer::Par,
 ) {
     scratch.work.copy_from(mat);
@@ -114,7 +203,7 @@ fn qr_item<T: FaerScalar>(
         scratch.work.as_mut(),
         scratch.coeff.as_mut(),
         par,
-        MemStack::new(&mut scratch.factor_mem),
+        MemStack::new(&mut *scratch.factor_mem),
         Default::default(),
     );
     scratch.form_q(q, par);
@@ -130,7 +219,7 @@ fn rank_revealing_qr_item<T: FaerScalar>(
     op: Op,
     mat: MatRef<'_, T::Entity>,
     (q, r, permutation): (&mut Sink<'_, T>, &mut impl Push<T>, &mut Sink<'_, i64>),
-    scratch: &mut QrScratch<T::Entity>,
+    scratch: &mut QrScratch<'_, T::Entity>,
     par: faer::Par,
 ) -> Result<()> {
     let (m, n) = (mat.nrows(), mat.ncols());
@@ -167,7 +256,7 @@ fn rank_revealing_qr_item<T: FaerScalar>(
             core::slice::from_raw_parts_mut(region.as_mut_ptr().cast::<usize>(), region.len())
         }
     } else {
-        &mut scratch.permutation
+        &mut *scratch.permutation
     };
     // Following faer 0.24's public column-pivoted QR factor API; the provider's forward
     // permutation is the public gather convention.
@@ -175,13 +264,13 @@ fn rank_revealing_qr_item<T: FaerScalar>(
         scratch.work.as_mut(),
         scratch.coeff.as_mut(),
         forward,
-        &mut scratch.inverse_permutation,
+        &mut *scratch.inverse_permutation,
         par,
-        MemStack::new(&mut scratch.factor_mem),
+        MemStack::new(&mut *scratch.factor_mem),
         Default::default(),
     );
     if !PERMUTATION_IN_OUTPUT {
-        for (slot, &column) in region.iter_mut().zip(&scratch.permutation) {
+        for (slot, &column) in region.iter_mut().zip(&*scratch.permutation) {
             *slot = i64::try_from(column).map_err(|_| {
                 invalid(op, "configuration", "column permutation exceeds i64 range")
             })?;
@@ -192,10 +281,88 @@ fn rank_revealing_qr_item<T: FaerScalar>(
     Ok(())
 }
 
+/// Bytes one batched thin QR call needs in its borrowed workspace.
+///
+/// `m x n` matrices, `batch` of them: the resolved route's lane count times one lane's complete
+/// inventory, worst-case alignment padding included. Pass the result to [`qr_into`]; the count does
+/// not depend on the caller's buffer alignment, only on the shape and the `Exec` route.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows, and the
+/// executor's refusal for a forced strategy this route cannot honor (the canonical `Op` is
+/// `Op::Qr`).
+pub fn qr_workspace<T: FaerScalar>(
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let k = m.min(n);
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
+    let (lanes, item_threads) = batch::decide(Op::Qr, exec, batch, Some(m.max(n)), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    total_bytes(Op::Qr, qr_req::<T::Entity>(m, n, false, par), lanes, batch)
+}
+
+/// Thin QR of every `m x n` matrix of a batch, `A = Q R`, into caller-owned storage.
+///
+/// `q` and `r` hold exactly `m * min(m, n)` and `min(m, n) * n` **uninitialised** elements per batch
+/// item, compact column-major in batch order; `workspace` comes from [`qr_workspace`] and is
+/// borrowed for the call only. Every element of `q` and `r` is written. A workspace shorter than the
+/// query's answer is refused with [`crate::Error::InsufficientWorkspace`] before anything is
+/// written; after an error the output buffers' contents are unspecified (items already run stay
+/// written).
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) for a malformed descriptor, an output
+/// length that does not match the shape, or a size overflow;
+/// [`crate::Error::InsufficientWorkspace`] for a short workspace.
+pub fn qr_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    q: &mut [MaybeUninit<T>],
+    r: &mut [MaybeUninit<T>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::new(op, "input", input)?;
+    let (m, n) = (input.rows(), input.cols());
+    let k = m.min(n);
+    let q_len = checked_product(op, "Q", &[m, k])?;
+    let r_len = checked_product(op, "R", &[k, n])?;
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
+    let (lanes, item_threads) =
+        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    let per_lane = per_lane_bytes(qr_req::<T::Entity>(m, n, false, par), input.batch());
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(m.max(n)),
+        item_muladds,
+        &mut (fixed_out(q, q_len, "Q"), fixed_out(r, r_len, "R")),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| QrScratch::<T::Entity>::new(m, n, false, par, MemStack::new(stack)),
+        |index, (q, r), scratch, par| {
+            qr_item::<T>(input.item(index), q, r, scratch, par);
+            Ok(())
+        },
+    )
+}
+
 /// Thin QR of every `m x n` matrix of a batch, `A = Q R`.
 ///
 /// `input` is `[m, n, b...]`. Per item, `q` receives the column-major `m x min(m, n)` factor with
 /// orthonormal columns and `r` the column-major upper-trapezoidal `min(m, n) x n` factor.
+///
+/// This is the `Vec` wrapper of [`qr_into`]: it reserves both outputs and allocates one scratch
+/// block of [`qr_workspace`] bytes per call.
 ///
 /// # Errors
 ///
@@ -231,21 +398,21 @@ pub fn qr<T: FaerScalar>(
     let k = m.min(n);
     let q_len = checked_product(op, "Q", &[m, k])?;
     let r_len = checked_product(op, "R", &[k, n])?;
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    batch::run(
+    let batch = input.batch();
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); qr_workspace::<T>(m, n, batch, exec)?];
+    let mut q_out = VecOut::new(q, checked_product(op, "Q", &[q_len, batch])?);
+    let mut r_out = VecOut::new(r, checked_product(op, "R", &[r_len, batch])?);
+    qr_into(
         op,
-        input.batch(),
+        input.raw(),
+        q_out.spare(),
+        r_out.spare(),
+        &mut workspace,
         exec,
-        Some(m.max(n)),
-        item_muladds,
-        &mut (out(q, q_len), out(r, r_len)),
-        |par| QrScratch::<T::Entity>::new(m, n, false, par),
-        |index, (q, r), scratch, par| {
-            qr_item::<T>(input.item(index), q, r, scratch, par);
-            Ok(())
-        },
-    )
+    )?;
+    q_out.publish();
+    r_out.publish();
+    Ok(())
 }
 
 /// The magnitude a rank decision compares against its tolerance: `|x|` for the real scalars and
@@ -266,6 +433,89 @@ pub fn magnitude<T: FaerScalar>(value: T) -> f64 {
     T::entity_magnitude(T::entity_slice(core::slice::from_ref(&value))[0])
 }
 
+/// Bytes one batched rank-revealing QR call needs in its borrowed workspace.
+///
+/// Same composition as [`qr_workspace`] with the column-pivoted factor and its permutation
+/// storage; the canonical `Op` of the refusal is `Op::RankRevealingQr`.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows, and the
+/// executor's refusal for a forced strategy this route cannot honor.
+pub fn rank_revealing_qr_workspace<T: FaerScalar>(
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let k = m.min(n);
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
+    let (lanes, item_threads) = batch::decide(
+        Op::RankRevealingQr,
+        exec,
+        batch,
+        Some(m.max(n)),
+        item_muladds,
+    )?;
+    let par = batch::route_par(lanes, item_threads);
+    total_bytes(
+        Op::RankRevealingQr,
+        qr_req::<T::Entity>(m, n, true, par),
+        lanes,
+        batch,
+    )
+}
+
+/// Column-pivoted QR of every `m x n` matrix of a batch, `A P = Q R`, into caller-owned storage.
+///
+/// The output lengths are those of [`qr_into`], plus `n` `i64` column indices per item. See
+/// [`rank_revealing_qr`] for the conventions and [`qr_into`] for the workspace contract.
+///
+/// # Errors
+///
+/// As [`qr_into`], plus [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a column
+/// index does not fit `i64`.
+pub fn rank_revealing_qr_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    q: &mut [MaybeUninit<T>],
+    r: &mut [MaybeUninit<T>],
+    permutation: &mut [MaybeUninit<i64>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::new(op, "input", input)?;
+    let (m, n) = (input.rows(), input.cols());
+    let k = m.min(n);
+    let q_len = checked_product(op, "Q", &[m, k])?;
+    let r_len = checked_product(op, "R", &[k, n])?;
+    let item_muladds =
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
+    let (lanes, item_threads) =
+        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    let per_lane = per_lane_bytes(qr_req::<T::Entity>(m, n, true, par), input.batch());
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(m.max(n)),
+        item_muladds,
+        &mut (
+            fixed_out(q, q_len, "Q"),
+            fixed_out(r, r_len, "R"),
+            fixed_out(permutation, n, "permutation"),
+        ),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| QrScratch::<T::Entity>::new(m, n, true, par, MemStack::new(stack)),
+        |index, (q, r, permutation), scratch, par| {
+            rank_revealing_qr_item::<T>(op, input.item(index), (q, r, permutation), scratch, par)
+        },
+    )
+}
+
 /// Column-pivoted QR of every `m x n` matrix of a batch, `A P = Q R`.
 ///
 /// `input` is `[m, n, b...]`. Per item, `q` (`m x min(m, n)`) and `r` (`min(m, n) x n`, upper
@@ -274,6 +524,8 @@ pub fn magnitude<T: FaerScalar>(value: T) -> f64 {
 /// item is not factored: it gets the leading `min(m, n)` identity columns as `Q`, a zero `R` and
 /// the identity permutation (its rank is zero by the host's rule). Non-finite input is the host's
 /// to screen.
+///
+/// This is the `Vec` wrapper of [`rank_revealing_qr_into`].
 ///
 /// # Errors
 ///
@@ -311,18 +563,26 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     let k = m.min(n);
     let q_len = checked_product(op, "Q", &[m, k])?;
     let r_len = checked_product(op, "R", &[k, n])?;
-    let item_muladds =
-        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0);
-    batch::run(
+    let batch = input.batch();
+    let mut workspace =
+        vec![MaybeUninit::<u8>::uninit(); rank_revealing_qr_workspace::<T>(m, n, batch, exec)?];
+    let mut q_out = VecOut::new(q, checked_product(op, "Q", &[q_len, batch])?);
+    let mut r_out = VecOut::new(r, checked_product(op, "R", &[r_len, batch])?);
+    let mut perm_out = VecOut::new(
+        permutation,
+        checked_product(op, "permutation", &[n, batch])?,
+    );
+    rank_revealing_qr_into(
         op,
-        input.batch(),
+        input.raw(),
+        q_out.spare(),
+        r_out.spare(),
+        perm_out.spare(),
+        &mut workspace,
         exec,
-        Some(m.max(n)),
-        item_muladds,
-        &mut (out(q, q_len), out(r, r_len), out(permutation, n)),
-        |par| QrScratch::<T::Entity>::new(m, n, true, par),
-        |index, (q, r, permutation), scratch, par| {
-            rank_revealing_qr_item::<T>(op, input.item(index), (q, r, permutation), scratch, par)
-        },
-    )
+    )?;
+    q_out.publish();
+    r_out.publish();
+    perm_out.publish();
+    Ok(())
 }

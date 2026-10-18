@@ -4,15 +4,23 @@
 //! (LAPACK-format) LU family used by prepared solves lives in [`crate::packed_lu`]; this module is
 //! the explicit-factor `P, L, U` decomposition and the one-shot solve.
 //!
-//! Faer's work matrices, permutation vectors and scratch are lane scratch, reused for every item of
-//! the lane.
+//! Faer's work matrix, permutation vectors and scratch are per-lane scratch carved from the
+//! caller's borrowed workspace, reused for every item of the lane.
+//!
+//! # Borrowed workspace
+//!
+//! [`lu_workspace`]/[`lu_solve_workspace`] report the bytes a call needs and
+//! [`lu_into`]/[`solve_into`] run it from caller-owned storage; [`lu`]/[`solve`] are the wrappers.
 
-use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::{Mat, MatMut, MatRef};
+use core::mem::MaybeUninit;
+
+use faer::dyn_stack::{MemStack, StackReq};
+use faer::{MatMut, MatRef};
 use strided_view::{RawStridedMut, RawStridedRef};
 
-use crate::batch::{self, out, same_batch, BatchedMut, BatchedRef};
+use crate::batch::{self, fixed_out, same_batch, BatchedMut, BatchedRef, VecOut};
 use crate::util::{checked_product, invalid, push_masked, push_permutation, weighted_muladds};
+use crate::workspace::{bytes, faer_req, per_lane_bytes, total_bytes, zeros};
 use crate::{Error, FaerScalar, Op, Result};
 use tcontract_exec::Exec;
 
@@ -32,28 +40,53 @@ pub struct LuFactors<'a, T> {
 }
 
 /// Lane scratch for `m x n` partial-pivot factorizations.
-pub(crate) struct LuScratch<E: faer::traits::ComplexField> {
-    lu: Mat<E>,
-    perm: Vec<usize>,
-    perm_inv: Vec<usize>,
-    mem: MemBuffer,
+pub(crate) struct LuScratch<'w, E: faer::traits::ComplexField> {
+    lu: MatMut<'w, E>,
+    perm: &'w mut [usize],
+    perm_inv: &'w mut [usize],
+    mem: &'w mut [MaybeUninit<u8>],
 }
 
-impl<E: faer::traits::ComplexField> LuScratch<E> {
-    fn new(m: usize, n: usize, par: faer::Par) -> Self {
-        Self {
-            lu: Mat::zeros(m, n),
-            perm: vec![0; m],
-            perm_inv: vec![0; m],
-            mem: MemBuffer::new(
-                faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, E>(
-                    m,
-                    n,
-                    par,
-                    Default::default(),
-                ),
-            ),
-        }
+/// faer's own factor scratch for `m x n`.
+fn factor_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::Par) -> StackReq {
+    faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, E>(
+        m,
+        n,
+        par,
+        Default::default(),
+    )
+}
+
+/// One lane's complete requirement for a factorization: the work matrix, both permutations and
+/// faer's scratch.
+fn lu_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::Par) -> StackReq {
+    StackReq::new::<E>(m * n)
+        .and(StackReq::new::<usize>(m))
+        .and(StackReq::new::<usize>(m))
+        .and(faer_req(factor_req::<E>(m, n, par)))
+}
+
+impl<'w, E: faer::traits::ComplexField> LuScratch<'w, E> {
+    fn new(
+        m: usize,
+        n: usize,
+        par: faer::Par,
+        stack: &'w mut MemStack,
+    ) -> (LuScratch<'w, E>, &'w mut MemStack) {
+        let zero = <E as faer::traits::ComplexField>::zero_impl();
+        let (lu, stack) = zeros::<E>(stack, m * n, &zero);
+        let (perm, stack) = zeros::<usize>(stack, m, &0);
+        let (perm_inv, stack) = zeros::<usize>(stack, m, &0);
+        let (mem, stack) = bytes(stack, factor_req::<E>(m, n, par).unaligned_bytes_required());
+        (
+            LuScratch {
+                lu: MatMut::from_column_major_slice_mut(lu, m, n),
+                perm,
+                perm_inv,
+                mem,
+            },
+            stack,
+        )
     }
 
     /// Factor `mat` into the scratch; returns the transposition count.
@@ -61,10 +94,10 @@ impl<E: faer::traits::ComplexField> LuScratch<E> {
         self.lu.copy_from(mat);
         faer::linalg::lu::partial_pivoting::factor::lu_in_place(
             self.lu.as_mut(),
-            &mut self.perm,
-            &mut self.perm_inv,
+            &mut *self.perm,
+            &mut *self.perm_inv,
             par,
-            MemStack::new(&mut self.mem),
+            MemStack::new(&mut *self.mem),
             Default::default(),
         )
         .0
@@ -82,13 +115,13 @@ type LuSinks<'s, 'a, T> = (
 fn lu_item<T: FaerScalar>(
     mat: MatRef<'_, T::Entity>,
     (p, l, u, parity): LuSinks<'_, '_, T>,
-    scratch: &mut LuScratch<T::Entity>,
+    scratch: &mut LuScratch<'_, T::Entity>,
     par: faer::Par,
 ) {
     let (m, n) = (mat.nrows(), mat.ncols());
     let k = m.min(n);
     let transpositions = scratch.factor(mat, par);
-    push_permutation(p, &scratch.perm_inv);
+    push_permutation(p, scratch.perm_inv);
     let lu = scratch.lu.as_ref();
     for col in 0..k {
         for row in 0..m {
@@ -105,9 +138,90 @@ fn lu_item<T: FaerScalar>(
     parity.push(T::parity(transpositions % 2 != 0));
 }
 
+/// Bytes one batched partial-pivot LU call needs in its borrowed workspace.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
+/// is `Op::Lu`), and the executor's refusal for a forced strategy this route cannot honor.
+pub fn lu_workspace<T: FaerScalar>(
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let k = m.min(n);
+    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
+    let item_muladds =
+        weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0);
+    let (lanes, item_threads) = batch::decide(Op::Lu, exec, batch, Some(m.max(n)), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    total_bytes(Op::Lu, lu_req::<T::Entity>(m, n, par), lanes, batch)
+}
+
+/// Partial-pivot LU of every `m x n` matrix of a batch into caller-owned storage, `P A = L U`.
+///
+/// The four buffers hold `m * m`, `m * min(m, n)`, `min(m, n) * n` and `1` uninitialised elements
+/// per batch item. Workspace contract as [`crate::qr::qr_into`]. An exactly singular input is not
+/// an error.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] for a malformed descriptor, an output length that does not match, or
+/// a size overflow, and [`crate::Error::InsufficientWorkspace`] for a short workspace.
+// INVARIANT: descriptor, four output buffers, workspace, token are distinct operands of the
+// batched factorization.
+#[allow(clippy::too_many_arguments)]
+pub fn lu_into<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    p: &mut [MaybeUninit<T>],
+    l: &mut [MaybeUninit<T>],
+    u: &mut [MaybeUninit<T>],
+    parity: &mut [MaybeUninit<T>],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let input = BatchedRef::new(op, "input", input)?;
+    let (m, n) = (input.rows(), input.cols());
+    let k = m.min(n);
+    let p_len = checked_product(op, "permutation matrix", &[m, m])?;
+    let l_len = checked_product(op, "L", &[m, k])?;
+    let u_len = checked_product(op, "U", &[k, n])?;
+    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
+    let item_muladds =
+        weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0);
+    let (lanes, item_threads) =
+        batch::decide(op, exec, input.batch(), Some(m.max(n)), item_muladds)?;
+    let par = batch::route_par(lanes, item_threads);
+    let per_lane = per_lane_bytes(lu_req::<T::Entity>(m, n, par), input.batch());
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        input.batch(),
+        exec,
+        Some(m.max(n)),
+        item_muladds,
+        &mut (
+            fixed_out(p, p_len, "P"),
+            fixed_out(l, l_len, "L"),
+            fixed_out(u, u_len, "U"),
+            fixed_out(parity, 1, "parity"),
+        ),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| LuScratch::<T::Entity>::new(m, n, par, MemStack::new(stack)).0,
+        |index, (p, l, u, parity), scratch, par| {
+            lu_item::<T>(input.item(index), (p, l, u, parity), scratch, par);
+            Ok(())
+        },
+    )
+}
+
 /// Partial-pivot LU of every `m x n` matrix of a batch, `P A = L U`.
 ///
 /// `input` is `[m, n, b...]`. An exactly singular input is not an error.
+///
+/// This is the `Vec` wrapper of [`lu_into`].
 ///
 /// # Errors
 ///
@@ -149,22 +263,76 @@ pub fn lu<T: FaerScalar>(
     let p_len = checked_product(op, "permutation matrix", &[m, m])?;
     let l_len = checked_product(op, "L", &[m, k])?;
     let u_len = checked_product(op, "U", &[k, n])?;
-    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
-    let item_muladds =
-        weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0);
-    batch::run(
+    let batch = input.batch();
+    let mut workspace = vec![MaybeUninit::<u8>::uninit(); lu_workspace::<T>(m, n, batch, exec)?];
+    let mut p_out = VecOut::new(p, checked_product(op, "P", &[p_len, batch])?);
+    let mut l_out = VecOut::new(l, checked_product(op, "L", &[l_len, batch])?);
+    let mut u_out = VecOut::new(u, checked_product(op, "U", &[u_len, batch])?);
+    let mut parity_out = VecOut::new(parity, batch);
+    lu_into(
         op,
-        input.batch(),
+        input.raw(),
+        p_out.spare(),
+        l_out.spare(),
+        u_out.spare(),
+        parity_out.spare(),
+        &mut workspace,
         exec,
-        Some(m.max(n)),
-        item_muladds,
-        &mut (out(p, p_len), out(l, l_len), out(u, u_len), out(parity, 1)),
-        |par| LuScratch::<T::Entity>::new(m, n, par),
-        |index, (p, l, u, parity), scratch, par| {
-            lu_item::<T>(input.item(index), (p, l, u, parity), scratch, par);
-            Ok(())
-        },
-    )
+    )?;
+    p_out.publish();
+    l_out.publish();
+    u_out.publish();
+    parity_out.publish();
+    Ok(())
+}
+
+/// Lane scratch for `n x nrhs` solves: the factorization storage plus faer's solve scratch.
+struct LuSolveScratch<'w, E: faer::traits::ComplexField> {
+    factor: LuScratch<'w, E>,
+    solve_mem: &'w mut [MaybeUninit<u8>],
+}
+
+/// faer's own in-place solve scratch for `n x nrhs`.
+fn solve_req<E: faer::traits::ComplexField>(
+    n: usize,
+    nrhs: usize,
+    transpose_a: bool,
+    par: faer::Par,
+) -> StackReq {
+    if transpose_a {
+        faer::linalg::lu::partial_pivoting::solve::solve_transpose_in_place_scratch::<usize, E>(
+            n, nrhs, par,
+        )
+    } else {
+        faer::linalg::lu::partial_pivoting::solve::solve_in_place_scratch::<usize, E>(n, nrhs, par)
+    }
+}
+
+/// One lane's complete requirement for a solve: the factorization plus faer's solve scratch.
+fn lu_solve_req<E: faer::traits::ComplexField>(
+    n: usize,
+    nrhs: usize,
+    transpose_a: bool,
+    par: faer::Par,
+) -> StackReq {
+    lu_req::<E>(n, n, par).and(faer_req(solve_req::<E>(n, nrhs, transpose_a, par)))
+}
+
+impl<'w, E: faer::traits::ComplexField> LuSolveScratch<'w, E> {
+    fn new(
+        n: usize,
+        nrhs: usize,
+        transpose_a: bool,
+        par: faer::Par,
+        stack: &'w mut MemStack,
+    ) -> Self {
+        let (factor, stack) = LuScratch::<E>::new(n, n, par, stack);
+        let (solve_mem, _) = bytes(
+            stack,
+            solve_req::<E>(n, nrhs, transpose_a, par).unaligned_bytes_required(),
+        );
+        Self { factor, solve_mem }
+    }
 }
 
 /// Solve one system into `destination`; written only after the singularity check.
@@ -174,11 +342,11 @@ fn solve_item<T: FaerScalar>(
     source: Option<MatRef<'_, T::Entity>>,
     mut destination: MatMut<'_, T::Entity>,
     transpose_a: bool,
-    scratch: &mut (LuScratch<T::Entity>, MemBuffer),
+    scratch: &mut LuSolveScratch<'_, T::Entity>,
     par: faer::Par,
 ) -> Result<()> {
     let n = a.nrows();
-    let (lu, solve_mem) = scratch;
+    let lu = &mut scratch.factor;
     lu.factor(a, par);
     for i in 0..n {
         if lu.lu[(i, i)] == <T::Entity as Default>::default() {
@@ -190,8 +358,8 @@ fn solve_item<T: FaerScalar>(
     }
     // SAFETY: `perm`/`perm_inv` were filled by the factorization above as mutually inverse
     // permutations of `0..n`, which is exactly the invariant `PermRef::new_unchecked` requires.
-    let perm = unsafe { faer::perm::PermRef::new_unchecked(&lu.perm, &lu.perm_inv, n) };
-    let stack = MemStack::new(solve_mem);
+    let perm = unsafe { faer::perm::PermRef::new_unchecked(&*lu.perm, &*lu.perm_inv, n) };
+    let stack = MemStack::new(&mut *scratch.solve_mem);
     if transpose_a {
         faer::linalg::lu::partial_pivoting::solve::solve_transpose_in_place(
             lu.lu.as_ref(),
@@ -214,12 +382,149 @@ fn solve_item<T: FaerScalar>(
     Ok(())
 }
 
+/// Bytes one batched LU-based solve needs in its borrowed workspace.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
+/// is `Op::Solve`), and the executor's refusal for a forced strategy this route cannot honor.
+pub fn lu_solve_workspace<T: FaerScalar>(
+    n: usize,
+    nrhs: usize,
+    transpose_a: bool,
+    batch: usize,
+    exec: Exec<'_>,
+) -> Result<usize> {
+    let (nf, krhs) = (n as f64, nrhs as f64);
+    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
+    let (lanes, item_threads) = batch::decide(
+        Op::Solve,
+        exec,
+        batch,
+        Some(batch::auto_extent(n, nrhs)),
+        item_muladds,
+    )?;
+    let par = batch::route_par(lanes, item_threads);
+    total_bytes(
+        Op::Solve,
+        lu_solve_req::<T::Entity>(n, nrhs, transpose_a, par),
+        lanes,
+        batch,
+    )
+}
+
+/// Solve every linear system `A X = B` (or `Aᵀ X = B`) of a batch into caller-owned storage.
+///
+/// `a` is `[n, n, b...]` and `out` is `[n, nrhs, b...]` with the same batch shape. When `rhs` is
+/// `Some(b)`, `b` (`[n, nrhs, b...]`) is copied into `out` per item first; when it is `None`, `out`
+/// already holds the right-hand sides. `out` must not alias itself. Workspace contract as
+/// [`crate::qr::qr_into`] (`lu_solve_workspace`).
+///
+/// # Failure behaviour
+///
+/// Each item's destination is written only after that item's factorization and singularity check
+/// succeed, so a failing item's destination is left exactly as it was. Other items may already have
+/// been solved (a multi-lane run solves items of other lanes concurrently).
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] when a descriptor has the wrong shape, rank or batch shape, or `out`
+/// aliases itself, [`crate::Error::InsufficientWorkspace`] for a short workspace, and
+/// [`Error::Singular`] for the lowest-indexed item whose LU factor has an exactly zero pivot.
+// INVARIANT: coefficient, optional source, destination, transpose flag, workspace, token are
+// distinct operands of the batched solve.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_into<T: FaerScalar>(
+    op: Op,
+    a: RawStridedRef<'_, T>,
+    rhs: Option<RawStridedRef<'_, T>>,
+    mut out: RawStridedMut<'_, T>,
+    transpose_a: bool,
+    workspace: &mut [MaybeUninit<u8>],
+    exec: Exec<'_>,
+) -> Result<()> {
+    let a = BatchedRef::square(op, "A", a)?;
+    let destination = BatchedMut::new(op, "out", &mut out)?;
+    let n = a.rows();
+    let nrhs = destination.cols();
+    if destination.rows() != n {
+        return Err(invalid(
+            op,
+            "configuration",
+            format!("out has {} rows, expected {n}", destination.rows()),
+        ));
+    }
+    same_batch(op, "out", a.batch_dims(), destination.batch_dims())?;
+    let source = match rhs {
+        Some(b) => {
+            let b = BatchedRef::new(op, "B", b)?;
+            if (b.rows(), b.cols()) != (n, nrhs) {
+                return Err(invalid(
+                    op,
+                    "configuration",
+                    format!("B is {}x{}, expected {n}x{nrhs}", b.rows(), b.cols()),
+                ));
+            }
+            same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
+            Some(b)
+        }
+        None => None,
+    };
+    let (nf, krhs) = (n as f64, nrhs as f64);
+    // `solve_item` factors `A` (an `n x n` LU) and then solves, so the estimate is
+    // factor-and-solve, not a prepared solve.
+    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
+    let (lanes, item_threads) = batch::decide(
+        op,
+        exec,
+        a.batch(),
+        Some(batch::auto_extent(n, nrhs)),
+        item_muladds,
+    )?;
+    let par = batch::route_par(lanes, item_threads);
+    let per_lane = per_lane_bytes(
+        lu_solve_req::<T::Entity>(n, nrhs, transpose_a, par),
+        a.batch(),
+    );
+    batch::check_workspace(op, workspace, per_lane, lanes)?;
+    batch::run(
+        op,
+        a.batch(),
+        exec,
+        Some(batch::auto_extent(n, nrhs)),
+        item_muladds,
+        &mut (),
+        batch::ScratchArena::new(workspace, per_lane),
+        |par, stack| {
+            LuSolveScratch::<T::Entity>::new(n, nrhs, transpose_a, par, MemStack::new(stack))
+        },
+        |index, (), scratch, par| {
+            // SAFETY: `batch::run` hands each index below the batch count to exactly one lane, and
+            // this closure is the only user of `destination`, so item `index` is not covered by any
+            // other live reference while it is solved.
+            let item = unsafe { destination.item(index) };
+            solve_item::<T>(
+                op,
+                a.item(index),
+                source.as_ref().map(|b| b.item(index)),
+                item,
+                transpose_a,
+                scratch,
+                par,
+            )
+        },
+    )
+}
+
 /// Solve every linear system `A X = B` (or `Aᵀ X = B`) of a batch through a partial-pivot LU of
 /// `A`, writing the solutions into a caller-owned destination.
 ///
 /// `a` is `[n, n, b...]` and `out` is `[n, nrhs, b...]` with the same batch shape. When `rhs` is
 /// `Some(b)`, `b` (`[n, nrhs, b...]`) is copied into `out` per item first; when it is `None`, `out`
 /// already holds the right-hand sides. `out` must not alias itself.
+///
+/// This is the wrapper of [`solve_into`]: it allocates one scratch block of
+/// [`lu_solve_workspace`] bytes per call and otherwise passes everything through.
 ///
 /// # Failure behaviour
 ///
@@ -259,78 +564,26 @@ pub fn solve<T: FaerScalar>(
     op: Op,
     a: RawStridedRef<'_, T>,
     rhs: Option<RawStridedRef<'_, T>>,
-    mut out: RawStridedMut<'_, T>,
+    out: RawStridedMut<'_, T>,
     transpose_a: bool,
     exec: Exec<'_>,
 ) -> Result<()> {
-    let a = BatchedRef::square(op, "A", a)?;
-    let destination = BatchedMut::new(op, "out", &mut out)?;
-    let n = a.rows();
-    let nrhs = destination.cols();
-    if destination.rows() != n {
+    let shape = BatchedRef::square(op, "A", a)?;
+    let n = shape.rows();
+    let batch = shape.batch();
+    let dims = out.dims();
+    if dims.len() < 2 {
         return Err(invalid(
             op,
             "configuration",
-            format!("out has {} rows, expected {n}", destination.rows()),
+            format!("out has rank {}, expected at least 2", dims.len()),
         ));
     }
-    same_batch(op, "out", a.batch_dims(), destination.batch_dims())?;
-    let source = match rhs {
-        Some(b) => {
-            let b = BatchedRef::new(op, "B", b)?;
-            if (b.rows(), b.cols()) != (n, nrhs) {
-                return Err(invalid(
-                    op,
-                    "configuration",
-                    format!("B is {}x{}, expected {n}x{nrhs}", b.rows(), b.cols()),
-                ));
-            }
-            same_batch(op, "B", a.batch_dims(), b.batch_dims())?;
-            Some(b)
-        }
-        None => None,
-    };
-    let (nf, krhs) = (n as f64, nrhs as f64);
-    // `solve_item` factors `A` (an `n x n` LU) and then solves, so the estimate is
-    // factor-and-solve, not a prepared solve.
-    let item_muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs);
-    batch::run(
-        op,
-        a.batch(),
-        exec,
-        Some(batch::auto_extent(n, nrhs)),
-        item_muladds,
-        &mut (),
-        |par| {
-            let solve_req = if transpose_a {
-                faer::linalg::lu::partial_pivoting::solve::solve_transpose_in_place_scratch::<
-                    usize,
-                    T::Entity,
-                >(n, nrhs, par)
-            } else {
-                faer::linalg::lu::partial_pivoting::solve::solve_in_place_scratch::<usize, T::Entity>(
-                    n, nrhs, par,
-                )
-            };
-            (
-                LuScratch::<T::Entity>::new(n, n, par),
-                MemBuffer::new(solve_req),
-            )
-        },
-        |index, (), scratch, par| {
-            // SAFETY: `batch::run` hands each index below the batch count to exactly one lane, and
-            // this closure is the only user of `destination`, so item `index` is not covered by any
-            // other live reference while it is solved.
-            let item = unsafe { destination.item(index) };
-            solve_item::<T>(
-                op,
-                a.item(index),
-                source.as_ref().map(|b| b.item(index)),
-                item,
-                transpose_a,
-                scratch,
-                par,
-            )
-        },
-    )
+    let nrhs = dims[1];
+    drop(shape);
+    let mut workspace = vec![
+        MaybeUninit::<u8>::uninit();
+        lu_solve_workspace::<T>(n, nrhs, transpose_a, batch, exec)?
+    ];
+    solve_into(op, a, rhs, out, transpose_a, &mut workspace, exec)
 }
