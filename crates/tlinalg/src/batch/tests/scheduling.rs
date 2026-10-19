@@ -1,12 +1,12 @@
 //! Batch-lane scheduling: the temporary step-1 Auto rule, the exact partition, and forced
 //! strategies.
 //!
-//! tlinalg-rs#58 "Defaults" and tcontract-rs#123 step 1 keep tlinalg's pre-0.3 `Auto` in 0.3.0: fan
-//! out to outer lanes only while the largest item extent is at most 64 (packed LU excepted), RHS
-//! columns counted by default behind the `TLINALG_AUTO_RHS` switch. The switch to the shared work
-//! model lands in #123 step 3 with the sweep as evidence. These tests pin the step-1 decisions on a
-//! table of `(items, n, k, budget)`, including RHS-heavy solves and reflector targets, and pin the
-//! exact nonempty partition, the forced routes and the typed vendor refusal.
+//! tlinalg-rs#58 "Defaults" and tcontract-rs#123 step 1 keep tlinalg's pre-0.3 `Auto` fan-out in
+//! 0.3: outer lanes only while the largest item extent is at most 64 (packed LU excepted), RHS
+//! columns counted by default behind the `TLINALG_AUTO_RHS` switch. A one-lane decision now takes
+//! its item width from the shared work model, so a small item stays on the caller. These tests pin
+//! the decisions on a table of `(items, n, k, budget)`, including RHS-heavy solves and reflector
+//! targets, and pin the exact nonempty partition, the forced routes and the typed vendor refusal.
 
 use crate::batch::{auto_extent_with, decide, fixed_out, run, ScratchArena, VecOut};
 use crate::Op;
@@ -39,14 +39,20 @@ fn token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
     Exec::rayon(pool).with_budget(budget).unwrap()
 }
 
-/// The step-1 Auto decision, written out independently of the driver.
-fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usize, usize) {
+/// The step-1 Auto decision, written out independently of the driver. `item_threads` is the width
+/// the shared work model already resolved for the one-lane case.
+fn legacy_auto(
+    batch: usize,
+    budget: usize,
+    max_item_dim: Option<usize>,
+    item_threads: usize,
+) -> (usize, usize) {
     let budget = budget.max(1);
     let fans_out = budget > 1 && batch >= budget && max_item_dim.is_none_or(|dim| dim <= 64);
     if fans_out {
         (budget.min(batch), 1)
     } else {
-        (1, budget)
+        (1, item_threads.clamp(1, budget))
     }
 }
 
@@ -58,8 +64,8 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
     // ranges where the old `div_ceil` split produced three.
     for (batch, budget, dim, lanes, hint) in [
         (0usize, 4usize, Some(1usize), 0usize, 0usize),
-        (1, 4, Some(1), 1, 4),
-        (3, 4, Some(1), 1, 4),
+        (1, 4, Some(1), 1, 1),
+        (3, 4, Some(1), 1, 1),
         (12, 1, Some(1), 1, 1),
         (12, 2, Some(1), 2, 1),
         (12, 3, Some(1), 3, 1),
@@ -67,13 +73,13 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
         (16, 99, Some(1), 8, 1),
         (5, 4, Some(1), 4, 1),
         (8, 4, Some(64), 4, 1),
-        (8, 4, Some(65), 1, 4),
+        (8, 4, Some(65), 1, 1),
         (8, 4, None, 4, 1),
     ] {
         let (want_lanes, _) = if batch == 0 {
             (0, 0)
         } else {
-            legacy_auto(batch, budget.min(8), dim)
+            legacy_auto(batch, budget.min(8), dim, hint)
         };
         assert_eq!(lanes, want_lanes, "table row {batch}/{budget}/{dim:?}");
         let mut values = vec![99];
@@ -131,6 +137,89 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
         // This probes driver callback concurrency, not faer's internal numerical concurrency.
         assert!(peak.load(SeqCst) <= budget.min(8));
     }
+}
+
+/// A single small item must not hand the whole pool to faer or enter the pool at all. The shared
+/// work model sizes one item below its serial threshold, so the driver resolves `(1, 1)` and
+/// `Exec::install(1, ..)` runs the item inline on the caller.
+#[test]
+fn a_single_small_item_stays_on_the_caller_at_width_one() {
+    let pool = owned_pool(4);
+    let exec = token(&pool, 4);
+    // A 4x4 solve is a few dozen multiply-adds, far below the model's serial threshold.
+    let item_muladds = 4.0 * 4.0 * 4.0;
+    assert_eq!(
+        decide(Op::Solve, exec, 1, Some(4), item_muladds).unwrap(),
+        (1, 1)
+    );
+
+    let caller = std::thread::current().id();
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 1);
+    let scratch = AtomicUsize::new(0);
+    LAST_LANES.set(0);
+    run(
+        Op::Solve,
+        1,
+        exec,
+        Some(4),
+        item_muladds,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| {
+            assert_eq!(par.degree(), 1);
+            scratch.fetch_add(1, SeqCst);
+        },
+        |index, (values,), (), par| {
+            assert_eq!(par.degree(), 1);
+            assert_eq!(std::thread::current().id(), caller);
+            assert!(pool.rayon_pool().current_thread_index().is_none());
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    assert_eq!(scratch.load(SeqCst), 1);
+    values_out.publish();
+    assert_eq!(values, [0]);
+}
+
+/// One large item still receives the whole budget: the work model's width is the full pool, and
+/// the driver installs it once for that item.
+#[test]
+fn a_single_large_item_still_gets_the_whole_budget() {
+    let pool = owned_pool(4);
+    let exec = token(&pool, 4);
+    let item_muladds = 1e9;
+    assert_eq!(
+        decide(Op::Svd, exec, 1, Some(1024), item_muladds).unwrap(),
+        (1, 4)
+    );
+
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 1);
+    LAST_LANES.set(0);
+    run(
+        Op::Svd,
+        1,
+        exec,
+        Some(1024),
+        item_muladds,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| assert_eq!(par.degree(), 4),
+        |index, (values,), (), par| {
+            assert_eq!(par.degree(), 4);
+            assert!(pool.rayon_pool().current_thread_index().is_some());
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    values_out.publish();
+    assert_eq!(values, [0]);
 }
 
 #[test]
