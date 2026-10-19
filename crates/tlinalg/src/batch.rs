@@ -838,16 +838,16 @@ fn legacy_auto(
     batch: usize,
     budget: usize,
     max_item_dim: Option<usize>,
-    item_threads: usize,
-) -> (usize, usize) {
+    item_threads: impl FnOnce() -> Result<usize>,
+) -> Result<(usize, usize)> {
     let budget = budget.max(1);
     let fans_out = budget > 1
         && batch >= budget
         && max_item_dim.is_none_or(|dim| dim <= AUTO_FAN_OUT_MAX_ITEM_DIM);
     if fans_out {
-        (budget.min(batch), 1)
+        Ok((budget.min(batch), 1))
     } else {
-        (1, item_threads.clamp(1, budget))
+        Ok((1, item_threads()?.clamp(1, budget)))
     }
 }
 
@@ -880,13 +880,10 @@ pub(crate) fn decide(
     item_muladds: f64,
 ) -> Result<(usize, usize)> {
     if matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
-        let item_threads = auto_item_threads(op, exec, item_muladds)?;
-        return Ok(legacy_auto(
-            batch,
-            exec.budget(),
-            max_item_dim,
-            item_threads,
-        ));
+        // The one-lane width is resolved only when the batch does not fan out.
+        return legacy_auto(batch, exec.budget(), max_item_dim, || {
+            auto_item_threads(op, exec, item_muladds)
+        });
     }
     let query = BatchQuery::new(batch, item_muladds);
     match exec.batch_decision(&query) {
