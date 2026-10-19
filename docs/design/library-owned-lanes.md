@@ -14,20 +14,22 @@ allocation-free API needs, and the shared `BatchPolicy`. `tlinalg::Parallel`, `L
 `WholeBatchVendor` — which this provider has no route for — is refused with the typed
 `Error::StrategyUnavailable` before any output is written (including the empty packed routes).
 
-## Auto unchanged in 0.3.0
+## Auto fan-out unchanged in 0.3.0
 
 0.2 chose lanes from a **dimension cutoff**: fan out when `max(rows, cols) <= 64` (with RHS
-columns counted) and the batch fills every worker; otherwise one lane with the whole budget passed
-to faer. 0.3.0 **keeps that decision**. tlinalg-rs#58 "Defaults" and tcontract-rs#123 "Defaults
-need numbers" step 1 are explicit: step 1 ships "a temporary `Auto` that still applies the 64
-cutoff, RHS excluded or included behind one switch so both can be measured"; the switch to the
-shared work model happens in #123 step 3 with the sweep as evidence. The issue's acceptance rule
-is not overridden by a review finding.
+columns counted) and the batch fills every worker; otherwise one lane. 0.3.0 **keeps that
+fan-out rule**. tlinalg-rs#58 "Defaults" and tcontract-rs#123 "Defaults need numbers" step 1 are
+explicit: step 1 ships "a temporary `Auto` that still applies the 64 cutoff, RHS excluded or
+included behind one switch so both can be measured"; the full switch to the shared work model
+happens in #123 step 3 with the sweep as evidence.
 
-* `Auto` is the pre-0.3 rule (`batch::legacy_auto`): on a context with more than one worker, fan
-  out to `min(budget, items)` outer lanes only while the batch fills the budget and the largest item
-  extent is at most 64; packed LU keeps its no-cutoff exception (`None`). Otherwise one lane runs
-  the batch, passing the whole budget to faer.
+* `Auto`'s fan-out is the pre-0.3 rule (`batch::legacy_auto`): on a context with more than one
+  worker, fan out to `min(budget, items)` outer lanes only while the batch fills the budget and the
+  largest item extent is at most 64; packed LU keeps its no-cutoff exception (`None`).
+* Otherwise one lane runs the batch at the shared work model's width for one item, not the whole
+  budget. `decide` asks `Exec::batch_decision` for an `Auto` query with one item, so the model's
+  item cost and `WidthPolicy` choose `item_threads`; a small item resolves to width one and stays
+  on the caller (`Exec::install(1, ..)` runs inline), while a large item still gets the full budget.
 * The RHS/reflector target extent is counted by default, matching 0.2. `TLINALG_AUTO_RHS=exclude`
   in the environment measures the RHS-excluded variant; the knob and the cutoff are removed when
   step 3 adopts the shared model.
@@ -112,11 +114,12 @@ baselines. No speedup or completed integrated-tenferro performance claim is made
 ## Acceptance
 
 * Native calls compile with only `Exec`; no public `Parallel` or `LanePlan` remains, and `Auto`
-  keeps the documented step-1 64 cutoff until #123 step 3.
-* Driver tests pin the new `(lanes, item_threads)` cases (including RHS/reflector extents and the
-  packed routes), the exact nonempty partition, forced strategies, and the `WholeBatchVendor`
-  refusal on empty batches. Do not mistake observing a faer count for proving its active-thread
-  bound.
+  keeps the documented step-1 64 cutoff until #123 step 3 while its one-lane width comes from the
+  shared work model.
+* Driver tests pin the new `(lanes, item_threads)` cases (including a small one-lane item staying
+  on the caller, a large one-lane item taking the full budget, RHS/reflector extents and the packed
+  routes), the exact nonempty partition, forced strategies, and the `WholeBatchVendor` refusal on
+  empty batches. Do not mistake observing a faer count for proving its active-thread bound.
 * Production numerical tests cover four scalar types, batch strides/broadcast, both
   triangular-solve sides, and all packed routes.
 * Allocation gates measure provider-controlled scratch separately from dispatch; the inline

@@ -830,27 +830,48 @@ pub(crate) fn auto_extent(order: usize, rhs: usize) -> usize {
 ///
 /// On a pool with more than one worker, fan out to `min(budget, batch)` outer lanes only when the
 /// batch fills the budget and `max_item_dim <= AUTO_FAN_OUT_MAX_ITEM_DIM`. `None` is the packed
-/// exception (never cut off). Otherwise one lane runs the batch, passing the whole budget to faer
-/// as an intra-item count. The partition is exact (see [`run`]); 0.2's `div_ceil` split could drop
-/// a lane, which this keeps fixed.
-fn legacy_auto(batch: usize, budget: usize, max_item_dim: Option<usize>) -> (usize, usize) {
+/// exception (never cut off). Otherwise one lane runs the batch at the shared work model's width
+/// for one item; a small item therefore stays on the caller instead of entering the pool with a
+/// thread count it cannot use. The partition is exact (see [`run`]); 0.2's `div_ceil` split could
+/// drop a lane, which this keeps fixed.
+fn legacy_auto(
+    batch: usize,
+    budget: usize,
+    max_item_dim: Option<usize>,
+    item_threads: impl FnOnce() -> Result<usize>,
+) -> Result<(usize, usize)> {
     let budget = budget.max(1);
     let fans_out = budget > 1
         && batch >= budget
         && max_item_dim.is_none_or(|dim| dim <= AUTO_FAN_OUT_MAX_ITEM_DIM);
     if fans_out {
-        (budget.min(batch), 1)
+        Ok((budget.min(batch), 1))
     } else {
-        (1, budget)
+        Ok((1, item_threads()?.clamp(1, budget)))
+    }
+}
+
+/// The one-lane item width the shared work model grants an item of `item_muladds` work.
+///
+/// An `Auto` decision for one item is the generic formula's one-lane arm: the lanes stay at one and
+/// `item_threads` is `Exec::width_for` sized by the model's item cost. Feeding the model one item
+/// keeps the conversion from multiply-adds to nanoseconds in `tcontract_exec` instead of copying it
+/// here. `Auto` never refuses, but map any executor error through the same typed path as the forced
+/// routes.
+fn auto_item_threads(op: Op, exec: Exec<'_>, item_muladds: f64) -> Result<usize> {
+    let query = BatchQuery::new(1, item_muladds);
+    match exec.batch_decision(&query) {
+        Ok(decision) => Ok(decision.item_threads),
+        Err(error) => Err(strategy_error(op, error)),
     }
 }
 
 /// The batch route for this call: `(lanes, item_threads)`.
 ///
-/// `Auto` is [`legacy_auto`], the pre-0.3 local cutoff (tlinalg-rs#58 "Defaults", step 1). Every
-/// forced strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget;
-/// `item_muladds` is the family's work estimate, reported for the forced routes and the future
-/// shared-model `Auto`. `max_item_dim` is the legacy Auto measure.
+/// `Auto` keeps [`legacy_auto`]'s fan-out rule (the pre-0.3 local cutoff, tlinalg-rs#58 "Defaults",
+/// step 1) and sizes its one lane from `item_muladds` through [`auto_item_threads`]. Every forced
+/// strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget.
+/// `max_item_dim` is the legacy Auto fan-out measure.
 pub(crate) fn decide(
     op: Op,
     exec: Exec<'_>,
@@ -859,7 +880,10 @@ pub(crate) fn decide(
     item_muladds: f64,
 ) -> Result<(usize, usize)> {
     if matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
-        return Ok(legacy_auto(batch, exec.budget(), max_item_dim));
+        // The one-lane width is resolved only when the batch does not fan out.
+        return legacy_auto(batch, exec.budget(), max_item_dim, || {
+            auto_item_threads(op, exec, item_muladds)
+        });
     }
     let query = BatchQuery::new(batch, item_muladds);
     match exec.batch_decision(&query) {
@@ -901,8 +925,8 @@ fn strategy_error(op: Op, error: ExecError) -> Error {
 /// run concurrently on the context's pool). Forced strategies are resolved before any write; a
 /// `WholeBatchVendor` request on this route is refused with [`Error::StrategyUnavailable`].
 ///
-/// `max_item_dim` is the legacy Auto measure (see [`decide`]); `item_muladds` is the family's work
-/// estimate, used by the forced strategies and the future shared-model Auto.
+/// `max_item_dim` is the legacy Auto fan-out measure (see [`decide`]); `item_muladds` is the
+/// family's work estimate, used by the forced strategies and to size Auto's one-lane item width.
 ///
 /// `make_scratch` builds one lane's scratch from that lane's borrowed workspace chunk, reused for
 /// every item of that lane. It is called with the item width the decision granted, so scratch sized
