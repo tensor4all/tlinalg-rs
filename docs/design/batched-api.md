@@ -35,8 +35,7 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 * Forced strategies go through `Exec::batch_decision` on the original budget. The driver partitions
   into **exactly** the decided number of nonempty contiguous ranges, never above `batch` or the
   budget. Every outer child runs its items at the decision's `item_threads`, passed to both scratch
-  sizing and faer; a forced `WholeBatchVendor` is refused with
-  [`crate::Error::StrategyUnavailable`] before any write.
+  sizing and faer.
 * **faer 0.24.4 does not guarantee a strict active-thread bound from that count.** Its wide-RHS
   recursion and rounded-up splitting can exceed the requested count. This accepted limitation is
   not hidden by serial fallback or replacement pools; no hard bound on all native work is claimed.

@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -19,8 +19,8 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.3.2", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.3.2", path = "crates/tlinalg-blas" }
+tlinalg = { version = "0.4.0", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.4.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
@@ -35,16 +35,16 @@ faer = { package = "t4a-faer", version = "=0.24.6", default-features = false, fe
 # `RawStridedRef` types.
 strided-view = { version = "=0.6.0" }
 # The batch-lane vocabulary and the `Exec` token every entry point now takes. Pinned to the
-# tcontract 0.3.0 release revision so it is *one source* with the git-only `tcontract-capi`
+# tcontract 0.4.0 release revision so it is *one source* with the git-only `tcontract-capi`
 # below: a registry copy would be a distinct package and its `Exec` would not be the same type
 # the C API forwards. `version` keeps the manifest publishable — `cargo package` resolves the
 # registry release instead of the git source.
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "61a04eb1562c671775d1ce254212a598334d3dbb", version = "=0.3.1" }
+tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "99c9e35c6177e9f974aff41408765e823cf42585", version = "=0.4.0" }
 # The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
-# the TAPP executor handle's guarded `Exec`, which the 0.3.0 tcontract-capi owns (publish = false,
-# so this is a git-only dependency). One revision for exec and capi, or the forwarded `Exec` is a
+# the TAPP executor handle's guarded `Exec`, which tcontract-capi owns (publish = false, so this
+# is a git-only dependency). One revision for exec and capi, or the forwarded `Exec` is a
 # different type than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "61a04eb1562c671775d1ce254212a598334d3dbb" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "99c9e35c6177e9f974aff41408765e823cf42585" }
 num-complex = "0.4"
 rayon = "1.10"
 thiserror = "2"

@@ -11,8 +11,8 @@ Every native batched entry point takes one `tcontract_exec::Exec` token and noth
 parallelism. The token carries the caller's pool and budget, the `WorkspaceProvider` the future
 allocation-free API needs, and the shared `BatchPolicy`. `tlinalg::Parallel`, `LanePlan` and
 `AUTO_FAN_OUT_MAX_ITEM_DIM` are gone. Forced strategies are reachable from outside, and
-`WholeBatchVendor` — which this provider has no route for — is refused with the typed
-`Error::StrategyUnavailable` before any output is written (including the empty packed routes).
+Every forced strategy this provider supports is resolved before any output is written
+(including the empty packed routes).
 
 ## Auto fan-out unchanged in 0.3.0
 
@@ -37,8 +37,7 @@ happens in #123 step 3 with the sweep as evidence.
   lane count; 0.2's `div_ceil` split could drop one (five items and four lanes gave three).
 
 Forced strategies are the 0.3 addition: they go through `Exec::batch_decision` on the original host
-budget (never falling back), and `WholeBatchVendor` is refused with the typed
-`Error::StrategyUnavailable` before any write. The `(lanes, item_threads)` cases are pinned in
+budget (never falling back). The `(lanes, item_threads)` cases are pinned in
 `crates/tlinalg/src/batch/tests/scheduling.rs`, including RHS/reflector extents and the packed
 routes.
 
@@ -118,7 +117,7 @@ baselines. No speedup or completed integrated-tenferro performance claim is made
   shared work model.
 * Driver tests pin the new `(lanes, item_threads)` cases (including a small one-lane item staying
   on the caller, a large one-lane item taking the full budget, RHS/reflector extents and the packed
-  routes), the exact nonempty partition, forced strategies, and the `WholeBatchVendor` refusal on
+  routes), the exact nonempty partition, forced strategies, and the route resolution on
   empty batches. Do not mistake observing a faer count for proving its active-thread bound.
 * Production numerical tests cover four scalar types, batch strides/broadcast, both
   triangular-solve sides, and all packed routes.

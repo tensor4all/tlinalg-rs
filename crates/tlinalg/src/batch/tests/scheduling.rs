@@ -409,39 +409,6 @@ fn forced_kernels_match_sequential_in_the_residual() {
     }
 }
 
-/// `WholeBatchVendor` is refused on this route even when the batch (and the early packed exits)
-/// have no work; the refusal is typed and precedes any write.
-#[test]
-fn whole_batch_vendor_is_unavailable_even_on_an_empty_batch() {
-    let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
-    let exec = Exec::serial().with_batch_policy(policy);
-    assert!(matches!(
-        decide(Op::Svd, exec, 0, None, 1.0),
-        Err(crate::Error::StrategyUnavailable {
-            op: Op::Svd,
-            strategy: BatchStrategy::WholeBatchVendor,
-        })
-    ));
-    let pool = owned_pool(2);
-    let exec = token(&pool, 2).with_batch_policy(policy);
-    let mut values: Vec<f64> = Vec::new();
-    let mut values_out = VecOut::new(&mut values, 1);
-    assert!(matches!(
-        run(
-            Op::Qr,
-            0,
-            exec,
-            Some(1),
-            1.0,
-            &mut (fixed_out(values_out.spare(), 1, "values"),),
-            ScratchArena::new(&mut [], 0),
-            |_, _| (),
-            |_, _, _, _| Ok(()),
-        ),
-        Err(crate::Error::StrategyUnavailable { .. })
-    ));
-}
-
 /// The legacy Auto measure counts the RHS/reflector target extent by default, exactly as 0.2 did:
 /// a 65-column solve or reflector application stays on one lane where the 64-column case fans out.
 #[test]
@@ -578,29 +545,6 @@ fn packed_routes_keep_the_no_cutoff_exception() {
     )
     .unwrap();
     assert_eq!(LAST_LANES.get(), 2);
-}
-
-/// The forced-route refusal must happen before `outputs.prepare`: a valid broadcast input with a
-/// batch too large to reserve must still return `StrategyUnavailable`, not panic on capacity
-/// overflow. (Reproducer for the post-review finding at `batch.rs` output reservation.)
-#[test]
-fn forced_vendor_refusal_precedes_output_reservation() {
-    let big = usize::MAX / 8;
-    let dims = [1usize, 1, big];
-    let strides = [1isize, 1, 0];
-    let data = [4.0_f64];
-    let view = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
-    let exec = Exec::serial().with_batch_policy(BatchPolicy::new(BatchStrategy::WholeBatchVendor));
-    let mut l = Vec::new();
-    let err = crate::cholesky::cholesky(Op::Cholesky, view, &mut l, exec).unwrap_err();
-    assert!(matches!(
-        err,
-        crate::Error::StrategyUnavailable {
-            strategy: BatchStrategy::WholeBatchVendor,
-            ..
-        }
-    ));
-    assert!(l.is_empty());
 }
 
 /// Work estimates must cast before multiplying: `2^22` cubed overflows `usize` on a 64-bit debug

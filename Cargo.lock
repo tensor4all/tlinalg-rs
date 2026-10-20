@@ -1467,15 +1467,15 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.3.2"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=61a04eb1562c671775d1ce254212a598334d3dbb#61a04eb1562c671775d1ce254212a598334d3dbb"
+version = "0.4.0"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
 dependencies = [
  "faer",
  "num-complex",
  "num-traits",
  "strided-basic",
  "strided-view",
- "tcontract-exec 0.3.1",
+ "tcontract-exec 0.4.0",
  "tcontract-kernel",
  "thiserror 1.0.69",
  "tinyvec",
@@ -1484,13 +1484,13 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=61a04eb1562c671775d1ce254212a598334d3dbb#61a04eb1562c671775d1ce254212a598334d3dbb"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
 dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
  "tcontract",
- "tcontract-exec 0.3.1",
+ "tcontract-exec 0.4.0",
 ]
 
 [[package]]
@@ -1505,8 +1505,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.3.1"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=61a04eb1562c671775d1ce254212a598334d3dbb#61a04eb1562c671775d1ce254212a598334d3dbb"
+version = "0.4.0"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
 dependencies = [
  "rayon",
  "strided-basic",
@@ -1516,7 +1516,7 @@ dependencies = [
 [[package]]
 name = "tcontract-kernel"
 version = "0.3.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=61a04eb1562c671775d1ce254212a598334d3dbb#61a04eb1562c671775d1ce254212a598334d3dbb"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
 dependencies = [
  "num-complex",
 ]
@@ -1602,34 +1602,34 @@ dependencies = [
 
 [[package]]
 name = "tlinalg"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
  "t4a-faer",
- "tcontract-exec 0.3.1",
+ "tcontract-exec 0.4.0",
  "thiserror 2.0.21",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "num-complex",
  "rayon",
  "strided-view",
- "tcontract-exec 0.3.1",
- "tlinalg 0.3.2",
+ "tcontract-exec 0.4.0",
+ "tlinalg 0.4.0",
  "tlinalg-blas",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1644,34 +1644,34 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-capi"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "num-complex",
  "strided-view",
  "tcontract-capi",
- "tcontract-exec 0.3.1",
- "tlinalg 0.3.2",
+ "tcontract-exec 0.4.0",
+ "tlinalg 0.4.0",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
  "tcontract-exec 0.3.0",
- "tcontract-exec 0.3.1",
+ "tcontract-exec 0.4.0",
  "tlinalg 0.3.0",
- "tlinalg 0.3.2",
+ "tlinalg 0.4.0",
  "tlinalg-blas",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "num-complex",
  "strided-view",
