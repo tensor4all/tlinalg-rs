@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -19,17 +19,18 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.4.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.4.0", path = "crates/tlinalg-blas" }
+tlinalg = { version = "0.4.1", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.4.1", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
 # tlinalg-rs#28 (faer's QR dropped nearly dependent columns), which upstream 0.24.4 does not have.
 # The dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the
-# crates' `faer = { workspace = true }` are unchanged. `t4a-faer 0.24.6` is fork commit 04542fae plus
-# its version bump (evd eigenvector normalization fix, householder row-split/region-floor patches);
+# crates' `faer = { workspace = true }` are unchanged. `t4a-faer 0.24.7` is the fork's release from
+# main (evd eigenvector normalization fix, householder row-split/region-floor patches, and the
+# row-split gate for tensor4all/faer#12);
 # tenferro pins the same version, so the stack shares one faer identity.
-faer = { package = "t4a-faer", version = "=0.24.6", default-features = false, features = ["std", "rayon"] }
+faer = { package = "t4a-faer", version = "=0.24.7", default-features = false, features = ["std", "rayon"] }
 # Published strided-view 0.6.0, the release this chain pins (stride/metadata and the
 # `RawStridedRef` surface tlinalg consumes are unchanged). Hosts use this exact source to share
 # `RawStridedRef` types.

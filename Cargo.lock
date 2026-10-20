@@ -1416,9 +1416,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.24.6"
+version = "0.24.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96ac2c3247615e57a10c9f2f1505a2422df66a3b3bed6ff9fe7cd170fa86e65a"
+checksum = "f7442ea342f37c81922d0dc68ae424b3d5d5229b516756718bd3b52dc133cc45"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1429,12 +1429,12 @@ dependencies = [
  "nano-gemm",
  "num-complex",
  "num-traits",
- "private-gemm-x86",
  "pulp",
  "rayon",
  "reborrow",
  "spindle",
  "t4a-faer-traits",
+ "t4a-private-gemm-x86",
 ]
 
 [[package]]
@@ -1452,6 +1452,22 @@ dependencies = [
  "pulp",
  "qd",
  "reborrow",
+]
+
+[[package]]
+name = "t4a-private-gemm-x86"
+version = "0.1.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6e140e3b2522528a14dc01752648b0eefa6594e1b8e7e7baff2c217acfb2c62"
+dependencies = [
+ "crossbeam",
+ "defer",
+ "interpol",
+ "num_cpus",
+ "raw-cpuid",
+ "rayon",
+ "spindle",
+ "sysctl",
 ]
 
 [[package]]
@@ -1475,7 +1491,7 @@ dependencies = [
  "num-traits",
  "strided-basic",
  "strided-view",
- "tcontract-exec 0.4.0",
+ "tcontract-exec",
  "tcontract-kernel",
  "thiserror 1.0.69",
  "tinyvec",
@@ -1490,17 +1506,7 @@ dependencies = [
  "rayon",
  "strided-view",
  "tcontract",
- "tcontract-exec 0.4.0",
-]
-
-[[package]]
-name = "tcontract-exec"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "248fecb5a5a1a6e69e882f1b8c7340be8eb4dd0b68bdc53c2cdbf375367a903c"
-dependencies = [
- "rayon",
- "thiserror 1.0.69",
+ "tcontract-exec",
 ]
 
 [[package]]
@@ -1588,48 +1594,34 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c78a2b0f5c03829ced98e84ccc45d6aa3068d8a74df5fc0d7d60d6710dac4350"
+version = "0.4.1"
 dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
  "t4a-faer",
- "tcontract-exec 0.3.0",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "tlinalg"
-version = "0.4.0"
-dependencies = [
- "num-complex",
- "rayon",
- "strided-view",
- "t4a-faer",
- "tcontract-exec 0.4.0",
+ "tcontract-exec",
  "thiserror 2.0.21",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "criterion",
  "num-complex",
  "rayon",
  "strided-view",
- "tcontract-exec 0.4.0",
- "tlinalg 0.4.0",
+ "tcontract-exec",
+ "tlinalg",
  "tlinalg-blas",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1644,34 +1636,32 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-capi"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "num-complex",
  "strided-view",
  "tcontract-capi",
- "tcontract-exec 0.4.0",
- "tlinalg 0.4.0",
+ "tcontract-exec",
+ "tlinalg",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "num-complex",
  "rayon",
  "strided-view",
- "tcontract-exec 0.3.0",
- "tcontract-exec 0.4.0",
- "tlinalg 0.3.0",
- "tlinalg 0.4.0",
+ "tcontract-exec",
+ "tlinalg",
  "tlinalg-blas",
  "tlinalg-testkit",
 ]
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "num-complex",
  "strided-view",
