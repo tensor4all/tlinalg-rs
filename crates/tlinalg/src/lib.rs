@@ -17,9 +17,8 @@
 //! column-major items in batch order (first batch axis fastest). `Auto` keeps the pre-0.3 local
 //! decision in 0.3.0 (an item-extent cutoff); every forced strategy is decided by the context
 //! ([`tcontract_exec::Exec::batch_decision`], configured through
-//! [`BatchPolicy`](tcontract_exec::BatchPolicy)) on the original budget. A forced
-//! `WholeBatchVendor` is refused with [`Error::StrategyUnavailable`] before any write — this
-//! provider has no vendor batched call. A failing call returns the error of its lowest-indexed
+//! [`BatchPolicy`](tcontract_exec::BatchPolicy)) on the original budget. A failing call returns
+//! the error of its lowest-indexed
 //! failing item and leaves every library-created output vector empty.
 //!
 //! # Borrowed workspace

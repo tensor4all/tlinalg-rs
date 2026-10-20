@@ -1679,13 +1679,10 @@ fn assert_close(name: &str, left: &[f64], right: &[f64], tol: f64) {
 }
 
 /// The wrappers keep the caller's operation in every error, and validate their operands in the
-/// published order — before the workspace query resolves the route.
+/// published order.
 #[test]
 fn wrappers_keep_the_callers_op_and_validate_before_routing() {
     let _guard = serialised();
-    let seq = Exec::serial();
-    let vendor =
-        Exec::serial().with_batch_policy(BatchPolicy::new(BatchStrategy::WholeBatchVendor));
     let n = 3;
     let a: Vec<f64> = (0..n * n)
         .map(|k| {
@@ -1701,49 +1698,22 @@ fn wrappers_keep_the_callers_op_and_validate_before_routing() {
     let strides = [1isize, n as isize];
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
 
-    // A caller that names the full-SVD route sees its own `Op` in the refusal, exactly as 0.3.0
-    // reported it (`crates/tlinalg-capi` calls `Op::SvdFull` on this entry point).
-    let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
-    let error = svd::svd(Op::SvdFull, view, true, &mut u, &mut s, &mut vt, vendor).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            Error::StrategyUnavailable {
-                op: Op::SvdFull,
-                ..
-            }
-        ),
-        "unexpected error: {error:?}"
-    );
-    assert!(u.is_empty() && s.is_empty() && vt.is_empty());
-
-    // A malformed right-hand side is reported before the forced-route refusal, as 0.3.0 did.
+    // A malformed right-hand side is reported with the caller's op.
     let wrong_rows = [1.0_f64; 2];
     let b_dims = [2usize, 1];
     let b_strides = [1isize, 2];
     let b = RawStridedRef::new(&wrong_rows, &b_dims, &b_strides, 0).unwrap();
     let mut x = Vec::new();
-    let error = full_piv_lu_solve(Op::FullPivLuSolve, view, b, false, &mut x, vendor).unwrap_err();
+    let error =
+        full_piv_lu_solve(Op::FullPivLuSolve, view, b, false, &mut x, Exec::serial()).unwrap_err();
     assert!(
-        matches!(error, Error::InvalidArgument { .. }),
-        "unexpected error: {error:?}"
-    );
-
-    // A valid solve under a forced route this provider cannot honor reports the caller's op.
-    let mut out = vec![0.0_f64; n];
-    let out_dims = [n, 1];
-    let out_strides = [1isize, n as isize];
-    let error = solve(
-        Op::Solve,
-        view,
-        None,
-        RawStridedMut::new(&mut out, &out_dims, &out_strides, 0).unwrap(),
-        false,
-        seq.with_batch_policy(BatchPolicy::new(BatchStrategy::WholeBatchVendor)),
-    )
-    .unwrap_err();
-    assert!(
-        matches!(error, Error::StrategyUnavailable { op: Op::Solve, .. }),
+        matches!(
+            error,
+            Error::InvalidArgument {
+                op: Op::FullPivLuSolve,
+                ..
+            }
+        ),
         "unexpected error: {error:?}"
     );
 }

@@ -26,7 +26,7 @@ use std::sync::Mutex;
 use faer::{MatMut, MatRef};
 use strided_view::{RawStridedMut, RawStridedRef};
 use tcontract_exec::batch::{BatchQuery, BatchStrategy};
-use tcontract_exec::{Exec, ExecError};
+use tcontract_exec::Exec;
 
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid};
@@ -856,14 +856,11 @@ fn legacy_auto(
 /// An `Auto` decision for one item is the generic formula's one-lane arm: the lanes stay at one and
 /// `item_threads` is `Exec::width_for` sized by the model's item cost. Feeding the model one item
 /// keeps the conversion from multiply-adds to nanoseconds in `tcontract_exec` instead of copying it
-/// here. `Auto` never refuses, but map any executor error through the same typed path as the forced
-/// routes.
-fn auto_item_threads(op: Op, exec: Exec<'_>, item_muladds: f64) -> Result<usize> {
+/// here.
+fn auto_item_threads(_op: Op, exec: Exec<'_>, item_muladds: f64) -> Result<usize> {
     let query = BatchQuery::new(1, item_muladds);
-    match exec.batch_decision(&query) {
-        Ok(decision) => Ok(decision.item_threads),
-        Err(error) => Err(strategy_error(op, error)),
-    }
+    let decision = exec.batch_decision(&query);
+    Ok(decision.item_threads)
 }
 
 /// The batch route for this call: `(lanes, item_threads)`.
@@ -886,10 +883,8 @@ pub(crate) fn decide(
         });
     }
     let query = BatchQuery::new(batch, item_muladds);
-    match exec.batch_decision(&query) {
-        Ok(decision) => Ok((decision.lanes, decision.item_threads)),
-        Err(error) => Err(strategy_error(op, error)),
-    }
+    let decision = exec.batch_decision(&query);
+    Ok((decision.lanes, decision.item_threads))
 }
 
 /// The faer parallelism token a resolved route runs its items with.
@@ -906,24 +901,11 @@ pub(crate) fn route_par(lanes: usize, item_threads: usize) -> faer::Par {
     }
 }
 
-/// The one mapping from the executor's forced-route refusal to this crate's typed error.
-fn strategy_error(op: Op, error: ExecError) -> Error {
-    match error {
-        ExecError::StrategyUnavailable { strategy } => Error::StrategyUnavailable { op, strategy },
-        other => Error::InvalidArgument {
-            op,
-            role: "executor",
-            detail: other.to_string(),
-        },
-    }
-}
-
 /// Run the batch on one caller-owned resource.
 ///
 /// The route comes from [`decide`]: `lanes` nonempty contiguous ranges of the batch, each item run
 /// with `item_threads` (one lane may run items on the caller with a faer count hint; several lanes
-/// run concurrently on the context's pool). Forced strategies are resolved before any write; a
-/// `WholeBatchVendor` request on this route is refused with [`Error::StrategyUnavailable`].
+/// run concurrently on the context's pool). Forced strategies are resolved before any write.
 ///
 /// `max_item_dim` is the legacy Auto fan-out measure (see [`decide`]); `item_muladds` is the
 /// family's work estimate, used by the forced strategies and to size Auto's one-lane item width.
@@ -960,10 +942,8 @@ where
     MK: Fn(faer::Par, &'w mut [MaybeUninit<u8>]) -> S + Sync,
     F: Fn(usize, &mut O::Item, &mut S, faer::Par) -> Result<()> + Sync,
 {
-    // Resolve availability **before** touching the outputs: a forced `WholeBatchVendor` is
-    // refused even when the batch is empty, and a huge-but-valid batch must not reach
-    // `outputs.prepare`'s reservation first. The entry points clear their library-created outputs
-    // before calling the driver, so a refusal still leaves them empty.
+    // Resolve the route **before** touching the outputs, so no output is prepared for a batch
+    // whose route is not yet fixed.
     let (lanes, item_threads) = decide(op, exec, batch, max_item_dim, item_muladds)?;
     outputs.prepare(op, batch)?;
     if batch == 0 {
