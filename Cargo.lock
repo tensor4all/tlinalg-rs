@@ -1483,8 +1483,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.4.1"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
+version = "0.4.2"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3256959434e7807b0e217091914d2d2a66d2b9e3#3256959434e7807b0e217091914d2d2a66d2b9e3"
 dependencies = [
  "faer",
  "num-complex",
@@ -1500,7 +1500,7 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3256959434e7807b0e217091914d2d2a66d2b9e3#3256959434e7807b0e217091914d2d2a66d2b9e3"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1511,8 +1511,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.4.1"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
+version = "0.4.2"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3256959434e7807b0e217091914d2d2a66d2b9e3#3256959434e7807b0e217091914d2d2a66d2b9e3"
 dependencies = [
  "rayon",
  "strided-basic",
@@ -1522,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "tcontract-kernel"
 version = "0.3.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=3256959434e7807b0e217091914d2d2a66d2b9e3#3256959434e7807b0e217091914d2d2a66d2b9e3"
 dependencies = [
  "num-complex",
 ]
@@ -1594,7 +1594,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "criterion",
  "num-complex",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-capi"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "num-complex",
  "strided-view",
