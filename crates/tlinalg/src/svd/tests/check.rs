@@ -44,12 +44,13 @@ fn repeats<T: FaerScalar + TestScalar>(a: &[T], m: usize, n: usize, full: bool) 
 }
 
 #[test]
-fn a_decomposition_that_does_not_reproduce_its_input_is_repeated() {
+fn clustered_decompositions_do_not_need_a_qr_retry() {
+    // t4a-faer 0.24.8 fixes the secular-root stagnation that previously required a retry here.
     let n = 160usize;
     let spectrum = clustered_spectrum(n);
     for full in [false, true] {
         let (count, s) = repeats::<Complex64>(&with_singular_values(&spectrum, 1), n, n, full);
-        assert_eq!(count, 1, "Complex64, full={full}");
+        assert_eq!(count, 0, "Complex64, full={full}");
         for (index, want) in spectrum.iter().enumerate() {
             assert!(
                 (s[index].re - want).abs() < 1e-12,
@@ -57,7 +58,7 @@ fn a_decomposition_that_does_not_reproduce_its_input_is_repeated() {
             );
         }
         let (count, s) = repeats::<f64>(&with_singular_values(&spectrum, 1), n, n, full);
-        assert_eq!(count, 1, "f64, full={full}");
+        assert_eq!(count, 0, "f64, full={full}");
         for (index, want) in spectrum.iter().enumerate() {
             assert!((s[index] - want).abs() < 1e-12, "f64 value {index}");
         }

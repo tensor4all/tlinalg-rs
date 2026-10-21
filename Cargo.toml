@@ -19,18 +19,15 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.4.1", path = "crates/tlinalg" }
+tlinalg = { version = "0.4.4", path = "crates/tlinalg" }
 tlinalg-blas = { version = "0.4.1", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
-# tensor4all's fork of faer, consumed by revision: it carries the unpivoted-QR fix for
-# tlinalg-rs#28 (faer's QR dropped nearly dependent columns), which upstream 0.24.4 does not have.
-# The dependency key and the fork's `[lib] name` both stay `faer`, so `use faer::...` and the
-# crates' `faer = { workspace = true }` are unchanged. `t4a-faer 0.24.7` is the fork's release from
-# main (evd eigenvector normalization fix, householder row-split/region-floor patches, and the
-# row-split gate for tensor4all/faer#12);
-# tenferro pins the same version, so the stack shares one faer identity.
-faer = { package = "t4a-faer", version = "=0.24.7", default-features = false, features = ["std", "rayon"] }
+# tensor4all's faer fork; the dependency key and `[lib] name` remain `faer`.
+# 0.24.8 adds the divide-and-conquer SVD secular-root fix (tensor4all/faer#28)
+# to the existing QR/EVD and householder fixes. A compatible range admits later
+# patch fixes without republishing tlinalg; tenferro shares this faer identity.
+faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon"] }
 # Published strided-view 0.6.0 (stride/metadata and the `RawStridedRef` surface tlinalg
 # consumes). A registry source resolves to one 0.6.x version, so a compatible requirement keeps
 # `RawStridedRef` one type without forcing a tlinalg release for every strided patch.

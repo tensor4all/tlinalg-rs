@@ -1416,9 +1416,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.24.7"
+version = "0.24.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7442ea342f37c81922d0dc68ae424b3d5d5229b516756718bd3b52dc133cc45"
+checksum = "2be6b5081aeb2525fdbe9ec27d6a2396f7ce850ab30899064b88a0a3364531a0"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1594,7 +1594,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "num-complex",
  "rayon",
