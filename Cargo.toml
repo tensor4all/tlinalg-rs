@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -36,16 +36,16 @@ faer = { package = "t4a-faer", version = "=0.24.7", default-features = false, fe
 # `RawStridedRef` types.
 strided-view = { version = "=0.6.0" }
 # The batch-lane vocabulary and the `Exec` token every entry point now takes. Pinned to the
-# tcontract 0.4.0 release revision so it is *one source* with the git-only `tcontract-capi`
+# tcontract 0.4.1 release revision so it is *one source* with the git-only `tcontract-capi`
 # below: a registry copy would be a distinct package and its `Exec` would not be the same type
 # the C API forwards. `version` keeps the manifest publishable — `cargo package` resolves the
 # registry release instead of the git source.
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "99c9e35c6177e9f974aff41408765e823cf42585", version = "=0.4.0" }
+tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "aa5c0a63175b61b2fc099db4d90371419246f9c4", version = "=0.4.1" }
 # The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
 # the TAPP executor handle's guarded `Exec`, which tcontract-capi owns (publish = false, so this
 # is a git-only dependency). One revision for exec and capi, or the forwarded `Exec` is a
 # different type than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "99c9e35c6177e9f974aff41408765e823cf42585" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "aa5c0a63175b61b2fc099db4d90371419246f9c4" }
 num-complex = "0.4"
 rayon = "1.10"
 thiserror = "2"
