@@ -1314,9 +1314,9 @@ dependencies = [
 
 [[package]]
 name = "strided-basic"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "132b131e0cc4fedb7e955a5cee36728a9680ab7da71fad32d3c2de02b8daa907"
+checksum = "62acb99ed9dcc5868aac8499a0af61da343950ece8b33fa4273ea35092ccee2e"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1483,8 +1483,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.4.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
+version = "0.4.1"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
 dependencies = [
  "faer",
  "num-complex",
@@ -1500,7 +1500,7 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1511,8 +1511,8 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.4.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
+version = "0.4.1"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
 dependencies = [
  "rayon",
  "strided-basic",
@@ -1522,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "tcontract-kernel"
 version = "0.3.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=99c9e35c6177e9f974aff41408765e823cf42585#99c9e35c6177e9f974aff41408765e823cf42585"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=aa5c0a63175b61b2fc099db4d90371419246f9c4#aa5c0a63175b61b2fc099db4d90371419246f9c4"
 dependencies = [
  "num-complex",
 ]
@@ -1594,7 +1594,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-bench"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "criterion",
  "num-complex",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "blas-src",
  "cblas-sys",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-capi"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-parity"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "num-complex",
  "rayon",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-testkit"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "num-complex",
  "strided-view",
