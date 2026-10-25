@@ -56,7 +56,7 @@
 //! # Parallelism
 //!
 //! Every entry point takes `&mut` [`tcontract_exec::Exec`], which bundles one
-//! [`strided_exec::Exec`] token (a pool reference and a budget of slots), the workspace and the
+//! [`threadteam::Exec`] token (a pool reference and a budget of slots), the workspace and the
 //! batch policy. The token is the only budget and the only way work starts: the batch is split
 //! into lanes with `fork`, which divides the budget among the lanes, and each lane hands its share
 //! to faer as a plain width through `Exec::external`. A batch with at least `budget` items

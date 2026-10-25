@@ -2,7 +2,7 @@
 //!
 //! The handle is tcontract-capi's `TAPP_executor`, the same one a host passes to
 //! the contraction side of this stack, so one host pool serves both. Its
-//! `Executor::with` lends a *guarded* `&mut` [`Exec`] (a strided-exec token, the
+//! `Executor::with` lends a *guarded* `&mut` [`Exec`] (a threadteam token, the
 //! pool's retained workspace and the batch policy): the call is held in flight
 //! so `tcontract_pool_destroy` cannot release the pool under it. This layer
 //! forwards that `Exec` to the kernels, which take it by `&mut`; it does not

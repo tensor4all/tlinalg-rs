@@ -22,7 +22,7 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 
 ## Parallelism (tlinalg only)
 
-* One argument: `exec: &mut tcontract_exec::Exec<'_>` (a `strided_exec` token, a workspace and a
+* One argument: `exec: &mut tcontract_exec::Exec<'_>` (a `threadteam` token, a workspace and a
   `BatchPolicy`; `*_workspace` queries take `&Exec`). **tlinalg owns the batch route**, not the
   host. Forced strategies are reachable from outside; there is no public `LanePlan`. See
   [library-owned-lanes.md](library-owned-lanes.md).
@@ -37,7 +37,7 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
   same width for scratch sizing and for the item.
 * **faer 0.24.4 does not guarantee a strict active-thread bound from that width.** Its wide-RHS
   recursion and rounded-up splitting can exceed the requested width. The token bounds the lanes it
-  starts (checked with the `strided-exec` ledger), not faer's internal tasks; no hard bound on all
+  starts (checked with the `threadteam` ledger), not faer's internal tasks; no hard bound on all
   native work is claimed.
 * Scratch is per lane and reused across the items of that lane. Each family also has a
   `*_workspace` byte query and a `*_into` route that carves that scratch from caller-owned storage

@@ -6,7 +6,7 @@
 //! batch with at least `budget` items runs `Par::Seq` items and a smaller batch gives every item
 //! its share as faer width. These tests pin the decisions on a table of `(items, budget)`, the
 //! widths the lanes receive (they add up to the budget), the exact nonempty partition, the forced
-//! routes, which pool the items run on, and, through the `strided-exec` ledger, that no more
+//! routes, which pool the items run on, and, through the `threadteam` ledger, that no more
 //! tasks than the budget are ever live.
 
 use crate::batch::{decide, fixed_out, run, Route, ScratchArena, VecOut};
@@ -14,10 +14,10 @@ use crate::Op;
 use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::cell::Cell;
 use std::sync::Mutex;
-use strided_exec::ledger;
 use strided_view::{RawStridedMut, RawStridedRef};
 use tcontract_exec::batch::{BatchPolicy, BatchStrategy, WorkModel};
 use tcontract_exec::{Exec, Pool};
+use threadteam::ledger;
 
 thread_local! {
     // The driver records on its caller before dispatch: real API shape decisions are observable
@@ -32,7 +32,7 @@ pub(in crate::batch) fn record_lanes(lanes: usize) {
 /// An owned pool whose workers are named `{name}-{index}`, so a test can tell which pool ran an
 /// item.
 fn named_pool(name: &'static str, threads: usize) -> Pool<'static> {
-    let pool = strided_exec::Pool::builder()
+    let pool = threadteam::Pool::builder()
         .threads(threads)
         .thread_name(move |index| format!("{name}-{index}"))
         .build()

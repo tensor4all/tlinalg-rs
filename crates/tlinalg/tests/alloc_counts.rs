@@ -1089,7 +1089,7 @@ fn the_pool_route_adds_a_constant() {
             })
             .collect()
     };
-    let tp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(2).build().unwrap();
     let pool = Pool::borrow(&tp);
     let mut exec = Exec::new(&pool, 2).unwrap();
     let mut measure = |count: usize| {
@@ -1509,7 +1509,7 @@ fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
 #[test]
 fn wider_routes_use_the_workspace_they_query() {
     let _guard = serialised();
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     // Large enough that faer's per-thread scratch term is visible.
     let n = 128;

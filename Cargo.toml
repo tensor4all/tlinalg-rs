@@ -19,7 +19,7 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.5.0", path = "crates/tlinalg" }
+tlinalg = { version = "0.6.0", path = "crates/tlinalg" }
 tlinalg-blas = { version = "0.5.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
@@ -28,22 +28,20 @@ tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # to the existing QR/EVD and householder fixes. A compatible range admits later
 # patch fixes without republishing tlinalg; tenferro shares this faer identity.
 faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon"] }
-# Published strided 0.7.0: `strided-view` is the stride/metadata and `RawStridedRef` surface
-# tlinalg consumes, `strided-exec` the placement token. A registry source resolves to one 0.7.x
-# version, so a compatible requirement keeps `RawStridedRef` and the token one type without forcing
-# a tlinalg release for every strided patch.
-strided-view = { version = "0.7" }
-strided-exec = { version = "0.7" }
-# The `Exec` bundle every entry point takes (a strided-exec token, workspace, batch policy) and the
-# batch-lane vocabulary. Pinned to the tcontract v0.5.0 release revision (crates.io 0.5.0) so it is
-# *one source* with the git-only `tcontract-capi` below: a registry copy would be a distinct
-# package and its `Exec` would not be the same type the C API forwards. `version` keeps the
-# manifest publishable: `cargo package` resolves the registry release instead of the git source.
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "33ee64621c646033fd6cea9244247b08877f6aed", version = "0.5.0" }
+# `strided-view` is the stride/metadata and `RawStridedRef` surface tlinalg consumes. A registry
+# source resolves to one 0.7.x version, so a compatible requirement keeps `RawStridedRef` one type
+# without forcing a tlinalg release for every strided patch.
+strided-view = { version = "0.7.0" }
+# The placement token (formerly `strided-exec`): `threadteam::Exec` / `Pool`.
+threadteam = { version = "0.1.0" }
+# The `Exec` bundle every entry point takes (a threadteam token, workspace, batch policy) and the
+# batch-lane vocabulary. One source with the git-only `tcontract-capi` below, so the forwarded
+# `Exec` is the same type the C API takes; `[patch.crates-io]` supplies the unpublished revision.
+tcontract-exec = { version = "0.6.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "33ee64621c646033fd6cea9244247b08877f6aed" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -56,6 +54,15 @@ lapack-src = "0.13"
 openblas-src = { version = "0.10" }
 # Benchmarks only.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Unpublished upstreams: delete the entries once the crates are on crates.io.
+[patch.crates-io]
+threadteam = { git = "https://github.com/tensor4all/threadteam-rs.git", rev = "97404b580951aa9d89910a739618ce044e988b16" }
+strided-traits = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

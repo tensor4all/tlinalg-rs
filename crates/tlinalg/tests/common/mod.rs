@@ -26,7 +26,7 @@ pub struct CountingWorkspace;
 
 /// A three-worker pool, owned by the returned [`tcontract_exec::Pool`] so a token can borrow it.
 pub fn lanes_pool() -> tcontract_exec::Pool<'static> {
-    let pool = strided_exec::Pool::builder().threads(3).build().unwrap();
+    let pool = threadteam::Pool::builder().threads(3).build().unwrap();
     tcontract_exec::Pool::owned(pool)
 }
 

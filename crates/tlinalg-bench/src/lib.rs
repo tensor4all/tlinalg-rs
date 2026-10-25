@@ -82,7 +82,7 @@ impl Env {
 
     /// Build a pool with the caller's explicit thread budget.
     pub fn with_threads(threads: NonZeroUsize) -> Self {
-        let pool = strided_exec::Pool::builder()
+        let pool = threadteam::Pool::builder()
             .threads(threads.get())
             .build()
             .expect("a benchmark pool");
