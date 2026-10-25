@@ -18,7 +18,7 @@ const SHAPES: &[&[usize]] = &[&[], &[1], &[3], &[0], &[2, 3], &[2, 1, 2]];
 const LAYOUTS: [Layout; 3] = [Layout::Compact, Layout::Gapped, Layout::Transposed];
 
 /// A family under test: inputs in, every output widened to `Complex64`, one `Vec` per output.
-type Call<'f, T> = &'f dyn Fn(RawStridedRef<'_, T>, Exec<'_>) -> Result<Vec<Vec<Complex64>>>;
+type Call<'f, T> = &'f dyn Fn(RawStridedRef<'_, T>, &mut Exec<'_>) -> Result<Vec<Vec<Complex64>>>;
 
 /// Run `call` over every batch shape and layout and check the batch contract against per-item
 /// calls on compact single matrices.
@@ -37,7 +37,7 @@ fn check_family<T: TestScalar + FaerScalar>(
         for item in &items {
             let single = call(
                 RawStridedRef::new(item, &[m, n], &[1, m as isize], 0).unwrap(),
-                Exec::serial(),
+                &mut Exec::serial(),
             )
             .unwrap();
             match &mut expected {
@@ -51,8 +51,8 @@ fn check_family<T: TestScalar + FaerScalar>(
         }
         for layout in LAYOUTS {
             let buf = batch_buf(&items, m, n, shape, layout);
-            let sequential = call(buf.view(), Exec::serial()).unwrap();
-            let pooled = call(buf.view(), pool_token(&pool)).unwrap();
+            let sequential = call(buf.view(), &mut Exec::serial()).unwrap();
+            let pooled = call(buf.view(), &mut pool_token(&pool)).unwrap();
             let what = format!("{name} {shape:?} {layout:?}");
             assert_eq!(
                 pooled, sequential,
@@ -259,9 +259,10 @@ fn a_failing_item_empties_the_vector_outputs() {
         })
         .collect();
     let buf = batch_buf(&items, n, n, &[5], Layout::Gapped);
-    for par in [Exec::serial(), pool_token(&pool)] {
+    for mut par in [Exec::serial(), pool_token(&pool)] {
         let mut l = vec![1.0; 7];
-        let err = tlinalg::cholesky::cholesky(Op::Cholesky, buf.view(), &mut l, par).unwrap_err();
+        let err =
+            tlinalg::cholesky::cholesky(Op::Cholesky, buf.view(), &mut l, &mut par).unwrap_err();
         assert_eq!(err, Error::NonConvergence { op: Op::Cholesky });
         assert!(l.is_empty(), "no partially written output");
     }
@@ -291,7 +292,7 @@ fn a_failing_solve_item_stops_only_its_own_lane() {
         Some(RawStridedRef::new(&b, &[n, 1, 6], &[1, n as isize, 0], 0).unwrap()),
         out.view_mut(),
         false,
-        pool_token(&pool),
+        &mut pool_token(&pool),
     )
     .unwrap_err();
     assert_eq!(err, Error::Singular { op: Op::Solve });
@@ -320,7 +321,7 @@ fn solve_broadcasts_a_and_rejects_an_aliased_destination() {
     let (dims1, strides1) = ([n, n, 2, 2], [1, n as isize, 0, 0]);
 
     let a_view = RawStridedRef::new(&a, &dims1, &strides1, 0).unwrap();
-    for par in [Exec::serial(), pool_token(&pool)] {
+    for mut par in [Exec::serial(), pool_token(&pool)] {
         let mut out = batch_buf(
             &vec![vec![0.0; n * 2]; 4],
             n,
@@ -334,7 +335,7 @@ fn solve_broadcasts_a_and_rejects_an_aliased_destination() {
             Some(b.view()),
             out.view_mut(),
             false,
-            par,
+            &mut par,
         )
         .unwrap();
         for (i, b_item) in b_items.iter().enumerate() {
@@ -356,7 +357,7 @@ fn solve_broadcasts_a_and_rejects_an_aliased_destination() {
         None,
         RawStridedMut::new(&mut storage, &[n, 1, 2], &[1, n as isize, 0], 0).unwrap(),
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
@@ -368,7 +369,7 @@ fn solve_broadcasts_a_and_rejects_an_aliased_destination() {
         None,
         RawStridedMut::new(&mut storage, &[n, 1, 2], &[1, n as isize, 1], 0).unwrap(),
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
@@ -400,7 +401,7 @@ fn triangular_solve_broadcasts_a_and_matches_lanes() {
             b.view(),
             flags,
             &mut seq,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let mut lanes = Vec::new();
@@ -410,7 +411,7 @@ fn triangular_solve_broadcasts_a_and_matches_lanes() {
             b.view(),
             flags,
             &mut lanes,
-            pool_token(&pool),
+            &mut pool_token(&pool),
         )
         .unwrap();
         assert_eq!(seq, lanes);
@@ -422,7 +423,7 @@ fn triangular_solve_broadcasts_a_and_matches_lanes() {
                 RawStridedRef::new(b_item, &[rows, cols], &[1, rows as isize], 0).unwrap(),
                 flags,
                 &mut single,
-                Exec::serial(),
+                &mut Exec::serial(),
             )
             .unwrap();
             assert_eq!(&seq[i * rows * cols..(i + 1) * rows * cols], &single[..]);
@@ -447,7 +448,7 @@ fn full_piv_lu_solve_batches_and_broadcasts() {
         b.view(),
         false,
         &mut seq,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     let mut lanes = Vec::new();
@@ -457,7 +458,7 @@ fn full_piv_lu_solve_batches_and_broadcasts() {
         b.view(),
         false,
         &mut lanes,
-        pool_token(&pool),
+        &mut pool_token(&pool),
     )
     .unwrap();
     assert_eq!(seq, lanes);
@@ -479,23 +480,26 @@ fn packed_lu_lanes_match_and_prepared_solve_broadcasts() {
     let n = 3;
     let batch = 5;
     let a: Vec<f64> = (0..batch).flat_map(|i| matrix::<f64>(n, n, i)).collect();
-    let run_factor = |par| {
+    let run_factor = |par: &mut Exec<'_>| {
         let (mut lu, mut piv, mut parity) = (a.clone(), vec![0; n * batch], vec![0.0; batch]);
         factor(Op::LuFactor, n, n, &mut lu, &mut piv, &mut parity, par).unwrap();
         (lu, piv, parity)
     };
-    let sequential = run_factor(Exec::serial());
-    assert_eq!(run_factor(pool_token(&pool)), sequential);
+    let sequential = run_factor(&mut Exec::serial());
+    assert_eq!(run_factor(&mut pool_token(&pool)), sequential);
 
     let b: Vec<f64> = (0..batch)
         .flat_map(|i| matrix::<f64>(n, 2, 10 + i))
         .collect();
-    let run_fused = |par| {
+    let run_fused = |par: &mut Exec<'_>| {
         let (mut lu, mut piv, mut x) = (a.clone(), vec![0; n * batch], b.clone());
         factor_solve(Op::LuFactorSolve, n, 2, &mut lu, &mut piv, &mut x, par).unwrap();
         x
     };
-    assert_eq!(run_fused(pool_token(&pool)), run_fused(Exec::serial()));
+    assert_eq!(
+        run_fused(&mut pool_token(&pool)),
+        run_fused(&mut Exec::serial())
+    );
 
     // Broadcast item 0's factors (stride 0) over every right-hand side.
     let (lu, piv, _) = &sequential;
@@ -505,7 +509,7 @@ fn packed_lu_lanes_match_and_prepared_solve_broadcasts() {
     let (dims5, strides5) = ([n, batch], [1, 0]);
 
     let piv_view = RawStridedRef::new(&piv[..n], &dims5, &strides5, 0).unwrap();
-    let solve = |par| {
+    let solve = |par: &mut Exec<'_>| {
         let mut x = b.clone();
         solve_prepared(
             Op::LuSolvePrepared,
@@ -520,8 +524,8 @@ fn packed_lu_lanes_match_and_prepared_solve_broadcasts() {
         .unwrap();
         x
     };
-    let x = solve(Exec::serial());
-    assert_eq!(solve(pool_token(&pool)), x);
+    let x = solve(&mut Exec::serial());
+    assert_eq!(solve(&mut pool_token(&pool)), x);
     let a0 = widen(&a[..n * n]);
     for i in 0..batch {
         let xi = widen(&x[i * n * 2..(i + 1) * n * 2]);
@@ -542,7 +546,7 @@ fn householder_lanes_match() {
     let a: Vec<Complex64> = (0..batch)
         .flat_map(|i| matrix::<Complex64>(rows, cols, i))
         .collect();
-    let run = |par| {
+    let run = |par: &mut Exec<'_>| {
         let (mut data, mut coeff) = (a.clone(), Vec::new());
         compact_factor(
             Op::HouseholderQr,
@@ -576,8 +580,8 @@ fn householder_lanes_match() {
         .unwrap();
         (data, coeff, c)
     };
-    let sequential = run(Exec::serial());
-    assert_eq!(run(pool_token(&pool)), sequential);
+    let sequential = run(&mut Exec::serial());
+    assert_eq!(run(&mut pool_token(&pool)), sequential);
     assert_eq!(sequential.1.len(), batch * cols);
 }
 
@@ -585,7 +589,7 @@ fn householder_lanes_match() {
 /// output empty, so a host recycling a pooled buffer never reads a previous call's values.
 #[test]
 fn a_rejected_argument_still_empties_the_outputs() {
-    let par = Exec::serial();
+    let par = &mut Exec::serial();
 
     // `cholesky` requires a square input.
     let a = [1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -649,7 +653,7 @@ fn rank_below_two_is_rejected() {
         Op::Cholesky,
         RawStridedRef::new(&a, &[3], &[1], 0).unwrap(),
         &mut l,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }));
@@ -663,7 +667,7 @@ fn rank_below_two_is_rejected() {
         None,
         RawStridedMut::new(&mut x, &[3], &[1], 0).unwrap(),
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
@@ -674,7 +678,7 @@ fn rank_below_two_is_rejected() {
         RawStridedRef::new(&a, &[3], &[1], 0).unwrap(),
         false,
         &mut x,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");

@@ -59,7 +59,7 @@ fn svd_f64_full_and_economy_batched() {
             &mut eu,
             &mut es,
             &mut evt,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
 
@@ -127,7 +127,7 @@ fn svd_values_f64_matches_tlinalg() {
         Op::SvdValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut es,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.s * sizes.batch, es.len());
@@ -178,7 +178,7 @@ fn eigh_f64_matches_tlinalg() {
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
         &mut ew,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.values * sizes.batch, ev.len());
@@ -233,7 +233,7 @@ fn eigh_values_f64_matches_tlinalg() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.values * sizes.batch, ev.len());
@@ -285,7 +285,7 @@ fn cholesky_f64_matches_tlinalg() {
         Op::Cholesky,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut el,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.l * sizes.batch, el.len());
@@ -348,7 +348,7 @@ fn lu_f64_rectangular_batched() {
             u: &mut eu,
             parity: &mut epar,
         },
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.p * sizes.batch, ep.len());
@@ -428,7 +428,7 @@ fn full_piv_lu_f64_matches_tlinalg() {
             q: &mut eq,
             parity: &mut epar,
         },
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -516,7 +516,7 @@ fn svd_c64_full_and_economy_batched() {
             &mut eu,
             &mut es,
             &mut evt,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         // `svd` writes the singular values in the scalar type, zero imaginary part.
@@ -576,7 +576,7 @@ fn svd_values_c64_writes_real_scalars() {
         Op::SvdValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut es,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(sizes.s * sizes.batch, es.len());
@@ -630,7 +630,7 @@ fn eigh_c64_matches_tlinalg() {
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
         &mut ew,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert!(ev.iter().all(|z| z.im == 0.0));
@@ -677,7 +677,7 @@ fn eigh_values_c64_writes_real_scalars() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -728,7 +728,7 @@ fn cholesky_c64_matches_tlinalg() {
         Op::Cholesky,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut el,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -784,7 +784,7 @@ fn lu_c64_matches_tlinalg() {
             u: &mut eu,
             parity: &mut epar,
         },
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -845,7 +845,7 @@ fn full_piv_lu_c64_matches_tlinalg() {
             q: &mut eq,
             parity: &mut epar,
         },
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -908,7 +908,7 @@ fn svd_f32_dispatch_matches_tlinalg() {
         &mut eu,
         &mut es,
         &mut evt,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -964,7 +964,7 @@ fn eigh_values_c32_dispatch_matches_tlinalg() {
         Op::EighValues,
         RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
         &mut ev,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 

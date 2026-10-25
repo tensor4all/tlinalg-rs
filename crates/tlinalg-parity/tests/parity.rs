@@ -153,7 +153,7 @@ macro_rules! parity_suite {
 
             type T = $scalar;
             const TOL: f64 = <T as TestScalar>::LOOSE_TOL;
-            const SEQ: tcontract_exec::Exec<'static> = tcontract_exec::Exec::serial();
+            const SEQ: tcontract_exec::Exec<'static> = &mut tcontract_exec::Exec::serial();
 
             /// `count` items of `gen(index)` laid out over `dims`.
             fn input(

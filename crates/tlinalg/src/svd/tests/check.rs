@@ -37,7 +37,7 @@ fn repeats<T: FaerScalar + TestScalar>(a: &[T], m: usize, n: usize, full: bool) 
         &mut u,
         &mut s,
         &mut vt,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     (REPEATS.get(), s)

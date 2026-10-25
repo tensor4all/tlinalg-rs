@@ -26,14 +26,11 @@ pub struct CountingWorkspace;
 
 /// A three-worker pool, owned by the returned [`tcontract_exec::Pool`] so a token can borrow it.
 pub fn lanes_pool() -> tcontract_exec::Pool<'static> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(3)
-        .build()
-        .unwrap();
+    let pool = strided_exec::Pool::builder().threads(3).build().unwrap();
     tcontract_exec::Pool::owned(pool)
 }
 
 /// A three-thread batch token on `pool`.
 pub fn pool_token<'a>(pool: &'a tcontract_exec::Pool<'a>) -> tcontract_exec::Exec<'a> {
-    tcontract_exec::Exec::rayon(pool).with_budget(3).unwrap()
+    tcontract_exec::Exec::new(pool, 3).unwrap()
 }

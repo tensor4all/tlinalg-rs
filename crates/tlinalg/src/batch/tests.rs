@@ -9,13 +9,14 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use strided_view::{RawStridedMut, RawStridedRef};
 use tcontract_exec::{Exec, Pool};
 
-/// An owned pool (kept alive by `Pool::owned`) and an `Exec` borrowing it.
+/// An owned pool (kept alive by `Pool::owned`) that an `Exec` borrows.
 fn owned_pool(threads: usize) -> Pool<'static> {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .unwrap();
-    Pool::owned(tp)
+    Pool::owned(
+        strided_exec::Pool::builder()
+            .threads(threads)
+            .build()
+            .unwrap(),
+    )
 }
 
 /// A failing outer lane must not stop the other lanes.
@@ -29,8 +30,7 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
     let err = run(
         Op::Svd,
         6,
-        Exec::rayon(&pool).with_budget(3).unwrap(),
-        Some(1),
+        &mut Exec::new(&pool, 3).unwrap(),
         1.0,
         &mut (fixed_out(values_out.spare(), 1, "values"),),
         ScratchArena::new(&mut [], 0),
@@ -65,15 +65,14 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
 fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
     let pool = owned_pool(8);
     for budget in [1, 2, 3, 4, 8] {
-        let exec = Exec::rayon(&pool).with_budget(budget).unwrap();
+        let mut exec = Exec::new(&pool, budget).unwrap();
         for _ in 0..20 {
             let mut values = vec![9usize; 3];
             let mut values_out = VecOut::new(&mut values, 8);
             let err = run(
                 Op::Svd,
                 8,
-                exec,
-                Some(1),
+                &mut exec,
                 1.0,
                 &mut (fixed_out(values_out.spare(), 1, "values"),),
                 ScratchArena::new(&mut [], 0),
@@ -111,8 +110,7 @@ fn a_kernel_that_writes_too_little_is_an_error() {
     let err = run(
         Op::Svd,
         2,
-        Exec::serial(),
-        Some(1),
+        &mut Exec::serial(),
         1.0,
         &mut (fixed_out(values_out.spare(), 2, "values"),),
         ScratchArena::new(&mut [], 0),

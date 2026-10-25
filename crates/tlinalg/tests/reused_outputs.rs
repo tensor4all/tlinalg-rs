@@ -45,7 +45,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [q, r] = o else { unreachable!() };
-                    qr(Op::Qr, view, q, r, Exec::serial()).unwrap();
+                    qr(Op::Qr, view, q, r, &mut Exec::serial()).unwrap();
                 },
                 2,
             );
@@ -55,7 +55,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [u, s, vt] = o else { unreachable!() };
-                    svd(Op::Svd, view, false, u, s, vt, Exec::serial()).unwrap();
+                    svd(Op::Svd, view, false, u, s, vt, &mut Exec::serial()).unwrap();
                 },
                 3,
             );
@@ -65,7 +65,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [u, s, vt] = o else { unreachable!() };
-                    svd(Op::Svd, view, true, u, s, vt, Exec::serial()).unwrap();
+                    svd(Op::Svd, view, true, u, s, vt, &mut Exec::serial()).unwrap();
                 },
                 3,
             );
@@ -80,7 +80,7 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 stale,
                 |view, o| {
                     let [w, v] = o else { unreachable!() };
-                    eigh(Op::Eigh, view, w, v, Exec::serial()).unwrap();
+                    eigh(Op::Eigh, view, w, v, &mut Exec::serial()).unwrap();
                 },
                 2,
             );
@@ -111,7 +111,7 @@ fn rank_revealing_outputs_do_not_depend_on_prior_contents() {
         &mut q,
         &mut r,
         &mut p,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     let (mut q2, mut r2, mut p2) = (vec![f64::NAN; 99], vec![f64::NAN; 99], vec![-1i64; 99]);
@@ -121,7 +121,7 @@ fn rank_revealing_outputs_do_not_depend_on_prior_contents() {
         &mut q2,
         &mut r2,
         &mut p2,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!((q, r, p), (q2, r2, p2));

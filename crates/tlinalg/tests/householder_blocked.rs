@@ -129,7 +129,7 @@ fn reference_apply(
 const SHAPES: [(usize, usize); 5] = [(64, 48), (48, 64), (71, 43), (130, 130), (5, 3)];
 
 fn factor_matches_the_reference<T: TestScalar + tlinalg::FaerScalar>() {
-    let (batch, par) = (3, Exec::serial());
+    let (batch, par) = (3, &mut Exec::serial());
     for (rows, cols) in SHAPES {
         let k = rows.min(cols);
         let a: Vec<T> = (0..batch)
@@ -169,7 +169,7 @@ for_each_scalar!(householder_blocked_factor, factor_matches_the_reference);
 fn apply_matches_the_reference<T: TestScalar + tlinalg::FaerScalar>() {
     // A batch, so the per-lane factor scratch is reused across items, and a prefix shorter than the
     // full reflector count, so `shape.k < a_cols` is exercised too.
-    let (batch, par) = (3, Exec::serial());
+    let (batch, par) = (3, &mut Exec::serial());
     for (rows, cols) in SHAPES {
         let k = rows.min(cols);
         for k_used in [k, k / 2 + 1] {
@@ -261,7 +261,7 @@ fn zero_columns_match_the_reference<T: TestScalar + tlinalg::FaerScalar>() {
             1,
             &mut data,
             &mut coeff,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let (want, want_coeff) = reference_factor(&widen(&a), rows, cols);

@@ -65,7 +65,7 @@ fn all_flags<T: TestScalar + FaerScalar>() {
             b_cols,
             flags,
             &mut workspace,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let op_a = effective(&a, n, flags);
@@ -102,7 +102,7 @@ fn transposed_layout<T: TestScalar + FaerScalar>() {
             2,
             flags,
             &mut CountingWorkspace,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap()
     };
@@ -131,7 +131,7 @@ fn shape_errors() {
             cols,
             flags,
             &mut CountingWorkspace,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
     };
     assert!(matches!(

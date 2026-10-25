@@ -17,7 +17,7 @@ fn eigh_decomposes<T: TestScalar + FaerScalar>() {
     let dims = [n, n];
     let input = RawStridedRef::new(&storage, &dims, &strides, offset).unwrap();
     let (mut w, mut v) = (Vec::new(), Vec::new());
-    eigh(Op::Eigh, n, input, &mut w, &mut v, Exec::serial()).unwrap();
+    eigh(Op::Eigh, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
     let (w, v) = (widen(&w), widen(&v));
     for value in &w {
         assert_eq!(value.im, 0.0, "real eigenvalues in the scalar type");
@@ -34,7 +34,7 @@ fn eigh_decomposes<T: TestScalar + FaerScalar>() {
     assert_close(&matmul(&widen(&a), &v, n, n, n), &vw, T::TOL, "A V = V w");
 
     let mut values = Vec::new();
-    eigh_values(Op::EighValues, n, input, &mut values, Exec::serial()).unwrap();
+    eigh_values(Op::EighValues, n, input, &mut values, &mut Exec::serial()).unwrap();
     assert_eq!(values.len(), n);
 }
 for_each_scalar!(eigh_decomposition, eigh_decomposes);
@@ -46,8 +46,8 @@ fn eigh_values_match_the_decomposition() {
     let (dims, strides) = ([n, n], [1, n as isize]);
     let input = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
     let (mut w, mut v, mut values) = (Vec::new(), Vec::new(), Vec::new());
-    eigh(Op::Eigh, n, input, &mut w, &mut v, Exec::serial()).unwrap();
-    eigh_values(Op::EighValues, n, input, &mut values, Exec::serial()).unwrap();
+    eigh(Op::Eigh, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
+    eigh_values(Op::EighValues, n, input, &mut values, &mut Exec::serial()).unwrap();
     for (full, only) in w.iter().zip(&values) {
         assert!((full.re - only).abs() < 1e-10);
     }
@@ -81,7 +81,7 @@ fn eig_real_input_yields_conjugate_pairs() {
     let (dims, strides) = ([n, n], [1, n as isize]);
     let input = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
     let (mut w, mut v) = (Vec::<Complex64>::new(), Vec::new());
-    eig(Op::Eig, n, input, &mut w, &mut v, Exec::serial()).unwrap();
+    eig(Op::Eig, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
     let a_c: Vec<Complex64> = a.iter().map(|&x| Complex64::new(x, 0.0)).collect();
     check_eig(&a_c, &w, &v, n, 1e-10);
     assert_eq!(
@@ -97,7 +97,7 @@ fn eig_real_input_yields_conjugate_pairs() {
     assert_eq!(real.im, 0.0);
 
     let mut values = Vec::new();
-    eig_values(Op::EigValues, n, input, &mut values, Exec::serial()).unwrap();
+    eig_values(Op::EigValues, n, input, &mut values, &mut Exec::serial()).unwrap();
     assert_eq!(sort_key(&values), sort_key(&w));
 }
 
@@ -112,7 +112,7 @@ fn eig_real32_and_complex() {
         RawStridedRef::new(&a, &[n, n], &[1, n as isize], 0).unwrap(),
         &mut w,
         &mut v,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     check_eig(&widen(&a), &widen(&w), &widen(&v), n, 1e-4);
@@ -123,10 +123,10 @@ fn eig_real32_and_complex() {
         let dims = [n, n];
         let input = RawStridedRef::new(&storage, &dims, &strides, offset).unwrap();
         let (mut w, mut v) = (Vec::<Complex64>::new(), Vec::new());
-        eig(Op::Eig, n, input, &mut w, &mut v, Exec::serial()).unwrap();
+        eig(Op::Eig, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
         check_eig(&a, &w, &v, n, 1e-10);
         let mut values = Vec::new();
-        eig_values(Op::EigValues, n, input, &mut values, Exec::serial()).unwrap();
+        eig_values(Op::EigValues, n, input, &mut values, &mut Exec::serial()).unwrap();
         assert_eq!(sort_key(&values), sort_key(&w));
     }
 
@@ -138,7 +138,7 @@ fn eig_real32_and_complex() {
         RawStridedRef::new(&a, &[n, n], &[1, n as isize], 0).unwrap(),
         &mut w,
         &mut v,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     check_eig(&widen(&a), &widen(&w), &widen(&v), n, 1e-4);
@@ -149,10 +149,18 @@ fn empty_inputs_clear_the_outputs() {
     let mut w = vec![Complex64::new(1.0, 0.0)];
     let mut v = vec![Complex64::new(1.0, 0.0)];
     let empty = RawStridedRef::<f64>::new(&[], &[0, 0], &[1, 0], 0).unwrap();
-    eig(Op::Eig, 0, empty, &mut w, &mut v, Exec::serial()).unwrap();
+    eig(Op::Eig, 0, empty, &mut w, &mut v, &mut Exec::serial()).unwrap();
     assert!(w.is_empty() && v.is_empty());
     let mut real = vec![1.0_f64];
     let mut values = vec![1.0_f64];
-    eigh(Op::Eigh, 0, empty, &mut real, &mut values, Exec::serial()).unwrap();
+    eigh(
+        Op::Eigh,
+        0,
+        empty,
+        &mut real,
+        &mut values,
+        &mut Exec::serial(),
+    )
+    .unwrap();
     assert!(real.is_empty() && values.is_empty());
 }
