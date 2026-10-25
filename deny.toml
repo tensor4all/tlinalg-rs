@@ -1,5 +1,5 @@
-# Only `strided-exec` starts tasks on a thread pool. Every other crate of this
-# workspace reaches parallelism through `strided_exec::Exec`, so a direct
+# Only `threadteam` starts tasks on a thread pool. Every other crate of this
+# workspace reaches parallelism through `threadteam::Exec`, so a direct
 # `rayon` dependency (normal, dev or build) is rejected. The exceptions are the
 # third-party crates that bring rayon in themselves: t4a-faer (the one faer
 # identity of the stack, which receives a width from `Exec::external`; how it
@@ -14,7 +14,7 @@ multiple-versions = "allow"
 wildcards = "allow"
 deny = [
     { crate = "rayon", wrappers = [
-        "strided-exec",
+        "threadteam",
         "t4a-faer",
         "spindle",
         "gemm-common",

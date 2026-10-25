@@ -7,9 +7,9 @@
 mod common;
 
 use common::matrix;
-use strided_exec::ledger;
 use strided_view::RawStridedRef;
 use tcontract_exec::{Exec, Pool};
+use threadteam::ledger;
 use tlinalg::Op;
 
 #[test]
@@ -26,7 +26,7 @@ fn no_call_starts_the_global_pool() {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut Exec::serial()).unwrap();
 
         // A pooled token, in both width regimes, runs on its own pool only.
-        let pool = Pool::owned(strided_exec::Pool::builder().threads(4).build().unwrap());
+        let pool = Pool::owned(threadteam::Pool::builder().threads(4).build().unwrap());
         let mut exec = Exec::new(&pool, 4).unwrap();
         let root = exec.token().ledger_root().unwrap();
         let (mut pq, mut pr) = (Vec::new(), Vec::new());

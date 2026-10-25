@@ -1,4 +1,4 @@
-//! Placement through the token, measured with the `strided-exec` ledger: whatever the batch size
+//! Placement through the token, measured with the `threadteam` ledger: whatever the batch size
 //! relative to the budget, no more tasks than the budget are ever live, the result matches the
 //! serial one, and the two width regimes (a batch with at least `budget` items runs `Par::Seq`
 //! items; a smaller batch gives each item its share) both stay inside the bound.
@@ -6,21 +6,16 @@
 mod common;
 
 use common::matrix;
-use strided_exec::ledger;
 use strided_view::RawStridedRef;
 use tcontract_exec::{Exec, Pool};
+use threadteam::ledger;
 use tlinalg::Op;
 use tlinalg_testkit::hpd_seeded;
 
 const BUDGET: usize = 4;
 
 fn pool() -> Pool<'static> {
-    Pool::owned(
-        strided_exec::Pool::builder()
-            .threads(BUDGET)
-            .build()
-            .unwrap(),
-    )
+    Pool::owned(threadteam::Pool::builder().threads(BUDGET).build().unwrap())
 }
 
 fn stack(items: &[Vec<f64>]) -> Vec<f64> {

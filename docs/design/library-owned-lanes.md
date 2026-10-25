@@ -8,7 +8,7 @@ numerical leaves, output/error guarantees and the independent vendor provider ar
 ## Contract
 
 Every native batched entry point takes one `&mut tcontract_exec::Exec` and nothing else to drive
-parallelism. The bundle carries one `strided_exec::Exec` token (a pool reference and a budget of
+parallelism. The bundle carries one `threadteam::Exec` token (a pool reference and a budget of
 slots), the `WorkspaceProvider`, and the shared `BatchPolicy`. The token cannot be copied, so two
 operations cannot both claim the whole budget, and the budget it holds is the only budget: this
 crate never clamps against a pool and never starts a task by any route other than the token's
@@ -76,7 +76,7 @@ solve is deliberately **not** charged for a factorization it does not run.
 
 ## What the token bounds
 
-The `strided-exec` ledger counts the tasks a token starts. `tests/placement.rs` and the driver tests
+The `threadteam` ledger counts the tasks a token starts. `tests/placement.rs` and the driver tests
 assert `max_live(root) <= budget` for both regimes (a batch of at least `budget` items, and a smaller
 one), `ledger::installs` pins that a tiny item never enters the pool and a large one enters it
 once, and `tests/global_pool.rs` (a binary of its own) asserts `global_pool_unstarted()` after
@@ -100,7 +100,7 @@ item; direct/in-place guarantees stay per item. The C API forwards the executor'
 unchanged.
 
 `tlinalg-bench` reads `TLINALG_BENCH_STRATEGY` for the forced-route sweep and builds its pool with
-`strided_exec::Pool::builder()`. Overhead baselines use 1T settings and report the effective pool
+`threadteam::Pool::builder()`. Overhead baselines use 1T settings and report the effective pool
 width; 4T/8T are scheduling coverage, not default overhead baselines.
 
 ## Acceptance

@@ -283,8 +283,7 @@ for_each_scalar!(full_piv_solve, full_piv_solves);
 
 #[test]
 fn solve_on_a_supplied_pool_matches_sequential() {
-    let pool =
-        tcontract_exec::Pool::owned(strided_exec::Pool::builder().threads(2).build().unwrap());
+    let pool = tcontract_exec::Pool::owned(threadteam::Pool::builder().threads(2).build().unwrap());
     let n = 40;
     let a = matrix::<f64>(n, n, 3);
     let b = matrix::<f64>(n, 2, 4);

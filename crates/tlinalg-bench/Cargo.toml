@@ -28,7 +28,7 @@ tlinalg-testkit = { workspace = true }
 # The batch token the faer rows take.
 tcontract-exec = { workspace = true }
 num-complex = { workspace = true }
-strided-exec = { workspace = true }
+threadteam = { workspace = true }
 strided-view = { workspace = true }
 
 [dev-dependencies]

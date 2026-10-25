@@ -245,8 +245,7 @@ fn l4() {
     let serial_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut Exec::serial()).unwrap();
     });
-    let pool =
-        tcontract_exec::Pool::owned(strided_exec::Pool::builder().threads(2).build().unwrap());
+    let pool = tcontract_exec::Pool::owned(threadteam::Pool::builder().threads(2).build().unwrap());
     let mut exec = Exec::new(&pool, 2).unwrap();
     let pool_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();

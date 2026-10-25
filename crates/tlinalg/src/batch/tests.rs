@@ -12,7 +12,7 @@ use tcontract_exec::{Exec, Pool};
 /// An owned pool (kept alive by `Pool::owned`) that an `Exec` borrows.
 fn owned_pool(threads: usize) -> Pool<'static> {
     Pool::owned(
-        strided_exec::Pool::builder()
+        threadteam::Pool::builder()
             .threads(threads)
             .build()
             .unwrap(),

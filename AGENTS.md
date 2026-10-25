@@ -22,7 +22,7 @@ the shared rules were unavailable.
   `tlinalg-testkit` (only ever a `[dev-dependencies]` entry of a provider), never in either
   provider; cross-provider checks go in `tlinalg-parity`, kernel benchmarks in `tlinalg-bench`. A
   parity failure is a bug in a provider or in a documented convention, not a tolerance to loosen.
-* Only `strided-exec` starts tasks: parallelism reaches this crate as the `strided_exec::Exec` token inside
+* Only `threadteam` starts tasks: parallelism reaches this crate as the `threadteam::Exec` token inside
   `tcontract_exec::Exec` (`fork` for lanes, `external` for a width handed to faer). There is no direct
   `rayon` dependency (`cargo deny check bans`), and this crate neither depends on spindle nor opens a
   spindle region (`with_lock`); that belongs to t4a-faer (tensor4all/faer#59).

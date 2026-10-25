@@ -4,7 +4,7 @@
 //! no other test allocating concurrently: the count it reports is exactly the worker's allocation.
 //! `allocations` (thread-local) cannot see it; `allocations_all_threads` must.
 
-use strided_exec::{Exec, Pool};
+use threadteam::{Exec, Pool};
 use tlinalg_testkit::alloc::{allocations, allocations_all_threads, Counting};
 
 #[global_allocator]
