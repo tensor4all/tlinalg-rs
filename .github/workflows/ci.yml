@@ -24,6 +24,16 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Only strided-exec starts tasks on a pool: a direct rayon dependency anywhere else is rejected.
+  deny:
+    name: cargo deny (bans)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest

@@ -19,7 +19,7 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.4.4", path = "crates/tlinalg" }
+tlinalg = { version = "0.5.0", path = "crates/tlinalg" }
 tlinalg-blas = { version = "0.4.1", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
@@ -28,23 +28,19 @@ tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # to the existing QR/EVD and householder fixes. A compatible range admits later
 # patch fixes without republishing tlinalg; tenferro shares this faer identity.
 faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon"] }
-# Published strided-view 0.6.0 (stride/metadata and the `RawStridedRef` surface tlinalg
-# consumes). A registry source resolves to one 0.6.x version, so a compatible requirement keeps
-# `RawStridedRef` one type without forcing a tlinalg release for every strided patch.
-strided-view = { version = "0.6.0" }
-# The batch-lane vocabulary and the `Exec` token every entry point now takes. Pinned to the
-# tcontract 0.4.2 release revision so it is *one source* with the git-only `tcontract-capi`
-# below: a registry copy would be a distinct package and its `Exec` would not be the same type
-# the C API forwards. `version` keeps the manifest publishable — `cargo package` resolves the
-# registry release instead of the git source.
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "3256959434e7807b0e217091914d2d2a66d2b9e3", version = "=0.4.2" }
-# The C-API glue only: `tlinalg` itself stays free of the contraction stack. It needs
-# the TAPP executor handle's guarded `Exec`, which tcontract-capi owns (publish = false, so this
-# is a git-only dependency). One revision for exec and capi, or the forwarded `Exec` is a
-# different type than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "3256959434e7807b0e217091914d2d2a66d2b9e3" }
+# Published strided 0.7.0: `strided-view` is the stride/metadata and `RawStridedRef` surface
+# tlinalg consumes, `strided-exec` the placement token. A registry source resolves to one 0.7.x
+# version, so a compatible requirement keeps `RawStridedRef` and the token one type without forcing
+# a tlinalg release for every strided patch.
+strided-view = { version = "0.7" }
+strided-exec = { version = "0.7" }
+# The `Exec` bundle every entry point takes (a strided-exec token, workspace, batch policy) and the
+# batch-lane vocabulary. Temporarily a path dependency on the unpublished tcontract-exec 0.5.0
+# branch; it becomes the crates.io `0.5.0` release once published. `tcontract-capi` (git-only,
+# `publish = false`) is the same checkout, so the `Exec` it forwards is the type `tlinalg` takes.
+tcontract-exec = { path = "../tcontract-rs-exec/crates/tcontract-exec", version = "0.5.0" }
+tcontract-capi = { path = "../tcontract-rs-exec/crates/tcontract-capi" }
 num-complex = "0.4"
-rayon = "1.10"
 thiserror = "2"
 # LAPACK/BLAS provider only.
 lapack = "0.20"

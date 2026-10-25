@@ -1,7 +1,7 @@
 [package]
 name = "tlinalg"
 description = "faer-backed tensor-free linear-algebra kernels with their own borrowed I/O, scratch, parallelism and error vocabulary."
-version = "0.4.4"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -14,12 +14,14 @@ publish = true
 [dependencies]
 faer = { workspace = true }
 num-complex = { workspace = true }
-rayon = { workspace = true }
+strided-exec = { workspace = true }
 strided-view = { workspace = true }
 tcontract-exec = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The ledger counts the tasks a token starts; tests assert `max_live <= budget`.
+strided-exec = { workspace = true, features = ["ledger"] }
 tlinalg-testkit = { workspace = true }
 
 [lints]
