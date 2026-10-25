@@ -240,13 +240,12 @@ fn factor_bytes<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        None,
         work::<T>(m, n),
         || check_shape(op, m, n),
         |par| factor_lane_req::<T>(m, n, par),
@@ -262,7 +261,7 @@ fn factor_solve_bytes<T: FaerScalar>(
     n: usize,
     nrhs: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let nf = n as f64;
     let muladds = weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * nrhs as f64);
@@ -270,7 +269,6 @@ fn factor_solve_bytes<T: FaerScalar>(
         op,
         exec,
         batch,
-        None,
         muladds,
         || check_solve_shape(op, n, nrhs),
         |par| factor_lane_req::<T>(n, n, par),
@@ -286,12 +284,12 @@ fn factor_solve_bytes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::LuFactor`), and the executor's refusal for a forced strategy this route cannot honor.
+/// is `Op::LuFactor`).
 pub fn factor_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     factor_bytes::<T>(Op::LuFactor, m, n, batch, exec)
 }
@@ -319,17 +317,16 @@ pub fn factor_into<T: FaerScalar>(
     pivots: &mut [i32],
     parity: &mut [T],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let (matrix_len, k, batch, item_muladds) =
         factor_shape::<T>(op, m, n, lu.len(), pivots.len(), parity.len())?;
-    // Resolve the route even when there is nothing to factor, so a forced strategy this route
-    // cannot honor is refused rather than silently accepted (tlinalg-rs#57/#58).
+    // The route is resolved even when there is nothing to factor, so the workspace contract is
+    // the same for an empty batch (tlinalg-rs#57/#58).
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        None,
         item_muladds,
         || check_shape(op, m, n),
         |par| factor_lane_req::<T>(m, n, par),
@@ -343,7 +340,6 @@ pub fn factor_into<T: FaerScalar>(
         op,
         batch,
         exec,
-        None,
         item_muladds,
         &mut (
             in_place(lu, matrix_len, "packed LU"),
@@ -383,7 +379,7 @@ pub fn factor_into<T: FaerScalar>(
 ///
 /// let mut lu = [1.0_f64, 3.0, 2.0, 4.0];
 /// let (mut pivots, mut parity) = ([0_i32; 2], [0.0_f64; 1]);
-/// factor(Op::LuFactor, 2, 2, &mut lu, &mut pivots, &mut parity, Exec::serial()).unwrap();
+/// factor(Op::LuFactor, 2, 2, &mut lu, &mut pivots, &mut parity, &mut Exec::serial()).unwrap();
 /// assert_eq!((pivots, parity), ([2, 2], [-1.0]));
 /// ```
 // INVARIANT: shape, the three in-place batch buffers, token are distinct operands.
@@ -395,7 +391,7 @@ pub fn factor<T: FaerScalar>(
     lu: &mut [T],
     pivots: &mut [i32],
     parity: &mut [T],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     // The published order: shape and buffer validation before any workspace query or allocation.
     let (_, _, batch, _) = factor_shape::<T>(op, m, n, lu.len(), pivots.len(), parity.len())?;
@@ -554,8 +550,7 @@ impl<'a> BatchedPivots<'a> {
 /// `n x nrhs` right-hand-side batch; it enters holding `B` and leaves holding `X`. The factors must
 /// be nonsingular.
 ///
-/// The triangular solves take no workspace, so `workspace` may be empty; a forced strategy this
-/// route cannot honor is still refused.
+/// The triangular solves take no workspace, so `workspace` may be empty.
 ///
 /// # Errors
 ///
@@ -578,7 +573,7 @@ impl<'a> BatchedPivots<'a> {
 ///     Op::LuSolvePrepared,
 ///     RawStridedRef::new(&lu, &[2, 2], &[1, 2], 0).unwrap(),
 ///     RawStridedRef::new(&pivots, &[2], &[1], 0).unwrap(),
-///     1, &mut x, false, false, Exec::serial(),
+///     1, &mut x, false, false, &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
@@ -592,7 +587,7 @@ pub fn solve_prepared<T: FaerScalar>(
     output: &mut [T],
     transpose_a: bool,
     conjugate_a: bool,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     solve_prepared_into(
         op,
@@ -610,8 +605,7 @@ pub fn solve_prepared<T: FaerScalar>(
 /// [`solve_prepared`] with the borrowed workspace made explicit.
 ///
 /// The prepared solve needs no library scratch, so any workspace length is accepted (an empty slice
-/// is the natural argument); the route is still resolved first, so a forced strategy this route
-/// cannot honor is refused before any write.
+/// is the natural argument).
 ///
 /// # Errors
 ///
@@ -626,7 +620,7 @@ pub fn solve_prepared_into<T: FaerScalar>(
     transpose_a: bool,
     conjugate_a: bool,
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let lu = BatchedRef::square(op, "packed LU", packed_lu)?;
     let n = lu.rows();
@@ -634,7 +628,7 @@ pub fn solve_prepared_into<T: FaerScalar>(
     // A prepared solve is the triangular solves alone; the factorization happened in `factor`.
     let item_muladds = weighted_muladds::<T>(n as f64 * n as f64 * nrhs as f64);
     let batch = lu.batch();
-    let (lanes, _item_threads) = batch::decide(op, exec, batch, None, item_muladds)?;
+    let lanes = batch::decide(exec, batch, item_muladds).lanes;
     batch::check_workspace(op, workspace, 0, lanes)?;
     if rhs_len == 0 {
         return Ok(());
@@ -663,7 +657,6 @@ pub fn solve_prepared_into<T: FaerScalar>(
         op,
         batch,
         exec,
-        None,
         item_muladds,
         &mut (in_place(output, rhs_len, "rhs batch"),),
         batch::ScratchArena::new(workspace, 0),
@@ -688,13 +681,12 @@ pub fn solve_prepared_into<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::LuFactorSolve`), and the executor's refusal for a forced strategy this route cannot
-/// honor.
+/// is `Op::LuFactorSolve`).
 pub fn factor_solve_workspace<T: FaerScalar>(
     n: usize,
     nrhs: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     factor_solve_bytes::<T>(Op::LuFactorSolve, n, nrhs, batch, exec)
 }
@@ -722,7 +714,7 @@ pub fn factor_solve_into<T: FaerScalar>(
     pivots: &mut [i32],
     output: &mut [T],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let (matrix_len, rhs_len, batch, item_muladds) =
         factor_solve_shape::<T>(op, n, nrhs, packed_lu.len(), pivots.len(), output.len())?;
@@ -730,7 +722,6 @@ pub fn factor_solve_into<T: FaerScalar>(
         op,
         exec,
         batch,
-        None,
         item_muladds,
         || check_solve_shape(op, n, nrhs),
         |par| factor_lane_req::<T>(n, n, par),
@@ -745,7 +736,6 @@ pub fn factor_solve_into<T: FaerScalar>(
         op,
         batch,
         exec,
-        None,
         item_muladds,
         &mut (
             in_place(packed_lu, matrix_len, "packed LU"),
@@ -794,7 +784,7 @@ pub fn factor_solve_into<T: FaerScalar>(
 /// let mut lu = [2.0_f64, 0.0, 0.0, 4.0];
 /// let mut pivots = [0_i32; 2];
 /// let mut x = [2.0_f64, 8.0];
-/// factor_solve(Op::LuFactorSolve, 2, 1, &mut lu, &mut pivots, &mut x, Exec::serial()).unwrap();
+/// factor_solve(Op::LuFactorSolve, 2, 1, &mut lu, &mut pivots, &mut x, &mut Exec::serial()).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
 // INVARIANT: shape, the three in-place batch buffers, token are distinct operands.
@@ -806,7 +796,7 @@ pub fn factor_solve<T: FaerScalar>(
     packed_lu: &mut [T],
     pivots: &mut [i32],
     output: &mut [T],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     // The published order: shape and buffer validation before any workspace query or allocation.
     let (_, _, batch, _) =

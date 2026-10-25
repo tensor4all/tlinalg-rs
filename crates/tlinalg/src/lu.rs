@@ -168,13 +168,12 @@ fn lu_bytes<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(m.max(n)),
         work::<T>(m, n),
         || check_shape(op, m, n),
         |par| lu_req::<T::Entity>(m, n, par),
@@ -190,12 +189,12 @@ fn lu_bytes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::Lu`), and the executor's refusal for a forced strategy this route cannot honor.
+/// is `Op::Lu`).
 pub fn lu_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     lu_bytes::<T>(Op::Lu, m, n, batch, exec)
 }
@@ -221,7 +220,7 @@ pub fn lu_into<T: FaerScalar>(
     u: &mut [MaybeUninit<T>],
     parity: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
@@ -230,7 +229,6 @@ pub fn lu_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(m.max(n)),
         item_muladds,
         || check_shape(op, m, n),
         |par| lu_req::<T::Entity>(m, n, par),
@@ -241,7 +239,6 @@ pub fn lu_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(m.max(n)),
         item_muladds,
         &mut (
             fixed_out(p, p_len, "P"),
@@ -282,7 +279,7 @@ pub fn lu_into<T: FaerScalar>(
 /// lu(
 ///     Op::Lu, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     LuFactors { p: &mut p, l: &mut l, u: &mut u, parity: &mut parity },
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(parity, [-1.0]);
 /// assert_eq!(u[0], 3.0);
@@ -291,7 +288,7 @@ pub fn lu<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     factors: LuFactors<'_, T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let LuFactors { p, l, u, parity } = factors;
     p.clear();
@@ -427,13 +424,13 @@ fn solve_item<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::Solve`), and the executor's refusal for a forced strategy this route cannot honor.
+/// is `Op::Solve`).
 pub fn lu_solve_workspace<T: FaerScalar>(
     n: usize,
     nrhs: usize,
     transpose_a: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     lu_solve_bytes::<T>(Op::Solve, n, nrhs, transpose_a, batch, exec)
 }
@@ -457,13 +454,12 @@ fn lu_solve_bytes<T: FaerScalar>(
     nrhs: usize,
     transpose_a: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(batch::auto_extent(n, nrhs)),
         solve_work::<T>(n, nrhs),
         || check_solve_shape(op, n, nrhs),
         |par| lu_solve_req::<T::Entity>(n, nrhs, transpose_a, par),
@@ -540,7 +536,7 @@ pub fn solve_into<T: FaerScalar>(
     mut out: RawStridedMut<'_, T>,
     transpose_a: bool,
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let a = BatchedRef::square(op, "A", a)?;
     let destination = BatchedMut::new(op, "out", &mut out)?;
@@ -549,7 +545,6 @@ pub fn solve_into<T: FaerScalar>(
         op,
         exec,
         a.batch(),
-        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         || check_solve_shape(op, n, nrhs),
         |par| lu_solve_req::<T::Entity>(n, nrhs, transpose_a, par),
@@ -560,7 +555,6 @@ pub fn solve_into<T: FaerScalar>(
         op,
         a.batch(),
         exec,
-        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         &mut (),
         batch::ScratchArena::new(workspace, per_lane),
@@ -622,7 +616,7 @@ pub fn solve_into<T: FaerScalar>(
 ///     RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     Some(RawStridedRef::new(&b, &[2, 1], &[1, 2], 0).unwrap()),
 ///     RawStridedMut::new(&mut x, &[2, 1], &[1, 2], 0).unwrap(),
-///     false, Exec::serial(),
+///     false, &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
@@ -635,7 +629,7 @@ pub fn solve<T: FaerScalar>(
     rhs: Option<RawStridedRef<'_, T>>,
     mut out: RawStridedMut<'_, T>,
     transpose_a: bool,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     // The published order: operand validation (including the destination's rank) before any
     // workspace query or allocation.

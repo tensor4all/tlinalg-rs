@@ -411,13 +411,12 @@ fn svd_values_bytes<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(m.max(n)),
         work::<T>(m, n),
         || check_shape(op, m, n, ComputeSvdVectors::No),
         |par| svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
@@ -434,14 +433,13 @@ fn svd_bytes<T: FaerScalar>(
     n: usize,
     full: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let vectors = mode(m, n, full).2;
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(m.max(n)),
         work::<T>(m, n),
         || check_shape(op, m, n, vectors),
         |par| svd_req::<T::Entity>(m, n, vectors, par),
@@ -458,13 +456,12 @@ fn svd_bytes<T: FaerScalar>(
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// [`Error::InvalidArgument`] when a size overflows.
 pub fn svd_values_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     svd_values_bytes::<T>(Op::SvdValues, m, n, batch, exec)
 }
@@ -476,14 +473,13 @@ pub fn svd_values_workspace<T: FaerScalar>(
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// [`Error::InvalidArgument`] when a size overflows.
 pub fn svd_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     full: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     svd_bytes::<T>(Op::Svd, m, n, full, batch, exec)
 }
@@ -503,7 +499,7 @@ pub fn svd_values_into<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     s: &mut [MaybeUninit<<T as ScalarEntity>::Real>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
@@ -513,7 +509,6 @@ pub fn svd_values_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(m.max(n)),
         item_muladds,
         || check_shape(op, m, n, ComputeSvdVectors::No),
         |par| svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
@@ -524,7 +519,6 @@ pub fn svd_values_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(m.max(n)),
         item_muladds,
         &mut (fixed_out(s, m.min(n), "singular values"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -558,7 +552,7 @@ pub fn svd_values_into<T: FaerScalar>(
 /// let mut s = Vec::new();
 /// svd_values(
 ///     Op::SvdValues, RawStridedRef::new(&a, &[2, 2, 2], &[1, 2, 4], 0).unwrap(), &mut s,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(s, [3.0, 1.0, 5.0, 2.0]);
 /// ```
@@ -566,7 +560,7 @@ pub fn svd_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     s: &mut Vec<<T as ScalarEntity>::Real>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     s.clear();
     let input = BatchedRef::new(op, "input", input)?;
@@ -606,7 +600,7 @@ pub fn svd_into<T: FaerScalar>(
     s: &mut [MaybeUninit<T>],
     vt: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
@@ -616,7 +610,6 @@ pub fn svd_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(m.max(n)),
         item_muladds,
         || check_shape(op, m, n, vectors),
         |par| svd_req::<T::Entity>(m, n, vectors, par),
@@ -627,7 +620,6 @@ pub fn svd_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(m.max(n)),
         item_muladds,
         &mut (
             fixed_out(u, u_len, "U"),
@@ -666,7 +658,7 @@ pub fn svd_into<T: FaerScalar>(
 /// let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
 /// svd(
 ///     Op::Svd, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), false,
-///     &mut u, &mut s, &mut vt, Exec::serial(),
+///     &mut u, &mut s, &mut vt, &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(s, [3.0, 1.0]);
 /// ```
@@ -680,7 +672,7 @@ pub fn svd<T: FaerScalar>(
     u: &mut Vec<T>,
     s: &mut Vec<T>,
     vt: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     u.clear();
     s.clear();

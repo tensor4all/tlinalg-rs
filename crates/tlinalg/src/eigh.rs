@@ -112,13 +112,12 @@ fn decompose<E: faer::traits::ComplexField>(
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// [`Error::InvalidArgument`] when a size overflows.
 pub fn eigh_workspace<T: FaerScalar>(
     n: usize,
     vectors: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let compute = if vectors {
         ComputeEigenvectors::Yes
@@ -136,7 +135,7 @@ pub fn eigh_workspace<T: FaerScalar>(
 pub fn eigh_values_workspace<T: FaerScalar>(
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     eigh_bytes::<T>(Op::EighValues, n, ComputeEigenvectors::No, batch, exec)
 }
@@ -158,13 +157,12 @@ fn eigh_bytes<T: FaerScalar>(
     n: usize,
     vectors: ComputeEigenvectors,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(n),
         work::<T>(n),
         || check_shape(op, n),
         |par| eigh_req::<T::Entity>(n, vectors, par),
@@ -191,7 +189,7 @@ pub fn eigh_values_into<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut [MaybeUninit<<T as ScalarEntity>::Real>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -200,7 +198,6 @@ pub fn eigh_values_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::No, par),
@@ -211,7 +208,6 @@ pub fn eigh_values_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (fixed_out(values, n, "eigenvalues"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -255,7 +251,7 @@ pub fn eigh_values_into<T: FaerScalar>(
 /// let mut w = Vec::new();
 /// eigh_values(
 ///     Op::EighValues, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w, [1.0, 2.0]);
 /// ```
@@ -263,7 +259,7 @@ pub fn eigh_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Real>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;
@@ -294,7 +290,7 @@ pub fn eigh_into<T: FaerScalar>(
     values: &mut [MaybeUninit<T>],
     vectors: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -304,7 +300,6 @@ pub fn eigh_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::Yes, par),
@@ -315,7 +310,6 @@ pub fn eigh_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (
             fixed_out(values, n, "eigenvalues"),
@@ -368,7 +362,7 @@ pub fn eigh_into<T: FaerScalar>(
 /// let (mut w, mut v) = (Vec::new(), Vec::new());
 /// eigh(
 ///     Op::Eigh, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w, &mut v,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w, [1.0, 2.0]);
 /// assert_eq!(v.len(), 4);
@@ -378,7 +372,7 @@ pub fn eigh<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<T>,
     vectors: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     values.clear();
     vectors.clear();

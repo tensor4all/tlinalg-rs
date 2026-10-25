@@ -303,21 +303,20 @@ fn rank_revealing_qr_item<T: FaerScalar>(
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor (the canonical `Op` is
-/// `Op::Qr`).
+/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows (the
+/// canonical `Op` is `Op::Qr`).
 pub fn qr_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     qr_bytes::<T>(Op::Qr, m, n, false, batch, exec)
 }
 
 /// [`qr_workspace`] with the caller's operation, so a wrapper reports its own `Op`.
 ///
-/// The order matches the contract: resolve the route (refusing an unavailable strategy), return
+/// The order matches the contract: resolve the route, return
 /// zero for an empty batch, and only then check the shape products and build the requirement.
 fn qr_bytes<T: FaerScalar>(
     op: Op,
@@ -325,14 +324,13 @@ fn qr_bytes<T: FaerScalar>(
     n: usize,
     pivoting: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let item_muladds = qr_work::<T>(m, n);
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(m.max(n)),
         item_muladds,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, pivoting, par),
@@ -363,7 +361,7 @@ pub fn qr_into<T: FaerScalar>(
     q: &mut [MaybeUninit<T>],
     r: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
@@ -372,7 +370,6 @@ pub fn qr_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(m.max(n)),
         item_muladds,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, false, par),
@@ -383,7 +380,6 @@ pub fn qr_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(m.max(n)),
         item_muladds,
         &mut (fixed_out(q, q_len, "Q"), fixed_out(r, r_len, "R")),
         batch::ScratchArena::new(workspace, per_lane),
@@ -419,7 +415,7 @@ pub fn qr_into<T: FaerScalar>(
 /// let (mut q, mut r) = (Vec::new(), Vec::new());
 /// qr(
 ///     Op::Qr, RawStridedRef::new(&a, &[2, 1], &[1, 2], 0).unwrap(), &mut q, &mut r,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert!((r[0].abs() - 5.0).abs() < 1e-12);
 /// ```
@@ -428,7 +424,7 @@ pub fn qr<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     q: &mut Vec<T>,
     r: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     q.clear();
     r.clear();
@@ -479,13 +475,12 @@ pub fn magnitude<T: FaerScalar>(value: T) -> f64 {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// [`Error::InvalidArgument`](crate::Error::InvalidArgument) when a size overflows.
 pub fn rank_revealing_qr_workspace<T: FaerScalar>(
     m: usize,
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     qr_bytes::<T>(Op::RankRevealingQr, m, n, true, batch, exec)
 }
@@ -506,7 +501,7 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
     r: &mut [MaybeUninit<T>],
     permutation: &mut [MaybeUninit<i64>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
@@ -515,7 +510,6 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(m.max(n)),
         item_muladds,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, true, par),
@@ -526,7 +520,6 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(m.max(n)),
         item_muladds,
         &mut (
             fixed_out(q, q_len, "Q"),
@@ -568,7 +561,7 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
 /// let (mut q, mut r, mut perm) = (Vec::new(), Vec::new(), Vec::new());
 /// rank_revealing_qr(
 ///     Op::RankRevealingQr, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
-///     &mut q, &mut r, &mut perm, Exec::serial(),
+///     &mut q, &mut r, &mut perm, &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(perm, [1, 0]);
 /// ```
@@ -578,7 +571,7 @@ pub fn rank_revealing_qr<T: FaerScalar>(
     q: &mut Vec<T>,
     r: &mut Vec<T>,
     permutation: &mut Vec<i64>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     q.clear();
     r.clear();
