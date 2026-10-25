@@ -22,23 +22,23 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 
 ## Parallelism (tlinalg only)
 
-* One argument: `exec: tcontract_exec::Exec<'_>` (serial, or a caller-owned pool + budget +
-  `BatchPolicy`). **tlinalg owns the batch route**, not the host. Forced strategies are reachable
-  from outside; there is no public `LanePlan`. See
+* One argument: `exec: &mut tcontract_exec::Exec<'_>` (a `strided_exec` token, a workspace and a
+  `BatchPolicy`; `*_workspace` queries take `&Exec`). **tlinalg owns the batch route**, not the
+  host. Forced strategies are reachable from outside; there is no public `LanePlan`. See
   [library-owned-lanes.md](library-owned-lanes.md).
-* `Auto` keeps the pre-0.3 fan-out decision in 0.3.0: fan out to outer lanes only while the largest
-  item extent is at most 64 (RHS/reflector target extents counted by default,
-  `TLINALG_AUTO_RHS=exclude` to measure the other switch setting) and the batch fills the context's
-  budget; packed LU keeps its no-cutoff exception. A one-lane decision takes its `item_threads`
-  from the shared `WorkModel`, so a small item stays on the caller instead of entering the pool.
-  The full switch to the shared model is #123 step 3.
-* Forced strategies go through `Exec::batch_decision` on the original budget. The driver partitions
-  into **exactly** the decided number of nonempty contiguous ranges, never above `batch` or the
-  budget. Every outer child runs its items at the decision's `item_threads`, passed to both scratch
-  sizing and faer.
-* **faer 0.24.4 does not guarantee a strict active-thread bound from that count.** Its wide-RHS
-  recursion and rounded-up splitting can exceed the requested count. This accepted limitation is
-  not hidden by serial fallback or replacement pools; no hard bound on all native work is claimed.
+* The route is the shared `Exec::batch_decision`. `Auto` fans out when the decision gives two or
+  more lanes and then forks the whole budget over them: a batch with at least `budget` items runs
+  one sequential (`Par::Seq`) item stream per slot, a smaller batch gives each item its share of
+  the budget as faer width. When `Auto` keeps one lane, the lane runs at the work model's width for
+  one item, so a small item stays on the caller instead of entering the pool.
+* Forced strategies go through the same decision on the token's budget. The driver partitions into
+  **exactly** the decided number of nonempty contiguous ranges, never above `batch` or the budget.
+  Lanes are `token.fork`ed, and each lane hands its share to faer through `Exec::external`, the
+  same width for scratch sizing and for the item.
+* **faer 0.24.4 does not guarantee a strict active-thread bound from that width.** Its wide-RHS
+  recursion and rounded-up splitting can exceed the requested width. The token bounds the lanes it
+  starts (checked with the `strided-exec` ledger), not faer's internal tasks; no hard bound on all
+  native work is claimed.
 * Scratch is per lane and reused across the items of that lane. Each family also has a
   `*_workspace` byte query and a `*_into` route that carves that scratch from caller-owned storage
   (see [borrowed-workspace.md](borrowed-workspace.md)); the `Vec` entry points are wrappers that
@@ -65,10 +65,9 @@ decision, Householder append/from-factors/gemm, negative-stride rejection, error
 
 ## Behaviour change to record
 
-Families other than packed LU previously looped sequentially over the batch in tenferro. Batched
-extraction enabled outer fan-out; the single-token revision moves the existing default Auto policy
-into tlinalg. Host forced strategies/custom thresholds are removed from this provider's API.
-Integrated tenferro migration and its performance measurements remain a separate follow-up.
+Families other than packed LU previously looped sequentially over the batch in tenferro; the batch
+route is now tlinalg's. Host forced strategies and custom thresholds are expressed only through the
+`BatchPolicy` the host puts in its `Exec`.
 
 ## Addendum: multiple batch axes (2026-10-05)
 
@@ -97,12 +96,11 @@ Recorded with the implementation; they refine, not replace, the contract above.
   and batch-axis normalisation (`BatchedRef`, `BatchedMut`, `BatchAxes`), lane split and fan-out
   (`run`), and output assembly (`Out` for library-created vectors, `InPlace` for host-owned compact
   buffers).
-* **Lane split and fan-out.** `Auto`'s fan-out is the pre-0.3 64-cutoff rule and its one-lane item
-  width comes from the shared work model; forced strategies use
-  `tcontract_exec::Exec::batch_decision`. Either way the driver partitions `0..batch` into exactly
-  the decided number of nonempty ranges. Several lanes run on the context's pool, each item at the
-  decided `item_threads`; one lane runs on the caller when `item_threads` is one, or in the pool
-  otherwise. A serial context never resolves to multiple lanes.
+* **Lane split and fan-out.** Every strategy, `Auto` included, uses
+  `tcontract_exec::Exec::batch_decision`. The driver partitions `0..batch` into exactly the decided
+  number of nonempty ranges. Several lanes are forked over the token, each item at its lane's share
+  of the budget; one lane runs on the caller when its width is one, or in the pool otherwise. A
+  serial token never resolves to multiple lanes.
 * **Item offsets.** After normalisation a compact batch has one axis and an item offset is one
   multiply. A non-mergeable view decomposes the item index per item (`O(B)` integer work next to an
   `O(n³)` kernel) instead of carrying an odometer: items are addressed by index from independent

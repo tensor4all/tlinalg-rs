@@ -18,24 +18,24 @@ pub fn <family>_workspace(<shape args>, batch, exec: Exec<'_>) -> Result<usize>
   is `lanes * unaligned_bytes_required(per_lane)`, where `per_lane` is the family's complete
   per-lane inventory (see below) and `lanes` is the lane count the resolved route may use. The
   count does not depend on where the caller's buffer happens to start, so a caller can size once.
-* It takes the `Exec` because the requirement is execution-dependent: faer sizes part of its
-  scratch per item thread, so `per_lane` is computed at the `item_threads` width the batch decision
-  grants — the *same* `batch::decide` call the execution makes, with the same work estimate and
-  Auto measure. A query and its matching call therefore resolve the same width and the same lanes.
+* It takes the `&Exec` because the requirement is execution-dependent: faer sizes part of its
+  scratch per thread, so `per_lane` is computed at the widest lane share the batch route grants
+  (`Route::item_width`) — the *same* `batch::decide` call the execution makes, with the same work
+  estimate. A query and its matching call therefore resolve the same lanes, and every lane's actual
+  width is at most the one the chunk was sized for.
 * A family whose per-lane scratch does not depend on the item width (cholesky has only a faer
   `MemStack`) has a route-independent *per-lane* requirement; the reported total still scales with
   the lane count the route resolves (`Outer` and `Inner` therefore differ). Triangular solve and the
   packed-LU prepared solve need no scratch at all and report `0`.
-* The order is fixed: resolve strategy availability first (a forced route this provider cannot honor
-  is refused even for an empty batch), then return `0` for `batch == 0` **before** building any
+* The order is fixed: resolve the route first (arithmetic from the shared decision; it never
+  fails), then return `0` for `batch == 0` **before** building any
   requirement (a shape-only huge extent must not become a huge or overflowing byte count), then
   check every shape product the requirement builders multiply — including the products inside
   faer's block-size recommendation helpers — and only then compose the requirement. `workspace::lane_requirement`
   is that one implementation, used by every family's query and `_into` route.
 * A query reports its family's canonical `Op` in a refusal; a `Vec` wrapper passes the caller's `op`
   through a crate-private variant of the same query, so the error a caller sees is unchanged from
-  0.3.0. Wrappers also validate their operands in the published order *before* sizing a workspace,
-  so a malformed operand is still reported ahead of an unavailable strategy.
+  0.3.0. Wrappers also validate their operands in the published order *before* sizing a workspace.
 
 Why bytes and not a layout type: `tcontract_exec::WorkspaceReq` describes GEMM arena components
 and is deliberately checked component-wise, so it is the wrong contract for a generic borrowed

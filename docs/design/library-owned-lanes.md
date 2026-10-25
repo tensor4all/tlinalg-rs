@@ -1,52 +1,43 @@
 # Library-owned batch lanes on `tcontract_exec::Exec`
 
-Owning-layer prerequisite for tensor4all/tenferro-rs#2004, U6, updated for the 0.3 chain
-(tensor4all/tcontract-rs#123 step 1, tlinalg-rs#58). This supersedes the host-policy parts of
-`batched-api.md`; tensor formats, numerical leaves, output/error guarantees and the independent
-vendor provider stay unchanged.
+tlinalg owns the batch route of its entry points; the host owns the resources. Tensor formats,
+numerical leaves, output/error guarantees and the independent vendor provider are described in
+`batched-api.md`. The placement model is the cross-repo one: "Where placement is decided" in
+`tensor4all-meta/docs/design/core-boundary-and-execution-ownership.md`.
 
 ## Contract
 
-Every native batched entry point takes one `tcontract_exec::Exec` token and nothing else to drive
-parallelism. The token carries the caller's pool and budget, the `WorkspaceProvider` the future
-allocation-free API needs, and the shared `BatchPolicy`. `tlinalg::Parallel`, `LanePlan` and
-`AUTO_FAN_OUT_MAX_ITEM_DIM` are gone. Forced strategies are reachable from outside, and
-Every forced strategy this provider supports is resolved before any output is written
-(including the empty packed routes).
+Every native batched entry point takes one `&mut tcontract_exec::Exec` and nothing else to drive
+parallelism. The bundle carries one `strided_exec::Exec` token (a pool reference and a budget of
+slots), the `WorkspaceProvider`, and the shared `BatchPolicy`. The token cannot be copied, so two
+operations cannot both claim the whole budget, and the budget it holds is the only budget: this
+crate never clamps against a pool and never starts a task by any route other than the token's
+`fork` and `external`. A serial token runs on the calling thread and enters no pool; nothing falls
+back to an ambient pool.
 
-## Auto fan-out unchanged in 0.3.0
+## Route
 
-0.2 chose lanes from a **dimension cutoff**: fan out when `max(rows, cols) <= 64` (with RHS
-columns counted) and the batch fills every worker; otherwise one lane. 0.3.0 **keeps that
-fan-out rule**. tlinalg-rs#58 "Defaults" and tcontract-rs#123 "Defaults need numbers" step 1 are
-explicit: step 1 ships "a temporary `Auto` that still applies the 64 cutoff, RHS excluded or
-included behind one switch so both can be measured"; the full switch to the shared work model
-happens in #123 step 3 with the sweep as evidence.
+`batch::decide(exec, batch, item_muladds)` resolves a `Route { lanes, slots }` from the shared
+`Exec::batch_decision`, which is the one policy source (`BatchPolicy` and `WorkModel` stay with
+`tcontract_exec`, rule 4 of the cross-repo document):
 
-* `Auto`'s fan-out is the pre-0.3 rule (`batch::legacy_auto`): on a context with more than one
-  worker, fan out to `min(budget, items)` outer lanes only while the batch fills the budget and the
-  largest item extent is at most 64; packed LU keeps its no-cutoff exception (`None`).
-* Otherwise one lane runs the batch at the shared work model's width for one item, not the whole
-  budget. `decide` asks `Exec::batch_decision` for an `Auto` query with one item, so the model's
-  item cost and `WidthPolicy` choose `item_threads`; a small item resolves to width one and stays
-  on the caller (`Exec::install(1, ..)` runs inline), while a large item still gets the full budget.
-* The RHS/reflector target extent is counted by default, matching 0.2. `TLINALG_AUTO_RHS=exclude`
-  in the environment measures the RHS-excluded variant; the knob and the cutoff are removed when
-  step 3 adopts the shared model.
-* The partition is now **exact** (`[l*batch/lanes, (l+1)*batch/lanes)`), so `Auto` keeps the decided
-  lane count; 0.2's `div_ceil` split could drop one (five items and four lanes gave three).
+* `Auto`: if the decision gives two or more lanes, the batch fans out into `lanes` lanes and the
+  call spends the whole budget (`slots = budget`). A batch with at least `budget` items therefore
+  runs one sequential item stream per slot, each item at `Par::Seq`; a smaller batch runs one lane
+  per item and each lane's share of the budget is its item's faer width. If the decision keeps one
+  lane, that lane runs the items one after another at the width the work model gives one item, so
+  a small item stays on the caller and a large one takes the budget.
+* Forced strategies (`Sequential`, `Outer`, `Inner`, `Split`): the decision's `lanes` lanes, each at
+  its `item_threads`, so `slots = lanes * item_threads`.
 
-Forced strategies are the 0.3 addition: they go through `Exec::batch_decision` on the original host
-budget (never falling back). The `(lanes, item_threads)` cases are pinned in
-`crates/tlinalg/src/batch/tests/scheduling.rs`, including RHS/reflector extents and the packed
-routes.
+The decision depends on the budget, the policy and the batch alone, so the workspace query and the
+matching `_into` call resolve the same route. The item extent does not enter it; the work estimate
+does, through the shared model.
 
 ## Per-family work estimates
 
-`batch::run` is fed one item's multiply-adds. Step-1 `Auto` does not read it (it uses the legacy
-cutoff); the estimates are reported for the forced routes and the step-3 shared-model `Auto`, so
-the RHS/reflector extents are already expressed as work rather than as a size. The estimates
-distinguish the actual route:
+`batch::run` is fed one item's multiply-adds, the input of the shared decision, so RHS/reflector
+extents are expressed as work rather than as a size. The estimates distinguish the actual route:
 
 | route | `item_muladds` |
 |---|---|
@@ -69,58 +60,58 @@ solve is deliberately **not** charged for a factorization it does not run.
 
 ## Partition and execution
 
-* `lanes` is the decision's lane count, at most the item count; the driver partitions `0..batch`
-  into **exactly `lanes` nonempty contiguous ranges** (`[lane*batch/lanes, (lane+1)*batch/lanes)`).
-  0.2's `div_ceil` chunking could return fewer lanes than requested (five items and four lanes gave
-  three); 0.3 gives four.
-* One lane runs on the caller for `item_threads == 1`, or inside the pool for `item_threads > 1`.
-  Several lanes run concurrently on the context's pool; the decision's `item_threads` is passed to
-  **both** the per-lane scratch sizing and the numerical item call, so a `Split`/`Inner`-style
-  forced width is not silently dropped inside the lanes.
+* `lanes` is at most the item count; the driver partitions `0..batch` into **exactly `lanes` nonempty
+  contiguous ranges** (`[lane*batch/lanes, (lane+1)*batch/lanes)`).
+* `token.limit(slots)` narrows the call to its slots. One lane runs `token.external(..)` directly;
+  several lanes run `token.fork(lanes, ..)`, which divides the slots among the lanes in shares that
+  differ by at most one and add up to `slots`. Inside a lane, `child.external(|width| ..)` enters the
+  pool once (or runs in place for width one) and hands the share to faer as a plain width, mapped by
+  the pure helper `faer_par(width)` (`1` is `Par::Seq`).
+* A lane builds its scratch once, from its own chunk of the caller's workspace, and reuses it for
+  every item of the lane. Shares differ by at most one, so the workspace query sizes a chunk at the
+  widest share (`Route::item_width`), which covers every lane.
 * Errors: each lane stops at its own first failure and does **not** stop because another lane
   failed; the returned error is the one from the lowest-indexed failing lane, i.e. the
-  lowest-indexed failing item — deterministic regardless of scheduling.
+  lowest-indexed failing item, deterministic regardless of scheduling.
 
-## faer's hint limitation
+## What the token bounds
 
-`item_threads` is the faer count requested on the pool, not a strict active-thread bound. With faer
-0.24.4, triangular-solve RHS recursion ignores split tokens and `join_raw` gives both children a
-rounded-up half, so even a pool-clamped faer count can expose more active numerical tasks than
-requested. The maintainer accepted proceeding with this limitation recorded: pass the effective
-count and install only the supplied pool, no silent serial downgrade or replacement pool. The
-pool's physical worker count remains its bound, not the hint. Admission across concurrent calls
-belongs to the resource owner. Vendor BLAS/LAPACK threading stays vendor-owned.
+The `strided-exec` ledger counts the tasks a token starts. `tests/placement.rs` and the driver tests
+assert `max_live(root) <= budget` for both regimes (a batch of at least `budget` items, and a smaller
+one), `ledger::installs` pins that a tiny item never enters the pool and a large one enters it
+once, and `tests/global_pool.rs` (a binary of its own) asserts `global_pool_unstarted()` after
+serial and pooled calls.
+
+The count handed to faer is a width, not a strict active-thread bound. With faer 0.24.4,
+triangular-solve RHS recursion ignores split tokens and `join_raw` gives both children a rounded-up
+half, so even a pool-clamped width can expose more active numerical tasks than requested; how
+t4a-faer schedules a width (and whether it opens a spindle region for it) is decided there
+(tensor4all/faer#59), not here. The token bounds the lanes it starts, not faer's internal tasks.
+Admission across concurrent calls belongs to the resource owner. Vendor BLAS/LAPACK threading stays
+vendor-owned.
 
 ## Scope and integration
 
-The borrowed-workspace `*_workspace`/`*_into` API (`tlinalg-rs#57`) is contracted in
-[borrowed-workspace.md](borrowed-workspace.md); it ships additively in 0.3.x after 0.3.0 (#57
-classifies the additions as non-breaking, so #57 stays open) and the `Vec` wrappers remain for now.
-When it lands, the `Workspace` is a component-wise checked per-lane region and an insufficient
-workspace is a typed refusal before any write.
+The borrowed-workspace `*_workspace`/`*_into` API is contracted in
+[borrowed-workspace.md](borrowed-workspace.md); the `Vec` entry points are wrappers over it.
+`*_workspace` queries take `&Exec` (they read the budget and the policy), every other entry point
+takes `&mut Exec`. Library-created outputs keep empty-on-error and the deterministic lowest failing
+item; direct/in-place guarantees stay per item. The C API forwards the executor's guarded `&mut Exec`
+unchanged.
 
-Every native entry point, executable doc, native test, parity call and benchmark moves to `Exec`;
-`tlinalg-bench` reads `TLINALG_BENCH_STRATEGY` for the forced-route sweep. The C API migrates its
-tcontract-capi pin to the 0.3.0 revision and forwards that executor's guarded `Exec` instead of
-building a fresh `Pool` wrapper per call. Library-created outputs keep empty-on-error and the
-deterministic lowest failing item; direct/in-place guarantees stay per item. Vendor signatures, the
-serial batch loop, the queried-once workspace and vendor threading are unchanged.
-
-Benchmarks use the ordinary API only, with an explicit `Exec` budget. Overhead baselines use 1T
-settings and report the effective pool width; 4T/8T are scheduling coverage, not default overhead
-baselines. No speedup or completed integrated-tenferro performance claim is made here.
+`tlinalg-bench` reads `TLINALG_BENCH_STRATEGY` for the forced-route sweep and builds its pool with
+`strided_exec::Pool::builder()`. Overhead baselines use 1T settings and report the effective pool
+width; 4T/8T are scheduling coverage, not default overhead baselines.
 
 ## Acceptance
 
-* Native calls compile with only `Exec`; no public `Parallel` or `LanePlan` remains, and `Auto`
-  keeps the documented step-1 64 cutoff until #123 step 3 while its one-lane width comes from the
-  shared work model.
-* Driver tests pin the new `(lanes, item_threads)` cases (including a small one-lane item staying
-  on the caller, a large one-lane item taking the full budget, RHS/reflector extents and the packed
-  routes), the exact nonempty partition, forced strategies, and the route resolution on
-  empty batches. Do not mistake observing a faer count for proving its active-thread bound.
-* Production numerical tests cover four scalar types, batch strides/broadcast, both
-  triangular-solve sides, and all packed routes.
+* Native calls compile with only `&mut Exec`; no public `Parallel`, `LanePlan` or rayon type
+  appears, and `cargo deny check bans` rejects a direct `rayon` dependency.
+* Driver tests pin the `(lanes, widths)` cases, including a small item staying on the caller, a
+  large item taking the whole budget, shares adding up to the budget, the exact nonempty partition,
+  forced strategies, which pool the items run on, and the ledger bound.
+* Production numerical tests cover four scalar types, batch strides/broadcast, both triangular-solve
+  sides, and all packed routes.
 * Allocation gates measure provider-controlled scratch separately from dispatch; the inline
   metadata bound (8 non-mergeable axes) is documented, and a cross-thread window
   (`tlinalg_testkit::alloc::allocations_all_threads`) observes worker allocations that the
