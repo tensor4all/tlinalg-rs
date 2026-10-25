@@ -60,16 +60,16 @@ fn rows(
     group: &mut BenchmarkGroup<'_, WallTime>,
     env: &Env,
     case: &str,
-    mut faer: impl FnMut(Exec<'_>),
+    mut faer: impl FnMut(&mut Exec<'_>),
     lapack: LapackRow<'_>,
 ) {
     group.bench_function(BenchmarkId::new("faer-1lane", case), |b| {
-        b.iter(|| faer(Exec::serial()))
+        b.iter(|| faer(&mut Exec::serial()))
     });
     if env.threads() > 1 {
         group.bench_function(
             BenchmarkId::new(format!("faer-{}t", env.threads()), case),
-            |b| b.iter(|| faer(env.par())),
+            |b| b.iter(|| faer(&mut env.par())),
         );
     }
     if let Some(mut lapack) = lapack {
@@ -129,7 +129,7 @@ fn packed_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usi
             &mut factor,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 lu.copy_from_slice(&a.data);
                 tlinalg::packed_lu::factor(Op::LuFactor, n, n, &mut lu, &mut piv, &mut parity, par)
                     .unwrap();
@@ -156,7 +156,7 @@ fn packed_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usi
             &mut lu,
             &mut piv,
             &mut parity,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let lu_dims = [n, n, batch];
@@ -186,7 +186,7 @@ fn packed_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usi
             &mut prepared,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 x.copy_from_slice(&b.data);
                 tlinalg::packed_lu::solve_prepared(
                     Op::LuSolvePrepared,
@@ -232,7 +232,7 @@ fn packed_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usi
             &mut fused,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 lu.copy_from_slice(&a.data);
                 x.copy_from_slice(&b.data);
                 tlinalg::packed_lu::factor_solve(
@@ -280,7 +280,7 @@ fn solve<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usize, 
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 let out =
                     strided_view::RawStridedMut::new(&mut x.data, &x_dims, &x_strides, 0).unwrap();
                 tlinalg::lu::solve(Op::Solve, a.view(), Some(b.view()), out, false, par).unwrap();
@@ -314,7 +314,7 @@ fn cholesky<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usiz
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::cholesky::cholesky(Op::Cholesky, a.view(), &mut l, par).unwrap();
             },
             lapack,
@@ -365,7 +365,7 @@ fn triangular_solve<T: BenchScalar>(
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::triangular_solve::triangular_solve(
                     Op::TriangularSolve,
                     a.view(),
@@ -412,7 +412,7 @@ fn qr<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usize, usi
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::qr::qr(Op::Qr, a.view(), &mut q, &mut r, par).unwrap();
             },
             lapack,
@@ -457,7 +457,7 @@ fn rank_revealing_qr<T: BenchScalar>(
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::qr::rank_revealing_qr(
                     Op::RankRevealingQr,
                     a.view(),
@@ -561,7 +561,7 @@ fn svd<T: BenchScalar>(
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::svd::svd(Op::Svd, a.view(), full, &mut u, &mut s, &mut vt, par).unwrap();
             },
             lapack,
@@ -603,7 +603,7 @@ fn svdvals<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usize
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::svd::svd_values(Op::SvdValues, a.view(), &mut s, par).unwrap();
             },
             lapack,
@@ -636,7 +636,7 @@ fn eigh<T: BenchScalar>(
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 if values_only {
                     tlinalg::eigh::eigh_values(Op::EighValues, a.view(), &mut wr, par).unwrap();
                 } else {
@@ -673,7 +673,7 @@ fn eig<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, usize, us
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::eig::eig(Op::Eig, a.view(), &mut w, &mut v, par).unwrap();
             },
             lapack,
@@ -714,7 +714,7 @@ fn full_piv_lu<T: BenchScalar>(c: &mut Criterion, env: &Env, cases: &[(String, u
             &mut g,
             env,
             case,
-            |par| {
+            |par: &mut Exec<'_>| {
                 tlinalg::full_piv_lu::full_piv_lu(
                     Op::FullPivLu,
                     a.view(),

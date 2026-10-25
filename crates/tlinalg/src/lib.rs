@@ -14,18 +14,17 @@
 //!
 //! Every entry point is batched (`docs/design/batched-api.md` in the repository): an input is a
 //! rank-`2 + B` [`strided_view::RawStridedRef`] `[rows, cols, b_1, ..., b_B]`, outputs are compact
-//! column-major items in batch order (first batch axis fastest). `Auto` keeps the pre-0.3 local
-//! decision in 0.3.0 (an item-extent cutoff); every forced strategy is decided by the context
-//! ([`tcontract_exec::Exec::batch_decision`], configured through
-//! [`BatchPolicy`](tcontract_exec::BatchPolicy)) on the original budget. A failing call returns
-//! the error of its lowest-indexed
-//! failing item and leaves every library-created output vector empty.
+//! column-major items in batch order (first batch axis fastest). The lane decision is the shared
+//! [`tcontract_exec::Exec::batch_decision`], configured through
+//! [`BatchPolicy`](tcontract_exec::BatchPolicy); the lanes are forked over the call's token (see
+//! "Parallelism"). A failing call returns the error of its lowest-indexed failing item and leaves
+//! every library-created output vector empty.
 //!
 //! # Borrowed workspace
 //!
 //! Every family has a `*_workspace(<shape args>, batch, exec)` query that returns the number of
-//! caller-owned bytes one call needs (worst-case alignment padding included, at the item width the
-//! batch decision grants the same call) and a `*_into(..., workspace: &mut [MaybeUninit<u8>], exec)`
+//! caller-owned bytes one call needs (worst-case alignment padding included, at the widest lane share
+//! the same call grants) and a `*_into(..., workspace: &mut [MaybeUninit<u8>], exec)`
 //! entry that carves all of its per-lane scratch from that region. The `Vec` entry points are
 //! wrappers: they reserve their outputs and allocate one block of the queried size. An undersized
 //! workspace is refused with [`Error::InsufficientWorkspace`] before any output is written. The
@@ -56,12 +55,16 @@
 //!
 //! # Parallelism
 //!
-//! Numerical work is faer's: a call installs the context's pool and passes faer the item thread
-//! count the batch decision granted. faer's count is a hint, not a strict active-thread bound (faer
-//! can expose more intra-item tasks than requested); the context bounds the outer lanes and the
-//! count requested from faer, not every native numerical thread. Admission across simultaneous
-//! calls belongs to the resource owner. `Exec::Serial` runs on the calling thread with no
-//! implementation-owned fan-out.
+//! Every entry point takes `&mut` [`tcontract_exec::Exec`], which bundles one
+//! [`strided_exec::Exec`] token (a pool reference and a budget of slots), the workspace and the
+//! batch policy. The token is the only budget and the only way work starts: the batch is split
+//! into lanes with `fork`, which divides the budget among the lanes, and each lane hands its share
+//! to faer as a plain width through `Exec::external`. A batch with at least `budget` items
+//! therefore runs one sequential item stream per slot (`Par::Seq` items); a smaller batch gives
+//! each item its share as faer width. A serial token runs on the calling thread and enters no
+//! pool; nothing falls back to an ambient pool. The token bounds the lanes it starts, not faer's
+//! internal tasks: how faer schedules a width is faer's. Admission across simultaneous calls
+//! belongs to the resource owner.
 
 #![warn(missing_docs)]
 
@@ -92,45 +95,14 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// Map a [`tcontract_exec::Par`] grant to faer's parallelism token.
+/// faer's parallelism token for a width the placement token granted.
 ///
-/// The context has already entered its pool (or kept the caller on width one), so faer runs on the
-/// registry the context installed; only the degree differs.
-pub(crate) fn faer_par(par: tcontract_exec::Par) -> faer::Par {
-    match par {
-        tcontract_exec::Par::Seq => faer::Par::Seq,
-        tcontract_exec::Par::Threads(n) => faer::Par::rayon(n.get()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::faer_par;
-    use tcontract_exec::{Exec, Pool};
-
-    /// The pool the caller lends is the pool the work runs on: not the ambient one, and not a
-    /// pool discovered from the thread the call happens to start on.
-    #[test]
-    fn the_supplied_pool_is_the_one_installed() {
-        let two = rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .expect("a 2-thread pool");
-        let three = rayon::ThreadPoolBuilder::new()
-            .num_threads(3)
-            .build()
-            .expect("a 3-thread pool");
-        let two_pool = Pool::borrow(&two);
-        let three_pool = Pool::borrow(&three);
-        let observed_two = Exec::rayon(&two_pool).install(2, |par| {
-            assert_eq!(faer_par(par).degree(), 2);
-            rayon::current_num_threads()
-        });
-        let observed_three = Exec::rayon(&three_pool).install(3, |par| {
-            assert_eq!(faer_par(par).degree(), 3);
-            rayon::current_num_threads()
-        });
-        assert_eq!(observed_two, 2);
-        assert_eq!(observed_three, 3);
+/// A pure `width -> Par` map used inside `Exec::external`, which has already entered the pool (or
+/// kept the caller on width one): width one is `Seq`, anything wider is faer's own rayon degree.
+pub(crate) fn faer_par(width: usize) -> faer::Par {
+    if width <= 1 {
+        faer::Par::Seq
+    } else {
+        faer::Par::rayon(width)
     }
 }

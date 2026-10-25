@@ -38,13 +38,12 @@ use tcontract_exec::Exec;
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when a size overflows, and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// [`Error::InvalidArgument`] when a size overflows.
 pub fn eig_workspace<T: FaerScalar>(
     n: usize,
     vectors: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     eig_bytes::<T>(Op::Eig, n, vectors, batch, exec)
 }
@@ -57,7 +56,7 @@ pub fn eig_workspace<T: FaerScalar>(
 pub fn eig_values_workspace<T: FaerScalar>(
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     eig_bytes::<T>(Op::EigValues, n, false, batch, exec)
 }
@@ -79,13 +78,12 @@ fn eig_bytes<T: FaerScalar>(
     n: usize,
     vectors: bool,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(n),
         work::<T>(n),
         || check_shape(op, n),
         |par| T::eig_req(n, vectors, par),
@@ -112,7 +110,7 @@ pub fn eig_into<T: FaerScalar>(
     values: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
     vectors: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -122,7 +120,6 @@ pub fn eig_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| T::eig_req(n, true, par),
@@ -133,7 +130,6 @@ pub fn eig_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (
             fixed_out(values, n, "eigenvalues"),
@@ -163,7 +159,7 @@ pub fn eig_values_into<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut [MaybeUninit<<T as ScalarEntity>::Complex>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -172,7 +168,6 @@ pub fn eig_values_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| T::eig_req(n, false, par),
@@ -183,7 +178,6 @@ pub fn eig_values_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (fixed_out(values, n, "eigenvalues"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -223,7 +217,7 @@ pub fn eig_values_into<T: FaerScalar>(
 /// let (mut w, mut v) = (Vec::<Complex64>::new(), Vec::new());
 /// eig(
 ///     Op::Eig, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w, &mut v,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert!((w[0].im.abs() - 1.0).abs() < 1e-12 && (w[0].conj() - w[1]).norm() < 1e-12);
 /// ```
@@ -232,7 +226,7 @@ pub fn eig<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Complex>,
     vectors: &mut Vec<<T as ScalarEntity>::Complex>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     values.clear();
     vectors.clear();
@@ -287,7 +281,7 @@ pub fn eig<T: FaerScalar>(
 /// let mut w = Vec::<Complex64>::new();
 /// eig_values(
 ///     Op::EigValues, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(w.len(), 2);
 /// ```
@@ -295,7 +289,7 @@ pub fn eig_values<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     values: &mut Vec<<T as ScalarEntity>::Complex>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     values.clear();
     let input = BatchedRef::square(op, "input", input)?;

@@ -27,33 +27,30 @@ use tcontract_exec::Exec;
 ///
 /// The order is the borrowed-workspace contract, in one place for every family:
 ///
-/// 1. resolve strategy availability (a forced route this provider cannot honor is refused even for
-///    an empty batch);
+/// 1. resolve the route from the shared batch decision (arithmetic; it never fails);
 /// 2. return `None` for `batch == 0`, before any requirement is built, so a shape-only huge extent
 ///    never turns into a huge (or overflowing) byte count;
 /// 3. run the family's checked shape products — the values every requirement builder multiplies,
 ///    including the ones inside faer's recommendation helpers;
-/// 4. build the requirement at the item width the route grants and return `(lanes, per_lane_bytes)`.
+/// 4. build the requirement at the widest lane share the route grants and return `(lanes, per_lane_bytes)`.
 pub(crate) fn lane_requirement(
     op: Op,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
     batch: usize,
-    max_item_dim: Option<usize>,
     item_muladds: f64,
     check: impl FnOnce() -> Result<()>,
     req: impl FnOnce(faer::Par) -> StackReq,
 ) -> Result<Option<(usize, usize)>> {
-    let (lanes, item_threads) = crate::batch::decide(op, exec, batch, max_item_dim, item_muladds)?;
+    let route = crate::batch::decide(exec, batch, item_muladds);
     if batch == 0 {
         return Ok(None);
     }
     check()?;
-    let par = crate::batch::route_par(lanes, item_threads);
-    let bytes = req(par).unaligned_bytes_required();
+    let bytes = req(route.par()).unaligned_bytes_required();
     if bytes == usize::MAX {
         return Err(overflow(op));
     }
-    Ok(Some((lanes, bytes)))
+    Ok(Some((route.lanes, bytes)))
 }
 
 /// One lane's requirement times the resolved lane count.

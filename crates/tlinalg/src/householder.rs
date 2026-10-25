@@ -236,13 +236,12 @@ fn compact_factor_bytes<T: FaerScalar>(
     rows: usize,
     cols: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(rows.max(cols)),
         work::<T>(rows, cols),
         || check_shape::<T::Entity>(op, rows, cols),
         |_| compact_req::<T::Entity>(rows, cols),
@@ -258,13 +257,12 @@ fn compact_factor_bytes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::HouseholderQr`), and the executor's refusal for a forced strategy this route cannot
-/// honor.
+/// is `Op::HouseholderQr`).
 pub fn compact_factor_workspace<T: FaerScalar>(
     rows: usize,
     cols: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     // The compact-Householder scratch depends on the shape only: faer's sequence-apply request
     // takes no parallelism token, so the per-lane size is width-independent (the total still
@@ -294,7 +292,7 @@ pub fn compact_factor_into<T: FaerScalar>(
     data: &mut [T],
     coeff: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let matrix_len = checked_product(op, "matrix", &[rows, cols])?;
     let item_muladds = work::<T>(rows, cols);
@@ -302,7 +300,6 @@ pub fn compact_factor_into<T: FaerScalar>(
         op,
         exec,
         batch,
-        Some(rows.max(cols)),
         item_muladds,
         || check_shape::<T::Entity>(op, rows, cols),
         |_| compact_req::<T::Entity>(rows, cols),
@@ -313,7 +310,6 @@ pub fn compact_factor_into<T: FaerScalar>(
         op,
         batch,
         exec,
-        Some(rows.max(cols)),
         item_muladds,
         &mut (
             in_place(data, matrix_len, "matrix"),
@@ -351,7 +347,7 @@ pub fn compact_factor_into<T: FaerScalar>(
 /// let mut a = [3.0_f64, 4.0];
 /// let mut coeff = Vec::new();
 /// compact_factor(
-///     Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Exec::serial(),
+///     Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, &mut Exec::serial(),
 /// ).unwrap();
 /// assert!((a[0].abs() - 5.0).abs() < 1e-12);
 /// assert_eq!(coeff.len(), 1);
@@ -365,7 +361,7 @@ pub fn compact_factor<T: FaerScalar>(
     batch: usize,
     data: &mut [T],
     coeff: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     coeff.clear();
     // The published order: shape validation before any workspace query or allocation.
@@ -470,16 +466,12 @@ fn apply_reflectors_bytes<T: FaerScalar>(
     shape: ReflectorShape,
     batch: usize,
     transpose: bool,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
-    let ReflectorShape {
-        rows, a_cols, cols, ..
-    } = shape;
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(batch::auto_extent(rows.max(a_cols), cols)),
         apply_work::<T>(shape),
         || check_apply_shape::<T>(op, shape),
         |_| apply_req::<T>(shape, transpose),
@@ -495,13 +487,12 @@ fn apply_reflectors_bytes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows or the reflector
-/// count exceeds the matrix dimensions (canonical `Op` is `Op::HouseholderQrQColumns`), and the
-/// executor's refusal for a forced strategy this route cannot honor.
+/// count exceeds the matrix dimensions (canonical `Op` is `Op::HouseholderQrQColumns`).
 pub fn apply_reflectors_workspace<T: FaerScalar>(
     shape: ReflectorShape,
     batch: usize,
     transpose: bool,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     apply_reflectors_bytes::<T>(Op::HouseholderQrQColumns, shape, batch, transpose, exec)
 }
@@ -529,7 +520,7 @@ pub fn apply_reflectors_into<T: FaerScalar>(
     c: &mut [T],
     transpose: bool,
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let ReflectorShape {
         rows,
@@ -560,7 +551,6 @@ pub fn apply_reflectors_into<T: FaerScalar>(
         op,
         exec,
         batch,
-        Some(batch::auto_extent(rows.max(a_cols), cols)),
         item_muladds,
         || check_apply_shape::<T>(op, shape),
         |_| apply_req::<T>(shape, transpose),
@@ -571,7 +561,6 @@ pub fn apply_reflectors_into<T: FaerScalar>(
         op,
         batch,
         exec,
-        Some(batch::auto_extent(rows.max(a_cols), cols)),
         item_muladds,
         &mut (in_place(c, c_len, "C"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -658,12 +647,12 @@ pub fn apply_reflectors_into<T: FaerScalar>(
 ///
 /// let mut a = [3.0_f64, 4.0];
 /// let mut coeff = Vec::new();
-/// compact_factor(Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, Exec::serial()).unwrap();
+/// compact_factor(Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, &mut Exec::serial()).unwrap();
 /// // Q applied to e1 is the first column of Q, which is ±(3, 4)/5.
 /// let mut c = [1.0_f64, 0.0];
 /// let shape = ReflectorShape { rows: 2, a_cols: 1, cols: 1, k: 1 };
 /// apply_reflectors(
-///     Op::HouseholderQrQColumns, shape, 1, &a, &coeff, &mut c, false, Exec::serial(),
+///     Op::HouseholderQrQColumns, shape, 1, &a, &coeff, &mut c, false, &mut Exec::serial(),
 /// ).unwrap();
 /// assert!((c[0].abs() - 0.6).abs() < 1e-12);
 /// ```
@@ -677,7 +666,7 @@ pub fn apply_reflectors<T: FaerScalar>(
     coeff: &[T],
     c: &mut [T],
     transpose: bool,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     // The published order: shape and buffer validation before any workspace query or allocation.
     check_apply_shape::<T>(op, shape)?;

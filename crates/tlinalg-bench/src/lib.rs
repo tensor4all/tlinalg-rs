@@ -82,10 +82,10 @@ impl Env {
 
     /// Build a pool with the caller's explicit thread budget.
     pub fn with_threads(threads: NonZeroUsize) -> Self {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads.get())
+        let pool = strided_exec::Pool::builder()
+            .threads(threads.get())
             .build()
-            .expect("a benchmark rayon pool");
+            .expect("a benchmark pool");
         Self {
             pool: tcontract_exec::Pool::owned(pool),
             threads,
@@ -100,8 +100,7 @@ impl Env {
 
     /// The token for the pool, with the cached `TLINALG_BENCH_STRATEGY` policy applied.
     pub fn par(&self) -> tcontract_exec::Exec<'_> {
-        tcontract_exec::Exec::rayon(&self.pool)
-            .with_budget(self.threads.get())
+        tcontract_exec::Exec::new(&self.pool, self.threads.get())
             .expect("a nonzero benchmark budget")
             .with_batch_policy(self.policy)
     }

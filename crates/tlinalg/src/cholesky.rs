@@ -75,18 +75,17 @@ fn work<T: ScalarEntity>(n: usize) -> f64 {
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::Cholesky`), and the executor's refusal for a forced strategy this route cannot honor.
-pub fn cholesky_workspace<T: FaerScalar>(n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+/// is `Op::Cholesky`).
+pub fn cholesky_workspace<T: FaerScalar>(n: usize, batch: usize, exec: &Exec<'_>) -> Result<usize> {
     cholesky_bytes::<T>(Op::Cholesky, n, batch, exec)
 }
 
 /// [`cholesky_workspace`] with the caller's operation, so a wrapper reports its own `Op`.
-fn cholesky_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+fn cholesky_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: &Exec<'_>) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(n),
         work::<T>(n),
         || check_shape(op, n),
         |par| faer_req(req::<T::Entity>(n, par)),
@@ -113,7 +112,7 @@ pub fn cholesky_into<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     l: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -123,7 +122,6 @@ pub fn cholesky_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| faer_req(req::<T::Entity>(n, par)),
@@ -134,7 +132,6 @@ pub fn cholesky_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (fixed_out(l, l_len, "L"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -170,7 +167,7 @@ pub fn cholesky_into<T: FaerScalar>(
 /// let mut l = Vec::new();
 /// cholesky(
 ///     Op::Cholesky, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut l,
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert!((l[0] - 2.0).abs() < 1e-12 && l[2] == 0.0);
 /// ```
@@ -178,7 +175,7 @@ pub fn cholesky<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     l: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     l.clear();
     let input = BatchedRef::square(op, "input", input)?;

@@ -44,7 +44,7 @@ fn full_piv_lu_into_typed<T: FaerScalar>(
     q: *mut c_void,
     parity: *mut c_void,
     sizes: &tlinalg_full_piv_lu_out,
-    parallel: Exec<'_>,
+    parallel: &mut Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut pp, mut ll, mut uu, mut qq, mut par) =

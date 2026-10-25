@@ -1,17 +1,20 @@
-//! Batch-lane scheduling: the temporary step-1 Auto rule, the exact partition, and forced
-//! strategies.
+//! Batch-lane scheduling: the lane route over the token, the exact partition, forced strategies
+//! and the ledger bound.
 //!
-//! tlinalg-rs#58 "Defaults" and tcontract-rs#123 step 1 keep tlinalg's pre-0.3 `Auto` fan-out in
-//! 0.3: outer lanes only while the largest item extent is at most 64 (packed LU excepted), RHS
-//! columns counted by default behind the `TLINALG_AUTO_RHS` switch. A one-lane decision now takes
-//! its item width from the shared work model, so a small item stays on the caller. These tests pin
-//! the decisions on a table of `(items, n, k, budget)`, including RHS-heavy solves and reflector
-//! targets, and pin the exact nonempty partition, the forced routes and the typed vendor refusal.
+//! The route is the shared `Exec::batch_decision` (see `crate::batch::decide`): `Auto` fans out
+//! whenever the decision gives two or more lanes and then forks the whole budget over them, so a
+//! batch with at least `budget` items runs `Par::Seq` items and a smaller batch gives every item
+//! its share as faer width. These tests pin the decisions on a table of `(items, budget)`, the
+//! widths the lanes receive (they add up to the budget), the exact nonempty partition, the forced
+//! routes, which pool the items run on, and, through the `strided-exec` ledger, that no more
+//! tasks than the budget are ever live.
 
-use crate::batch::{auto_extent_with, decide, fixed_out, run, ScratchArena, VecOut};
+use crate::batch::{decide, fixed_out, run, Route, ScratchArena, VecOut};
 use crate::Op;
 use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::cell::Cell;
+use std::sync::Mutex;
+use strided_exec::ledger;
 use strided_view::{RawStridedMut, RawStridedRef};
 use tcontract_exec::batch::{BatchPolicy, BatchStrategy, WorkModel};
 use tcontract_exec::{Exec, Pool};
@@ -26,91 +29,105 @@ pub(in crate::batch) fn record_lanes(lanes: usize) {
     LAST_LANES.set(lanes);
 }
 
-/// An owned pool, kept alive by `Pool::owned`, so tests can return a token borrowing it.
-fn owned_pool(threads: usize) -> Pool<'static> {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
+/// An owned pool whose workers are named `{name}-{index}`, so a test can tell which pool ran an
+/// item.
+fn named_pool(name: &'static str, threads: usize) -> Pool<'static> {
+    let pool = strided_exec::Pool::builder()
+        .threads(threads)
+        .thread_name(move |index| format!("{name}-{index}"))
         .build()
         .unwrap();
-    Pool::owned(tp)
+    Pool::owned(pool)
+}
+
+fn owned_pool(threads: usize) -> Pool<'static> {
+    named_pool("test", threads)
 }
 
 fn token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
-    Exec::rayon(pool).with_budget(budget).unwrap()
+    Exec::new(pool, budget).unwrap()
 }
 
-/// The step-1 Auto decision, written out independently of the driver. `item_threads` is the width
-/// the shared work model already resolved for the one-lane case.
-fn legacy_auto(
-    batch: usize,
-    budget: usize,
-    max_item_dim: Option<usize>,
-    item_threads: usize,
-) -> (usize, usize) {
-    let budget = budget.max(1);
-    let fans_out = budget > 1 && batch >= budget && max_item_dim.is_none_or(|dim| dim <= 64);
-    if fans_out {
-        (budget.min(batch), 1)
+/// A token whose default-strategy model prices every multiply-add at a millisecond, so that even
+/// the tiny items of these scheduling tests carry enough estimated work to fan out. The tests of
+/// the work gate itself use [`token`] with the default model.
+pub(super) fn eager_token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
+    let model = WorkModel::default().with_muladds_per_ns(1e-6);
+    Exec::new(pool, budget)
+        .unwrap()
+        .with_batch_policy(BatchPolicy::new(BatchStrategy::Auto).with_model(model))
+}
+
+/// The ledger root of a token made by `Exec::new`.
+fn root(exec: &mut Exec<'_>) -> u64 {
+    exec.token()
+        .ledger_root()
+        .expect("a pooled token is a root")
+}
+
+/// Whether the current thread is a worker of the pool named `name`.
+fn on_pool(name: &str) -> bool {
+    std::thread::current()
+        .name()
+        .is_some_and(|thread| thread.starts_with(name))
+}
+
+/// The decision table, written out independently of the driver for `Auto` and the default model
+/// (no work gate): lanes are `min(budget, batch)` when that is at least two.
+fn expected_lanes(batch: usize, budget: usize) -> usize {
+    if batch == 0 {
+        0
     } else {
-        (1, item_threads.clamp(1, budget))
+        batch.min(budget).max(1)
     }
 }
 
 #[test]
-fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
+fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
     let pool = owned_pool(8);
-    // (batch, budget, max_item_dim, lanes, item_threads). `dim` is the legacy extent the family
-    // reports (`None` is packed LU's exception); `(5, 4)` is the exact-partition fix, four nonempty
-    // ranges where the old `div_ceil` split produced three.
-    for (batch, budget, dim, lanes, hint) in [
-        (0usize, 4usize, Some(1usize), 0usize, 0usize),
-        (1, 4, Some(1), 1, 1),
-        (3, 4, Some(1), 1, 1),
-        (12, 1, Some(1), 1, 1),
-        (12, 2, Some(1), 2, 1),
-        (12, 3, Some(1), 3, 1),
-        (12, 4, Some(1), 4, 1),
-        (16, 99, Some(1), 8, 1),
-        (5, 4, Some(1), 4, 1),
-        (8, 4, Some(64), 4, 1),
-        (8, 4, Some(65), 1, 1),
-        (8, 4, None, 4, 1),
+    // (batch, budget). `(5, 4)` is the exact-partition case: four nonempty ranges. `(3, 4)` is a
+    // batch smaller than the budget: three lanes whose shares are 2, 1 and 1.
+    for (batch, budget) in [
+        (0usize, 4usize),
+        (1, 4),
+        (3, 4),
+        (12, 1),
+        (12, 2),
+        (12, 3),
+        (12, 4),
+        (16, 99),
+        (5, 4),
+        (8, 8),
     ] {
-        let (want_lanes, _) = if batch == 0 {
-            (0, 0)
-        } else {
-            legacy_auto(batch, budget.min(8), dim, hint)
-        };
-        assert_eq!(lanes, want_lanes, "table row {batch}/{budget}/{dim:?}");
+        let mut exec = eager_token(&pool, budget);
+        let granted = exec.budget();
+        let lanes = expected_lanes(batch, granted);
         let mut values = vec![99];
         let mut values_out = VecOut::new(&mut values, batch);
-        let scratch = AtomicUsize::new(0);
+        let widths = Mutex::new(Vec::new());
         let active = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
         let seen: Vec<_> = (0..batch).map(|_| AtomicUsize::new(0)).collect();
+        let max_width = decide(&exec, batch, 1.0).item_width();
         let caller = std::thread::current().id();
+        let root = root(&mut exec);
         LAST_LANES.set(0);
         run(
             Op::Svd,
             batch,
-            token(&pool, budget),
-            dim,
+            &mut exec,
             1.0,
             &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |par, _| {
-                scratch.fetch_add(1, SeqCst);
-                assert_eq!(par.degree(), hint);
+                widths.lock().unwrap().push(par.degree());
             },
             |index, (values,), (), par| {
-                assert_eq!(par.degree(), hint);
-                if lanes == 1 && hint == 1 {
-                    assert_eq!(std::thread::current().id(), caller);
+                assert!(par.degree() >= 1 && par.degree() <= max_width);
+                if lanes <= 1 && max_width == 1 {
+                    assert_eq!(std::thread::current().id(), caller, "a serial route");
                 } else {
-                    assert!(
-                        pool.rayon_pool().current_thread_index().is_some(),
-                        "wrong numerical pool"
-                    );
+                    assert!(on_pool("test"), "wrong numerical pool");
                 }
                 let n = active.fetch_add(1, SeqCst) + 1;
                 peak.fetch_max(n, SeqCst);
@@ -124,36 +141,49 @@ fn driver_bounds_lanes_and_hints_and_visits_each_item_once() {
             },
         )
         .unwrap();
+        assert_eq!(LAST_LANES.get(), if batch == 0 { 0 } else { lanes });
+        let widths = widths.into_inner().unwrap();
         assert_eq!(
-            LAST_LANES.get(),
+            widths.len(),
             lanes,
-            "batch={batch}, budget={budget}, dim={dim:?}"
+            "one scratch per lane, {batch}/{budget}"
         );
-        assert_eq!(scratch.load(SeqCst), lanes);
+        if lanes > 1 {
+            // The shares add up to the budget, and a batch with at least `budget` items runs every
+            // item sequentially (`Par::Seq`).
+            assert_eq!(widths.iter().sum::<usize>(), granted, "{batch}/{budget}");
+            if batch >= granted {
+                assert!(widths.iter().all(|&w| w == 1), "{batch}/{budget}");
+            }
+        }
         values_out.publish();
         assert_eq!(values, (0..batch).collect::<Vec<_>>());
         assert!(seen.iter().all(|n| n.load(SeqCst) == 1));
         assert_eq!(active.load(SeqCst), 0);
+        // The token's budget is the only bound on live tasks, at every nesting depth.
+        assert!(
+            ledger::max_live(root) <= granted,
+            "{batch}/{budget}: max live {} > budget {granted}",
+            ledger::max_live(root)
+        );
         // This probes driver callback concurrency, not faer's internal numerical concurrency.
-        assert!(peak.load(SeqCst) <= budget.min(8));
+        assert!(peak.load(SeqCst) <= granted);
     }
 }
 
-/// A single small item must not hand the whole pool to faer or enter the pool at all. The shared
-/// work model sizes one item below its serial threshold, so the driver resolves `(1, 1)` and
-/// `Exec::install(1, ..)` runs the item inline on the caller.
+/// A single small item must not hand the pool to faer or enter it at all. The shared work model
+/// sizes one item below its serial threshold, so the route is one lane of one slot and the item
+/// runs inline on the caller: the ledger records no pool entry.
 #[test]
 fn a_single_small_item_stays_on_the_caller_at_width_one() {
     let pool = owned_pool(4);
-    let exec = token(&pool, 4);
+    let mut exec = token(&pool, 4);
     // A 4x4 solve is a few dozen multiply-adds, far below the model's serial threshold.
     let item_muladds = 4.0 * 4.0 * 4.0;
-    assert_eq!(
-        decide(Op::Solve, exec, 1, Some(4), item_muladds).unwrap(),
-        (1, 1)
-    );
+    assert_eq!(decide(&exec, 1, item_muladds), Route { lanes: 1, slots: 1 });
 
     let caller = std::thread::current().id();
+    let root = root(&mut exec);
     let mut values = Vec::new();
     let mut values_out = VecOut::new(&mut values, 1);
     let scratch = AtomicUsize::new(0);
@@ -161,8 +191,7 @@ fn a_single_small_item_stays_on_the_caller_at_width_one() {
     run(
         Op::Solve,
         1,
-        exec,
-        Some(4),
+        &mut exec,
         item_muladds,
         &mut (fixed_out(values_out.spare(), 1, "values"),),
         ScratchArena::new(&mut [], 0),
@@ -173,7 +202,7 @@ fn a_single_small_item_stays_on_the_caller_at_width_one() {
         |index, (values,), (), par| {
             assert_eq!(par.degree(), 1);
             assert_eq!(std::thread::current().id(), caller);
-            assert!(pool.rayon_pool().current_thread_index().is_none());
+            assert!(!on_pool("test"));
             values.push(index);
             Ok(())
         },
@@ -181,37 +210,109 @@ fn a_single_small_item_stays_on_the_caller_at_width_one() {
     .unwrap();
     assert_eq!(LAST_LANES.get(), 1);
     assert_eq!(scratch.load(SeqCst), 1);
+    assert_eq!(ledger::installs(root), 0, "no pool entry for a tiny item");
+    assert!(ledger::max_live(root) <= 1);
     values_out.publish();
     assert_eq!(values, [0]);
 }
 
+/// A batch of tiny items under the default policy stays serial and never enters the pool: the
+/// shared work model narrows the tiny total work to width one, so no lane fan-out pays the pool
+/// entry (this replaces the deleted per-dimension cutoff).
+#[test]
+fn a_tiny_batch_does_not_enter_the_pool() {
+    let pool = owned_pool(4);
+    let mut exec = token(&pool, 4);
+    let batch = 8;
+    let item_muladds = 4.0 * 4.0 * 4.0;
+    assert_eq!(
+        decide(&exec, batch, item_muladds),
+        Route { lanes: 1, slots: 1 }
+    );
+
+    let root = root(&mut exec);
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, batch);
+    LAST_LANES.set(0);
+    run(
+        Op::Solve,
+        batch,
+        &mut exec,
+        item_muladds,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| assert_eq!(par.degree(), 1),
+        |index, (values,), (), par| {
+            assert_eq!(par.degree(), 1);
+            assert!(!on_pool("test"));
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    assert_eq!(ledger::installs(root), 0, "no pool entry for a tiny batch");
+    values_out.publish();
+    assert_eq!(values, (0..batch).collect::<Vec<_>>());
+}
+
 /// One large item still receives the whole budget: the work model's width is the full pool, and
-/// the driver installs it once for that item.
+/// the driver enters the pool once for that item.
 #[test]
 fn a_single_large_item_still_gets_the_whole_budget() {
     let pool = owned_pool(4);
-    let exec = token(&pool, 4);
+    let mut exec = token(&pool, 4);
     let item_muladds = 1e9;
-    assert_eq!(
-        decide(Op::Svd, exec, 1, Some(1024), item_muladds).unwrap(),
-        (1, 4)
-    );
+    assert_eq!(decide(&exec, 1, item_muladds), Route { lanes: 1, slots: 4 });
 
+    let root = root(&mut exec);
     let mut values = Vec::new();
     let mut values_out = VecOut::new(&mut values, 1);
     LAST_LANES.set(0);
     run(
         Op::Svd,
         1,
-        exec,
-        Some(1024),
+        &mut exec,
         item_muladds,
         &mut (fixed_out(values_out.spare(), 1, "values"),),
         ScratchArena::new(&mut [], 0),
         |par, _| assert_eq!(par.degree(), 4),
         |index, (values,), (), par| {
             assert_eq!(par.degree(), 4);
-            assert!(pool.rayon_pool().current_thread_index().is_some());
+            assert!(on_pool("test"));
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    assert_eq!(ledger::installs(root), 1, "the pool is entered once");
+    assert!(ledger::max_live(root) <= 4);
+    values_out.publish();
+    assert_eq!(values, [0]);
+}
+
+/// A serial token resolves to one lane of one slot whatever the batch, and every item runs on the
+/// calling thread at `Par::Seq`.
+#[test]
+fn a_serial_token_runs_every_item_on_the_caller() {
+    let caller = std::thread::current().id();
+    let mut exec = Exec::serial();
+    assert_eq!(decide(&exec, 8, 1e9), Route { lanes: 1, slots: 1 });
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 8);
+    LAST_LANES.set(0);
+    run(
+        Op::Svd,
+        8,
+        &mut exec,
+        1e9,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| assert_eq!(par.degree(), 1),
+        |index, (values,), (), par| {
+            assert_eq!(par.degree(), 1);
+            assert_eq!(std::thread::current().id(), caller);
             values.push(index);
             Ok(())
         },
@@ -219,81 +320,63 @@ fn a_single_large_item_still_gets_the_whole_budget() {
     .unwrap();
     assert_eq!(LAST_LANES.get(), 1);
     values_out.publish();
-    assert_eq!(values, [0]);
+    assert_eq!(values, (0..8).collect::<Vec<_>>());
 }
 
+/// The batch runs on the pool the caller's token names, from any calling thread, and a budget
+/// above the pool width is clamped once, by `Exec::new`.
 #[test]
-fn auto_extent_switch_counts_rhs_by_default() {
-    // Default (include): the RHS/reflector extent wins when it is larger.
-    assert_eq!(auto_extent_with(2, 65, true), 65);
-    assert_eq!(auto_extent_with(16, 1, true), 16);
-    // Exclude: the matrix order alone decides.
-    assert_eq!(auto_extent_with(2, 65, false), 2);
-    assert_eq!(auto_extent_with(16, 1, false), 16);
-}
+fn work_runs_on_the_selected_pool_whoever_calls() {
+    let selected = named_pool("selected", 4);
+    let foreign = named_pool("foreign", 2);
+    let one = named_pool("one", 1);
+    assert_eq!(
+        token(&one, 99).budget(),
+        1,
+        "budget clamps to the pool size"
+    );
 
-#[test]
-fn effective_one_stays_on_caller_and_nested_work_uses_only_selected_pool() {
-    let selected = owned_pool(4);
-    let foreign = owned_pool(2);
-    let one = owned_pool(1);
-    let check = |exec: Exec<'_>, expected_hint: usize, stays: bool| {
-        let caller = std::thread::current().id();
-        exec.install(expected_hint, |par| {
-            assert_eq!(crate::faer_par(par).degree(), expected_hint);
-            if stays {
-                assert_eq!(std::thread::current().id(), caller);
-            } else {
-                assert!(selected.rayon_pool().current_thread_index().is_some());
-                assert!(foreign.rayon_pool().current_thread_index().is_none());
-            }
-        });
-    };
-    check(token(&selected, 1), 1, true);
-    check(token(&one, 4), 1, true);
-    foreign
-        .rayon_pool()
-        .install(|| check(token(&selected, 1), 1, true));
-    foreign
-        .rayon_pool()
-        .install(|| check(token(&selected, 3), 3, false));
-    selected
-        .rayon_pool()
-        .install(|| check(token(&selected, 3), 3, false));
-    foreign.rayon_pool().install(|| {
+    let run_on_selected = |what: &str| {
+        let mut exec = eager_token(&selected, 2);
+        let root = root(&mut exec);
         let mut values = Vec::new();
         let mut values_out = VecOut::new(&mut values, 8);
         run(
             Op::Qr,
             8,
-            token(&selected, 2),
-            Some(1),
+            &mut exec,
             1.0,
             &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |_, _| (),
             |index, (values,), (), par| {
                 assert_eq!(par.degree(), 1);
-                assert!(selected.rayon_pool().current_thread_index().is_some());
-                assert!(foreign.rayon_pool().current_thread_index().is_none());
+                assert!(on_pool("selected"), "{what}: wrong pool");
                 values.push(index);
                 Ok(())
             },
         )
         .unwrap();
+        assert!(ledger::max_live(root) <= 2, "{what}");
         values_out.publish();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
-    });
-    assert_eq!(
-        token(&one, 99).budget(),
-        1,
-        "budget clamps to the pool size"
-    );
+    };
+    run_on_selected("plain thread");
+    // Called from a worker of another pool: the foreign worker waits, the selected pool works.
+    let mut foreign_exec = token(&foreign, 2);
+    foreign_exec
+        .token()
+        .external(|_| run_on_selected("foreign worker"));
+    // And from a worker of the selected pool itself: the batch runs in place.
+    token(&selected, 2)
+        .token()
+        .external(|_| run_on_selected("selected worker"));
 }
 
-/// Forced strategies are clamped, never silently downgraded, and `item_threads` reaches both the
+/// Forced strategies are clamped, never silently downgraded, and the lane width reaches both the
 /// scratch and the numerical execution inside each lane. Every grant is asserted directly, so an
-/// oversized grant cannot hide behind a minimum.
+/// oversized grant cannot hide behind a minimum, and the ledger bounds the live tasks by the
+/// budget.
 #[test]
 fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
     let pool = owned_pool(8);
@@ -309,7 +392,8 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             2,
         ),
     ] {
-        let exec = token(&pool, 4).with_batch_policy(BatchPolicy::new(strategy));
+        let mut exec = token(&pool, 4).with_batch_policy(BatchPolicy::new(strategy));
+        let root = root(&mut exec);
         let mut values = Vec::new();
         let mut values_out = VecOut::new(&mut values, 8);
         let scratch_builds = AtomicUsize::new(0);
@@ -318,8 +402,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
         run(
             Op::Svd,
             8,
-            exec,
-            Some(1),
+            &mut exec,
             1.0,
             &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
@@ -339,6 +422,7 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
         // Exactly one scratch per lane and every item visited once.
         assert_eq!(scratch_builds.load(SeqCst), lanes, "{strategy:?}");
         assert_eq!(items.load(SeqCst), 8, "{strategy:?}");
+        assert!(ledger::max_live(root) <= 4, "{strategy:?}");
         values_out.publish();
         assert_eq!(values, (0..8).collect::<Vec<_>>());
     }
@@ -388,7 +472,7 @@ fn forced_kernels_match_sequential_in_the_residual() {
     };
     let mut seq_q = Vec::new();
     let mut seq_r = Vec::new();
-    crate::qr::qr(Op::Qr, view, &mut seq_q, &mut seq_r, Exec::serial()).unwrap();
+    crate::qr::qr(Op::Qr, view, &mut seq_q, &mut seq_r, &mut Exec::serial()).unwrap();
     assert!(residual(&seq_q, &seq_r) < 1e-12, "sequential baseline");
     let pool = owned_pool(4);
     for strategy in [
@@ -398,9 +482,9 @@ fn forced_kernels_match_sequential_in_the_residual() {
             lanes: core::num::NonZeroUsize::new(2).unwrap(),
         },
     ] {
-        let exec = token(&pool, 2).with_batch_policy(BatchPolicy::new(strategy));
+        let mut exec = token(&pool, 2).with_batch_policy(BatchPolicy::new(strategy));
         let (mut q, mut r) = (Vec::new(), Vec::new());
-        crate::qr::qr(Op::Qr, view, &mut q, &mut r, exec).unwrap();
+        crate::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();
         assert!(
             residual(&q, &r) < 1e-10,
             "{strategy:?}: QR does not reproduce A"
@@ -409,21 +493,21 @@ fn forced_kernels_match_sequential_in_the_residual() {
     }
 }
 
-/// The legacy Auto measure counts the RHS/reflector target extent by default, exactly as 0.2 did:
-/// a 65-column solve or reflector application stays on one lane where the 64-column case fans out.
+/// The `Auto` lane count does not depend on the item extent: a 65-column solve or reflector
+/// application fans out exactly like the 64-column case, for every family.
 #[test]
-fn auto_counts_rhs_and_reflector_extents() {
+fn auto_lanes_do_not_depend_on_the_item_extent() {
     use crate::householder::{apply_reflectors, ReflectorShape};
     use crate::triangular_solve::{triangular_solve, TriangularSolveFlags};
     let pool = owned_pool(4);
-    let exec = token(&pool, 2);
+    let mut exec = eager_token(&pool, 2);
 
     let n = 2;
     let batch = 4;
     let a = [1.0_f64, 0.0, 0.0, 1.0];
     let adims = [n, n, batch];
     let astrides = [1, n as isize, 0];
-    for (width, lanes) in [(64usize, 2usize), (65, 1)] {
+    for (width, lanes) in [(64usize, 2usize), (65, 2)] {
         let dims = [n, width, batch];
         let strides = [1, n as isize, (n * width) as isize];
         let mut x = vec![1.0; n * width * batch];
@@ -433,7 +517,7 @@ fn auto_counts_rhs_and_reflector_extents() {
             None,
             RawStridedMut::new(&mut x, &dims, &strides, 0).unwrap(),
             false,
-            exec,
+            &mut exec,
         )
         .unwrap();
         assert_eq!(LAST_LANES.get(), lanes, "solve width={width}");
@@ -445,7 +529,7 @@ fn auto_counts_rhs_and_reflector_extents() {
         transpose_a: false,
         unit_diagonal: false,
     };
-    for (width, lanes) in [(64usize, 2usize), (65, 1)] {
+    for (width, lanes) in [(64usize, 2usize), (65, 2)] {
         let dims = [n, width, batch];
         let strides = [1, n as isize, (n * width) as isize];
         let b = vec![3.0; n * width * batch];
@@ -456,7 +540,7 @@ fn auto_counts_rhs_and_reflector_extents() {
             RawStridedRef::new(&b, &dims, &strides, 0).unwrap(),
             flags,
             &mut x,
-            exec,
+            &mut exec,
         )
         .unwrap();
         assert_eq!(LAST_LANES.get(), lanes, "triangular width={width}");
@@ -465,9 +549,9 @@ fn auto_counts_rhs_and_reflector_extents() {
     let rows = 2;
     for (a_cols, cols, lanes) in [
         (64usize, 1usize, 2usize),
-        (65, 1, 1),
+        (65, 1, 2),
         (1, 64, 2),
-        (1, 65, 1),
+        (1, 65, 2),
     ] {
         let mut state = vec![0.0; rows * a_cols * batch];
         for item in state.chunks_exact_mut(rows * a_cols) {
@@ -487,7 +571,7 @@ fn auto_counts_rhs_and_reflector_extents() {
             &[2.0; 4],
             &mut c,
             false,
-            exec,
+            &mut exec,
         )
         .unwrap();
         assert_eq!(
@@ -498,13 +582,12 @@ fn auto_counts_rhs_and_reflector_extents() {
     }
 }
 
-/// The packed routes keep their no-cutoff exception: `max_item_dim = None`, so a large item still
-/// fans out.
+/// The packed routes fan out over the budget like every other family, also for a large item.
 #[test]
-fn packed_routes_keep_the_no_cutoff_exception() {
+fn packed_routes_fan_out_for_a_large_item() {
     use crate::packed_lu::{factor, factor_solve, solve_prepared};
     let pool = owned_pool(4);
-    let exec = token(&pool, 2);
+    let mut exec = eager_token(&pool, 2);
     let batch = 4;
     let n = 65;
     let mut lu = vec![0.0; n * n * batch];
@@ -515,7 +598,16 @@ fn packed_routes_keep_the_no_cutoff_exception() {
     }
     let mut pivots = vec![0; n * batch];
     let mut parity = vec![0.0; batch];
-    factor(Op::LuFactor, n, n, &mut lu, &mut pivots, &mut parity, exec).unwrap();
+    factor(
+        Op::LuFactor,
+        n,
+        n,
+        &mut lu,
+        &mut pivots,
+        &mut parity,
+        &mut exec,
+    )
+    .unwrap();
     assert_eq!(LAST_LANES.get(), 2);
     let dims = [n, n, batch];
     let strides = [1, n as isize, (n * n) as isize];
@@ -530,7 +622,7 @@ fn packed_routes_keep_the_no_cutoff_exception() {
         &mut rhs,
         false,
         false,
-        exec,
+        &mut exec,
     )
     .unwrap();
     assert_eq!(LAST_LANES.get(), 2);
@@ -541,7 +633,7 @@ fn packed_routes_keep_the_no_cutoff_exception() {
         &mut lu,
         &mut pivots,
         &mut rhs,
-        exec,
+        &mut exec,
     )
     .unwrap();
     assert_eq!(LAST_LANES.get(), 2);
@@ -558,7 +650,7 @@ fn work_estimates_do_not_overflow_before_the_empty_exit() {
     let empty: [f64; 0] = [];
     let view = RawStridedRef::new(&empty, &dims, &strides, 0).unwrap();
     let mut s = Vec::new();
-    crate::svd::svd_values(Op::SvdValues, view, &mut s, Exec::serial()).unwrap();
+    crate::svd::svd_values(Op::SvdValues, view, &mut s, &mut Exec::serial()).unwrap();
     assert!(s.is_empty());
     let mut state: [f64; 0] = [];
     let mut coeff = Vec::new();
@@ -569,20 +661,20 @@ fn work_estimates_do_not_overflow_before_the_empty_exit() {
         0,
         &mut state,
         &mut coeff,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert!(coeff.is_empty());
 }
 
-/// The forced routes are evaluated against the original budget even though `WorkModel` exists.
+/// The forced routes are evaluated against the original budget; the work model does not gate them.
 #[test]
-fn forced_strategies_ignore_the_auto_cutoff() {
+fn forced_strategies_ignore_the_work_model() {
     let pool = owned_pool(4);
     let policy = BatchPolicy::new(BatchStrategy::Outer)
         .with_model(WorkModel::default().with_min_work_per_lane_ns(10.0));
-    let exec = token(&pool, 2).with_batch_policy(policy);
-    // An ordinary family at extent 65: Auto keeps one lane, `Outer` still clamps to the budget.
+    let mut exec = token(&pool, 2).with_batch_policy(policy);
+    // A work gate no item reaches: `Outer` still clamps to the budget.
     let n = 65;
     let batch = 4;
     let a: Vec<f64> = (0..n * n * batch)
@@ -592,6 +684,6 @@ fn forced_strategies_ignore_the_auto_cutoff() {
     let strides = [1, n as isize, (n * n) as isize];
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
     let (mut q, mut r) = (Vec::new(), Vec::new());
-    crate::qr::qr(Op::Qr, view, &mut q, &mut r, exec).unwrap();
+    crate::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();
     assert_eq!(LAST_LANES.get(), 2);
 }

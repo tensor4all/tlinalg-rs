@@ -5,7 +5,8 @@
 //!
 //! * walks the batch dimensions of a rank-`2 + B` strided descriptor ([`BatchedRef`],
 //!   [`BatchedMut`]),
-//! * selects Auto lanes within the requested width and runs them on the caller's pool ([`run`]),
+//! * resolves the lane route from the shared batch policy and forks the lanes over the caller's
+//!   `Exec` token ([`run`]),
 //! * hands every batch item its own disjoint output view: spare capacity of a library-owned vector
 //!   ([`VecOut`]), a caller-owned uninitialised slice ([`FixedOut`]), or a caller-owned compact
 //!   in-place buffer ([`InPlace`]),
@@ -21,6 +22,7 @@
 //! when **every** item was full, so a caller never observes a partially initialised vector.
 
 use core::mem::MaybeUninit;
+use core::num::NonZeroUsize;
 use std::sync::Mutex;
 
 use faer::{MatMut, MatRef};
@@ -792,145 +794,94 @@ pub(crate) fn check_workspace(
     Ok(())
 }
 
-/// The pre-0.3 Auto cutoff: ordinary families fan out on a pool only while the largest item
-/// extent is at most this. Packed LU keeps its no-cutoff exception (`None`).
+/// The resolved route of one batched call: how many lanes run the batch and how many of the
+/// token's slots they share.
 ///
-/// tlinalg-rs#58 / tcontract-rs#123 step 1 keep this local Auto in 0.3.0; the switch to the shared
-/// work model (with the sweep as evidence) lands in step 3.
-const AUTO_FAN_OUT_MAX_ITEM_DIM: usize = 64;
+/// `lanes` nonempty contiguous item ranges run concurrently; `slots` is the budget the call spends
+/// (`token.limit(slots)`), divided among the lanes by `Exec::fork` in shares that differ by at
+/// most one. A lane runs its items one after another at its share's width, handed to faer through
+/// `Exec::external`. The token's budget is the only budget: nothing here clamps against a pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Route {
+    pub(crate) lanes: usize,
+    pub(crate) slots: usize,
+}
 
-/// The legacy Auto item measure: `order`, or `order.max(rhs)` when the RHS/reflector target extent
-/// is counted.
+impl Route {
+    /// The widest share any lane receives, which sizes the per-lane scratch: a share is
+    /// `slots / lanes` or one more, so a requirement built at this width covers every lane.
+    pub(crate) fn item_width(self) -> usize {
+        self.slots.div_ceil(self.lanes)
+    }
+
+    /// The faer parallelism of the widest lane, for the workspace queries.
+    pub(crate) fn par(self) -> faer::Par {
+        crate::faer_par(self.item_width())
+    }
+}
+
+/// The batch route for this call, from the shared [`tcontract_exec::BatchPolicy`].
 ///
-/// This is the temporary step-1 switch of tlinalg-rs#58 "Defaults". The default includes the RHS
-/// extent, matching 0.2; set `TLINALG_AUTO_RHS=exclude` in the environment to measure the
-/// RHS-excluded variant. The knob and the cutoff are removed when #123 step 3 adopts the shared
-/// work model.
-pub(crate) fn auto_extent_with(order: usize, rhs: usize, include_rhs: bool) -> usize {
-    if include_rhs {
-        order.max(rhs)
+/// The policy decides how many lanes the batch splits into and, for a forced strategy, the width of
+/// each (`lanes * item_threads` slots). `Auto` fans out when the shared decision says so
+/// (`lanes >= 2`) and then gives the lanes the whole budget, so a batch with at least `budget`
+/// items runs one sequential item stream per slot while a smaller batch lets every item use its
+/// share as faer width. When `Auto` keeps one lane, the lane runs the items one after another at
+/// the decision's item width.
+pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route {
+    // `generic_auto` has no work gate in the default model (`min_work_per_lane_ns == 0`), so it
+    // would fan a batch of tiny items out over every slot and pay the pool entry for nothing.
+    // The shared `WidthPolicy` (the one body behind `Exec::width_for`) is the gate: when the
+    // whole batch is below its serial threshold the batch stays on the caller at width one.
+    if batch > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+        let model = &exec.batch_policy().model;
+        let rate = if model.muladds_per_ns > 0.0 {
+            model.muladds_per_ns
+        } else {
+            1.0
+        };
+        let item_ns = model.item_overhead_ns + item_muladds / rate;
+        if exec.width_for(item_ns * batch as f64, &model.width) <= 1 {
+            return Route { lanes: 1, slots: 1 };
+        }
+    }
+    let decision = exec.batch_decision(&BatchQuery::new(batch, item_muladds));
+    let lanes = decision.lanes.clamp(1, batch.max(1));
+    let slots = if lanes > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+        exec.budget()
     } else {
-        order
-    }
-}
-
-/// [`auto_extent_with`] with the process's `TLINALG_AUTO_RHS` switch (default include).
-pub(crate) fn auto_extent(order: usize, rhs: usize) -> usize {
-    static INCLUDES_RHS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let include = *INCLUDES_RHS.get_or_init(|| {
-        !matches!(
-            std::env::var("TLINALG_AUTO_RHS").ok().as_deref(),
-            Some("exclude")
-        )
-    });
-    auto_extent_with(order, rhs, include)
-}
-
-/// The step-1 Auto decision: the 0.2 `LanePlan` rule on the context's budget.
-///
-/// On a pool with more than one worker, fan out to `min(budget, batch)` outer lanes only when the
-/// batch fills the budget and `max_item_dim <= AUTO_FAN_OUT_MAX_ITEM_DIM`. `None` is the packed
-/// exception (never cut off). Otherwise one lane runs the batch at the shared work model's width
-/// for one item; a small item therefore stays on the caller instead of entering the pool with a
-/// thread count it cannot use. The partition is exact (see [`run`]); 0.2's `div_ceil` split could
-/// drop a lane, which this keeps fixed.
-fn legacy_auto(
-    batch: usize,
-    budget: usize,
-    max_item_dim: Option<usize>,
-    item_threads: impl FnOnce() -> Result<usize>,
-) -> Result<(usize, usize)> {
-    let budget = budget.max(1);
-    let fans_out = budget > 1
-        && batch >= budget
-        && max_item_dim.is_none_or(|dim| dim <= AUTO_FAN_OUT_MAX_ITEM_DIM);
-    if fans_out {
-        Ok((budget.min(batch), 1))
-    } else {
-        Ok((1, item_threads()?.clamp(1, budget)))
-    }
-}
-
-/// The one-lane item width the shared work model grants an item of `item_muladds` work.
-///
-/// An `Auto` decision for one item is the generic formula's one-lane arm: the lanes stay at one and
-/// `item_threads` is `Exec::width_for` sized by the model's item cost. Feeding the model one item
-/// keeps the conversion from multiply-adds to nanoseconds in `tcontract_exec` instead of copying it
-/// here.
-fn auto_item_threads(_op: Op, exec: Exec<'_>, item_muladds: f64) -> Result<usize> {
-    let query = BatchQuery::new(1, item_muladds);
-    let decision = exec.batch_decision(&query);
-    Ok(decision.item_threads)
-}
-
-/// The batch route for this call: `(lanes, item_threads)`.
-///
-/// `Auto` keeps [`legacy_auto`]'s fan-out rule (the pre-0.3 local cutoff, tlinalg-rs#58 "Defaults",
-/// step 1) and sizes its one lane from `item_muladds` through [`auto_item_threads`]. Every forced
-/// strategy goes through `tcontract_exec::Exec::batch_decision` on the original budget.
-/// `max_item_dim` is the legacy Auto fan-out measure.
-pub(crate) fn decide(
-    op: Op,
-    exec: Exec<'_>,
-    batch: usize,
-    max_item_dim: Option<usize>,
-    item_muladds: f64,
-) -> Result<(usize, usize)> {
-    if matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
-        // The one-lane width is resolved only when the batch does not fan out.
-        return legacy_auto(batch, exec.budget(), max_item_dim, || {
-            auto_item_threads(op, exec, item_muladds)
-        });
-    }
-    let query = BatchQuery::new(batch, item_muladds);
-    let decision = exec.batch_decision(&query);
-    Ok((decision.lanes, decision.item_threads))
-}
-
-/// The faer parallelism token a resolved route runs its items with.
-///
-/// This is exactly what [`run`] passes to the item closure and to `make_scratch`: one lane stays on
-/// the caller at width one (`faer::Par::Seq`), otherwise the item width the decision granted is
-/// installed on the pool. The workspace queries size their faer scratch with it, so a query and the
-/// matching call resolve the same width.
-pub(crate) fn route_par(lanes: usize, item_threads: usize) -> faer::Par {
-    if lanes > 1 || item_threads > 1 {
-        faer::Par::rayon(item_threads.max(1))
-    } else {
-        faer::Par::Seq
-    }
+        lanes * decision.item_threads.max(1)
+    };
+    Route { lanes, slots }
 }
 
 /// Run the batch on one caller-owned resource.
 ///
-/// The route comes from [`decide`]: `lanes` nonempty contiguous ranges of the batch, each item run
-/// with `item_threads` (one lane may run items on the caller with a faer count hint; several lanes
-/// run concurrently on the context's pool). Forced strategies are resolved before any write.
+/// The route comes from [`decide`]: `lanes` nonempty contiguous ranges of the batch, forked over
+/// the token, each lane running its items sequentially at the width of its share. A serial token
+/// (or one lane at width one) stays on the calling thread and enters no pool.
 ///
-/// `max_item_dim` is the legacy Auto fan-out measure (see [`decide`]); `item_muladds` is the
-/// family's work estimate, used by the forced strategies and to size Auto's one-lane item width.
+/// `item_muladds` is the family's work estimate, the input of the shared decision.
 ///
 /// `make_scratch` builds one lane's scratch from that lane's borrowed workspace chunk, reused for
-/// every item of that lane. It is called with the item width the decision granted, so scratch sized
-/// per thread matches the width the items actually run at. `ScratchArena` hands each lane its own
-/// chunk of a caller-owned byte region; a `Vec` wrapper passes a zero-length arena for a family
+/// every item of that lane. It is called with the width the lane's share granted, which never
+/// exceeds the width the workspace query sized the chunk for. `ScratchArena` hands each lane its
+/// own chunk of a caller-owned byte region; a `Vec` wrapper passes a zero-length arena for a family
 /// whose route needs no scratch.
 ///
 /// Each lane stops at its own first failure and is not stopped by another lane's. The returned
 /// error is the lowest-indexed failing lane's, which is the lowest-indexed failing item, so the
 /// result does not depend on scheduling. On error every [`Out`] output is left empty.
 ///
-/// # faer's hint
+/// # faer's width
 ///
-/// `item_threads` is the faer count requested on the pool, not a strict active-thread bound: faer
-/// can expose more intra-item tasks than requested (see [`tcontract_exec::Exec`]'s contract).
-/// Admission across simultaneous calls is the resource owner's.
+/// The width a lane hands to faer is its share of the budget; how faer schedules it is faer's.
+/// The token bounds the lanes it starts, not faer's internal tasks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run<'w, O, S, MK, F>(
     op: Op,
     batch: usize,
-    exec: Exec<'_>,
-    max_item_dim: Option<usize>,
+    exec: &mut Exec<'_>,
     item_muladds: f64,
     outputs: &mut O,
     workspace: ScratchArena<'w>,
@@ -942,17 +893,16 @@ where
     MK: Fn(faer::Par, &'w mut [MaybeUninit<u8>]) -> S + Sync,
     F: Fn(usize, &mut O::Item, &mut S, faer::Par) -> Result<()> + Sync,
 {
-    // Resolve the route **before** touching the outputs, so no output is prepared for a batch
-    // whose route is not yet fixed.
-    let (lanes, item_threads) = decide(op, exec, batch, max_item_dim, item_muladds)?;
+    let route = decide(exec, batch, item_muladds);
     outputs.prepare(op, batch)?;
     if batch == 0 {
         return Ok(());
     }
-    // INVARIANT: `batch_decision` clamps every route to the item count, so `lanes <= batch` and
-    // `lane_bounds` yields exactly `lanes` nonempty ranges.
+    // INVARIANT: `decide` clamps the lanes to the item count, so `lane_bounds` yields exactly
+    // `route.lanes` nonempty ranges.
+    let Route { lanes, slots } = route;
     debug_assert!(lanes >= 1 && lanes <= batch, "lanes={lanes} batch={batch}");
-    let item_threads = item_threads.max(1);
+    let slots = NonZeroUsize::new(slots.max(1)).expect("max(1) is nonzero");
     #[cfg(test)]
     tests::record_lanes(lanes);
     let result = {
@@ -960,7 +910,8 @@ where
         // consumed inside this block, before `outputs` is touched again by `commit`.
         let parts = unsafe { outputs.parts(batch) };
         let parts = &parts;
-        let run_lane = |lane: usize, faer_par: faer::Par| -> Result<()> {
+        let run_lane = |lane: usize, width: usize| -> Result<()> {
+            let faer_par = crate::faer_par(width);
             let (first, last) = lane_bounds(batch, lanes, lane);
             // SAFETY: each call site passes a distinct lane index, whose chunk is disjoint from the
             // others'.
@@ -979,32 +930,22 @@ where
             }
             Ok(())
         };
+        let token = exec.token().limit(slots);
         if lanes == 1 {
-            // One lane, item-parallel: `install` enters the pool for `item_threads > 1` and stays
-            // on the caller otherwise.
-            exec.install(item_threads, |par| run_lane(0, crate::faer_par(par)))
+            token.external(|width| run_lane(0, width.get()))
         } else {
             // Each lane stops independently; report the lowest failing lane deterministically.
-            // The items inside a lane run at the decision's item width, so a `Split`/`Inner`-style
-            // forced width is not silently dropped. `install` enters the pool once, at `lanes`.
             let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
             let (run_lane, failure_ref) = (&run_lane, &failure);
-            exec.install(lanes, |_| {
-                rayon::scope(|scope| {
-                    for lane in 0..lanes {
-                        scope.spawn(move |_| {
-                            let par = faer::Par::rayon(item_threads);
-                            if let Err(error) = run_lane(lane, par) {
-                                let mut slot = failure_ref
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                if slot.as_ref().is_none_or(|(first, _)| lane < *first) {
-                                    *slot = Some((lane, error));
-                                }
-                            }
-                        });
+            token.fork(lanes, |lane, child| {
+                if let Err(error) = child.external(|width| run_lane(lane, width.get())) {
+                    let mut slot = failure_ref
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if slot.as_ref().is_none_or(|(first, _)| lane < *first) {
+                        *slot = Some((lane, error));
                     }
-                });
+                }
             });
             match failure
                 .into_inner()

@@ -23,7 +23,7 @@ fn reconstructs<T: TestScalar + FaerScalar>() {
             n,
             RawStridedRef::new(&storage, &dims, &strides, offset).unwrap(),
             &mut l,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         assert_eq!(l.len(), n * n);
@@ -46,7 +46,7 @@ fn empty_and_failure<T: TestScalar + FaerScalar>() {
         0,
         RawStridedRef::new(&[], &[0, 0], &[1, 0], 0).unwrap(),
         &mut l,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert!(l.is_empty(), "outputs are cleared");
@@ -63,7 +63,7 @@ fn empty_and_failure<T: TestScalar + FaerScalar>() {
         2,
         RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
         &mut l,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert_eq!(err, Error::NonConvergence { op: Op::Cholesky });
@@ -73,7 +73,7 @@ fn empty_and_failure<T: TestScalar + FaerScalar>() {
         2,
         RawStridedRef::new(&a, &[2, 1], &[1, 2], 0).unwrap(),
         &mut l,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(err, Error::InvalidArgument { .. }));

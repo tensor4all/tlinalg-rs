@@ -1,0 +1,24 @@
+# Only `strided-exec` starts tasks on a thread pool. Every other crate of this
+# workspace reaches parallelism through `strided_exec::Exec`, so a direct
+# `rayon` dependency (normal, dev or build) is rejected. The exceptions are the
+# third-party crates that bring rayon in themselves: t4a-faer (the one faer
+# identity of the stack, which receives a width from `Exec::external`; how it
+# schedules that width is decided in t4a-faer, tensor4all/faer#59, and `spindle`
+# is listed only because t4a-faer 0.24 depends on it today), the gemm crates it
+# uses.
+[graph]
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    { crate = "rayon", wrappers = [
+        "strided-exec",
+        "t4a-faer",
+        "spindle",
+        "gemm-common",
+        "t4a-private-gemm-x86",
+    ] },
+    { crate = "rayon-core", wrappers = ["rayon"] },
+]

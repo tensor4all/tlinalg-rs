@@ -20,7 +20,7 @@ library is about matrices instead of tensors.
 
 | Crate | Role |
 |---|---|
-| `tlinalg` | The faer-backed provider, with the batch-direction lane fan-out on the caller's rayon pool. |
+| `tlinalg` | The faer-backed provider, with the batch-direction lane fan-out forked over the caller's `Exec` token. |
 | `tlinalg-blas` | The LAPACK/BLAS provider: vendor calls and their argument marshalling, a serial batch loop, vendor-owned threading. |
 | `tlinalg-testkit` | Dev-only, unpublished: provider-neutral test helpers (scalar test trait, generators, reference arithmetic, batched layouts, counting allocator). |
 | `tlinalg-parity` | Dev-only, unpublished: the same batched cases through both providers, compared gauge-aware. |
@@ -111,11 +111,11 @@ to three rows:
 
 * `faer-1lane` — one sequential lane: per-item cost plus the batch loop, no threading.
 * `faer-{N}t` — an explicit `N`-worker pool and requested budget (`TLINALG_BENCH_THREADS`,
-  default the available parallelism); tlinalg's `Auto` route chooses outer lanes or faer's intra-item count hint.
-  `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route, and
-  `TLINALG_AUTO_RHS=exclude` drops the RHS/reflector extent from the temporary `Auto` measure.
+  default the available parallelism); tlinalg's `Auto` route forks the budget over outer lanes and
+  hands each lane's share to faer as its width.
+  `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route.
   Use `TLINALG_BENCH_THREADS=1` for overhead baselines.
-  **The faer hint is not a hard active-thread limit**; see the `tcontract_exec::Exec` contract.
+  **The faer width is not a hard active-thread limit**; the token bounds the lanes it starts.
 * `lapack` — `tlinalg-blas` (with `--features link-openblas`): a serial batch loop, vendor-owned
   threading.
 

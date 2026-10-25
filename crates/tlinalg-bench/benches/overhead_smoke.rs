@@ -59,7 +59,7 @@ fn well_conditioned(n: usize, batch: usize) -> Vec<f64> {
 /// contract: the wrapper must not fall back to per-lane scratch.
 fn l1(gate: bool) {
     let batch = 64;
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     for n in [2usize, 8] {
         let a = well_conditioned(n, batch);
         let dims = [n, n, batch];
@@ -147,7 +147,7 @@ fn l2(gate: bool) {
     let single_strides = [1, n as isize];
     let single = RawStridedRef::new(&single, &single_dims, &single_strides, 0).unwrap();
     let (mut q, mut r) = (Vec::new(), Vec::new());
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
 
     let batch_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, seq).unwrap();
@@ -189,7 +189,7 @@ fn l3() {
         let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
         let (mut q, mut r) = (Vec::new(), Vec::new());
         let faer_ns = per_matrix(batch, 32, || {
-            tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, Exec::serial()).unwrap();
+            tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut Exec::serial()).unwrap();
         });
         let mut workspace = RecyclingWorkspace::default();
         let (mut q, mut r) = (Vec::new(), Vec::new());
@@ -201,7 +201,14 @@ fn l3() {
 
         let (mut values, mut vectors) = (Vec::new(), Vec::new());
         let faer_ns = per_matrix(batch, 32, || {
-            tlinalg::eigh::eigh(Op::Eigh, view, &mut values, &mut vectors, Exec::serial()).unwrap();
+            tlinalg::eigh::eigh(
+                Op::Eigh,
+                view,
+                &mut values,
+                &mut vectors,
+                &mut Exec::serial(),
+            )
+            .unwrap();
         });
         let mut workspace = RecyclingWorkspace::default();
         let (mut values, mut vectors) = (Vec::new(), Vec::new());
@@ -225,7 +232,7 @@ fn l3() {
     println!("L3 skipped: build with --features link-openblas for the LAPACK comparison");
 }
 
-/// L4, report only: a 2-worker pool against the serial path, batch 64 n=6. The rayon constant is
+/// L4, report only: a 2-worker pool against the serial path, batch 64 n=6. The pool-entry constant is
 /// not a gate here.
 fn l4() {
     let n = 6;
@@ -236,16 +243,13 @@ fn l4() {
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
     let (mut q, mut r) = (Vec::new(), Vec::new());
     let serial_ns = per_matrix(batch, 64, || {
-        tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, Exec::serial()).unwrap();
+        tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut Exec::serial()).unwrap();
     });
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap();
-    let pool = tcontract_exec::Pool::owned(tp);
-    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let pool =
+        tcontract_exec::Pool::owned(strided_exec::Pool::builder().threads(2).build().unwrap());
+    let mut exec = Exec::new(&pool, 2).unwrap();
     let pool_ns = per_matrix(batch, 64, || {
-        tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, exec).unwrap();
+        tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();
     });
     println!("L4 qr serial vs 2T pool, batch64 n={n}: {serial_ns:.1} / {pool_ns:.1} ns/matrix");
     black_box((serial_ns, pool_ns));

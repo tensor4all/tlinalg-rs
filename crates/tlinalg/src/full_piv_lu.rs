@@ -170,12 +170,11 @@ fn check_solve_shape(op: Op, n: usize, nrhs: usize) -> Result<()> {
     Ok(())
 }
 
-fn full_piv_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: Exec<'_>) -> Result<usize> {
+fn full_piv_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: &Exec<'_>) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(n),
         work::<T>(n),
         || check_shape(op, n),
         |par| full_piv_req::<T::Entity>(n, par),
@@ -191,13 +190,12 @@ fn full_piv_solve_bytes<T: FaerScalar>(
     n: usize,
     nrhs: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        Some(batch::auto_extent(n, nrhs)),
         solve_work::<T>(n, nrhs),
         || check_solve_shape(op, n, nrhs),
         |par| full_piv_solve_req::<T::Entity>(n, nrhs, par),
@@ -213,11 +211,11 @@ fn full_piv_solve_bytes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::FullPivLu`), and the executor's refusal for a forced strategy this route cannot honor.
+/// is `Op::FullPivLu`).
 pub fn full_piv_lu_workspace<T: FaerScalar>(
     n: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     full_piv_bytes::<T>(Op::FullPivLu, n, batch, exec)
 }
@@ -243,7 +241,7 @@ pub fn full_piv_lu_into<T: FaerScalar>(
     q: &mut [MaybeUninit<T>],
     parity: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
@@ -253,7 +251,6 @@ pub fn full_piv_lu_into<T: FaerScalar>(
         op,
         exec,
         input.batch(),
-        Some(n),
         item_muladds,
         || check_shape(op, n),
         |par| full_piv_req::<T::Entity>(n, par),
@@ -264,7 +261,6 @@ pub fn full_piv_lu_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        Some(n),
         item_muladds,
         &mut (
             fixed_out(p, len, "P"),
@@ -307,7 +303,7 @@ pub fn full_piv_lu_into<T: FaerScalar>(
 /// full_piv_lu(
 ///     Op::FullPivLu, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     FullPivLuFactors { p: &mut p, l: &mut l, u: &mut u, q: &mut q, parity: &mut parity },
-///     Exec::serial(),
+///     &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(u[0], 2.0);
 /// ```
@@ -315,7 +311,7 @@ pub fn full_piv_lu<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
     factors: FullPivLuFactors<'_, T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let FullPivLuFactors { p, l, u, q, parity } = factors;
     p.clear();
@@ -453,13 +449,12 @@ fn full_piv_lu_solve_item<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
-/// is `Op::FullPivLuSolve`), and the executor's refusal for a forced strategy this route cannot
-/// honor.
+/// is `Op::FullPivLuSolve`).
 pub fn full_piv_lu_solve_workspace<T: FaerScalar>(
     n: usize,
     nrhs: usize,
     batch: usize,
-    exec: Exec<'_>,
+    exec: &Exec<'_>,
 ) -> Result<usize> {
     full_piv_solve_bytes::<T>(Op::FullPivLuSolve, n, nrhs, batch, exec)
 }
@@ -510,7 +505,7 @@ pub fn full_piv_lu_solve_into<T: FaerScalar>(
     transpose_a: bool,
     x: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     let a = BatchedRef::square(op, "A", a)?;
     let b = BatchedRef::new(op, "B", b)?;
@@ -519,7 +514,6 @@ pub fn full_piv_lu_solve_into<T: FaerScalar>(
         op,
         exec,
         a.batch(),
-        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         || check_solve_shape(op, n, nrhs),
         |par| full_piv_solve_req::<T::Entity>(n, nrhs, par),
@@ -530,7 +524,6 @@ pub fn full_piv_lu_solve_into<T: FaerScalar>(
         op,
         a.batch(),
         exec,
-        Some(batch::auto_extent(n, nrhs)),
         item_muladds,
         &mut (fixed_out(x, x_len, "X"),),
         batch::ScratchArena::new(workspace, per_lane),
@@ -579,7 +572,7 @@ pub fn full_piv_lu_solve_into<T: FaerScalar>(
 ///     Op::FullPivLuSolve,
 ///     RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(),
 ///     RawStridedRef::new(&b, &[2, 1], &[1, 2], 0).unwrap(),
-///     false, &mut x, Exec::serial(),
+///     false, &mut x, &mut Exec::serial(),
 /// ).unwrap();
 /// assert_eq!(x, [1.0, 2.0]);
 /// ```
@@ -592,7 +585,7 @@ pub fn full_piv_lu_solve<T: FaerScalar>(
     b: RawStridedRef<'_, T>,
     transpose_a: bool,
     x: &mut Vec<T>,
-    exec: Exec<'_>,
+    exec: &mut Exec<'_>,
 ) -> Result<()> {
     x.clear();
     // The published order: operand validation (including B's rank) before any workspace query or

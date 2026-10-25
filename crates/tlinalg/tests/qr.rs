@@ -41,7 +41,7 @@ fn qr_reconstructs<T: TestScalar + FaerScalar>() {
             RawStridedRef::new(&storage, &dims, &strides, offset).unwrap(),
             &mut q,
             &mut r,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let k = m.min(n);
@@ -65,7 +65,7 @@ fn rrqr_reconstructs<T: TestScalar + FaerScalar>() {
             RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
             &mut q,
             &mut r,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let k = m.min(n);
@@ -103,7 +103,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             rows,
             cols,
             &mut coeff,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let k = rows.min(cols);
@@ -124,7 +124,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             rows,
             k,
             false,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let q = widen(&q);
@@ -155,7 +155,7 @@ fn householder_roundtrip<T: TestScalar + FaerScalar>() {
             cols,
             k,
             true,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         assert_close(&widen(&qha), &r, T::TOL, "Qᴴ A");
@@ -173,7 +173,7 @@ fn householder_rejects_bad_dimensions() {
             2,
             2,
             &mut Vec::new(),
-            Exec::serial()
+            &mut Exec::serial()
         ),
         Err(Error::InvalidArgument { .. })
     ));
@@ -189,13 +189,21 @@ fn householder_rejects_bad_dimensions() {
             2,
             3,
             false,
-            Exec::serial()
+            &mut Exec::serial()
         ),
         Err(Error::InvalidArgument { .. })
     ));
     // Empty inputs are no-ops.
     let mut coeff = vec![1.0_f64];
-    compact_factor(Op::HouseholderQr, &mut [], 0, 3, &mut coeff, Exec::serial()).unwrap();
+    compact_factor(
+        Op::HouseholderQr,
+        &mut [],
+        0,
+        3,
+        &mut coeff,
+        &mut Exec::serial(),
+    )
+    .unwrap();
     assert!(coeff.is_empty());
 }
 
@@ -213,7 +221,7 @@ fn rank_revealing_qr_returns_the_identity_for_an_all_zero_item() {
         &mut q,
         &mut r,
         &mut perm,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     let k = m.min(n);

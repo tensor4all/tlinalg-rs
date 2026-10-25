@@ -25,7 +25,7 @@ fn solve_prepared_chunk<T: FaerScalar>(
     output: &mut [T],
     transpose_a: bool,
     conjugate_a: bool,
-    par: Exec<'_>,
+    par: &mut Exec<'_>,
 ) -> tlinalg::Result<()> {
     let batch = if n == 0 { 0 } else { packed_lu.len() / (n * n) };
     let lu_dims = [n, n, batch];
@@ -172,7 +172,7 @@ fn factor_one(a: &[f64], n: usize) -> (Vec<f64>, Vec<i32>, f64) {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     (packed, pivots, parity[0])
@@ -215,7 +215,7 @@ fn factor_chunk_rejects_buffers_that_describe_different_batches() {
         &mut lu,
         &mut pivots,
         &mut parity,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -241,7 +241,7 @@ fn empty_batches_and_empty_rhs_are_accepted() {
         &mut no_matrices,
         &mut pivots,
         &mut parity,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -257,7 +257,7 @@ fn empty_batches_and_empty_rhs_are_accepted() {
         &mut packed,
         &mut pivots,
         &mut no_rhs,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 }
@@ -283,7 +283,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut out,
         false,
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     for (got, want) in out.iter().zip(x_true.iter()) {
@@ -308,7 +308,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut out,
         true,
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     for (got, want) in out.iter().zip(x_true.iter()) {
@@ -328,7 +328,7 @@ fn prepared_solve_recovers_a_known_solution_for_every_flag_combination() {
         &mut rhs,
         false,
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     for (got, want) in rhs[..n].iter().zip(x_true.iter()) {
@@ -357,7 +357,7 @@ fn factor_solve_matches_factor_then_solve() {
         &mut expected,
         false,
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -371,7 +371,7 @@ fn factor_solve_matches_factor_then_solve() {
         &mut fused,
         &mut pivots,
         &mut solved,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -399,7 +399,7 @@ fn factor_solve_reports_singular_only_when_a_rhs_is_present() {
         &mut packed,
         &mut pivots,
         &mut no_rhs,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -413,7 +413,7 @@ fn factor_solve_reports_singular_only_when_a_rhs_is_present() {
         &mut packed,
         &mut pivots,
         &mut rhs,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -445,7 +445,7 @@ fn an_uneven_chunk_partition_matches_the_same_matrices_taken_alone() {
             chunk,
             &mut pivots[offset * n..(offset + count) * n],
             &mut parity[offset..offset + count],
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
     }
@@ -478,7 +478,7 @@ fn invalid_pivots_are_rejected_before_any_write() {
         &mut output,
         false,
         false,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -504,7 +504,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -527,7 +527,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed_c,
         &mut pivots_c,
         &mut parity_c,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -552,7 +552,7 @@ fn real_and_complex_scalars_factor_and_solve() {
             &mut out,
             transpose,
             conjugate,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         for (got, want) in out.iter().zip(x_true.iter()) {
@@ -578,7 +578,7 @@ fn real_and_complex_scalars_factor_and_solve() {
         &mut packed,
         &mut pivots,
         &mut parity,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 }

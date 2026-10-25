@@ -46,7 +46,7 @@ fn family_counts(batch: usize) -> [(&'static str, usize); 11] {
     let a = batch_of(n, batch);
     let (dims, strides) = ([n, n, batch], [1, n as isize, (n * n) as isize]);
     let view = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     let cap = n * n * batch;
     let (mut v1, mut v2, mut v3) = (
         Vec::with_capacity(cap),
@@ -158,7 +158,7 @@ fn triangular(left_side: bool, batch: usize) -> usize {
             b_view,
             flags,
             &mut x,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
     })
@@ -279,7 +279,7 @@ unsafe fn assume<T>(buf: Vec<MaybeUninit<T>>) -> Vec<T> {
 /// (`eigh_values` returns the real type, `eig` the complex one) without a public type mapping.
 macro_rules! dtype_battery {
     ($t:ty, $real:ty, $cplx:ty) => {{
-        let seq = Exec::serial();
+        let seq = &mut Exec::serial();
         let value = |x: f64| <$t as TestScalar>::from_c64(Complex64::new(x, 0.0));
         // Diagonally dominant and symmetric: SPD, nonsingular, and well conditioned enough for
         // every decomposition to converge at these sizes.
@@ -308,11 +308,11 @@ macro_rules! dtype_battery {
 
         // One full pass over every family for one shape, one batch size and one input layout.
         // Returns the bit patterns of every output plus the zero-allocation assertions.
-        let run = |n: usize,
-                   batch: usize,
-                   transposed_layout: bool,
-                   offset: usize,
-                   compare_wrapper: bool| {
+        let mut run = |n: usize,
+                       batch: usize,
+                       transposed_layout: bool,
+                       offset: usize,
+                       compare_wrapper: bool| {
             let data = spd(n, batch);
             let (owned, dims, strides): (Vec<$t>, [usize; 3], [isize; 3]) = if transposed_layout {
                 (
@@ -1089,23 +1089,20 @@ fn the_pool_route_adds_a_constant() {
             })
             .collect()
     };
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(2).build().unwrap();
     let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
-    let measure = |count: usize| {
+    let mut exec = Exec::new(&pool, 2).unwrap();
+    let mut measure = |count: usize| {
         let data = batch(count);
         let dims = [n, n, count];
         let strides = [1isize, n as isize, (n * n) as isize];
         let view = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
-        let ws = qr::qr_workspace::<f64>(n, n, count, exec).unwrap();
+        let ws = qr::qr_workspace::<f64>(n, n, count, &exec).unwrap();
         let mut workspace = vec![MaybeUninit::<u8>::uninit(); ws];
         let mut q = vec![MaybeUninit::<f64>::uninit(); n * n * count];
         let mut r = vec![MaybeUninit::<f64>::uninit(); n * n * count];
         for _ in 0..3 {
-            qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+            qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, &mut exec).unwrap();
         }
         // Minimum of three rounds: a worker the warm-up never scheduled pays a one-time
         // first touch (thread-local registration allocates on macOS) the first time it
@@ -1113,7 +1110,7 @@ fn the_pool_route_adds_a_constant() {
         (0..3)
             .map(|_| {
                 allocations_all_threads(|| {
-                    qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+                    qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, &mut exec).unwrap();
                 })
             })
             .min()
@@ -1137,7 +1134,7 @@ fn an_undersized_workspace_is_refused_before_any_write() {
     let _guard = serialised();
     let n = 4;
     let batch = 3;
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     let data: Vec<f64> = (0..n * n * batch)
         .map(|k| {
             let (row, col) = (k % n, (k / n) % n);
@@ -1260,7 +1257,7 @@ fn matmul_backend(mnk: usize) -> &'static str {
 /// Allocations of one `compact_factor_into` call at `n x n`, `batch` items, on `Exec::serial()`.
 #[cfg(target_arch = "x86_64")]
 fn compact_factor_allocs(n: usize, batch: usize) -> usize {
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     let data: Vec<f64> = (0..n * n * batch)
         .map(|k| {
             let (row, col) = (k % n, (k / n) % n);
@@ -1391,7 +1388,7 @@ const HUGE: usize = 1usize << 32;
 #[test]
 fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
     let _guard = serialised();
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     let shape = ReflectorShape {
         rows: HUGE,
         a_cols: HUGE,
@@ -1512,15 +1509,12 @@ fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
 #[test]
 fn wider_routes_use_the_workspace_they_query() {
     let _guard = serialised();
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     // Large enough that faer's per-thread scratch term is visible.
     let n = 128;
     let batch = 4;
-    let seq = Exec::serial();
+    let seq = &mut Exec::serial();
     let a: Vec<f64> = (0..n * n * batch)
         .map(|k| {
             let (row, col) = (k % n, (k / n) % n);
@@ -1544,14 +1538,13 @@ fn wider_routes_use_the_workspace_they_query() {
             },
         ),
     ] {
-        let exec = Exec::rayon(&pool)
-            .with_budget(4)
+        let mut exec = Exec::new(&pool, 4)
             .unwrap()
             .with_batch_policy(BatchPolicy::new(strategy));
 
         // qr
         let serial_ws = qr::qr_workspace::<f64>(n, n, batch, seq).unwrap();
-        let wide_ws = qr::qr_workspace::<f64>(n, n, batch, exec).unwrap();
+        let wide_ws = qr::qr_workspace::<f64>(n, n, batch, &exec).unwrap();
         println!("{label} qr: serial {serial_ws} bytes, route {wide_ws} bytes");
         assert!(
             wide_ws >= serial_ws,
@@ -1560,7 +1553,7 @@ fn wider_routes_use_the_workspace_they_query() {
         let mut q = vec![MaybeUninit::<f64>::uninit(); n * n * batch];
         let mut r = vec![MaybeUninit::<f64>::uninit(); n * n * batch];
         let mut workspace = vec![MaybeUninit::<u8>::uninit(); wide_ws];
-        qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, exec).unwrap();
+        qr::qr_into(Op::Qr, view, &mut q, &mut r, &mut workspace, &mut exec).unwrap();
         // SAFETY: `qr_into` returned `Ok`, so every element is initialised.
         let r_wide = unsafe { assume(r) };
         let (mut wq, mut wr) = (Vec::new(), Vec::new());
@@ -1569,7 +1562,7 @@ fn wider_routes_use_the_workspace_they_query() {
 
         // svd
         let serial_ws = svd::svd_workspace::<f64>(n, n, false, batch, seq).unwrap();
-        let wide_ws = svd::svd_workspace::<f64>(n, n, false, batch, exec).unwrap();
+        let wide_ws = svd::svd_workspace::<f64>(n, n, false, batch, &exec).unwrap();
         println!("{label} svd: serial {serial_ws} bytes, route {wide_ws} bytes");
         assert!(
             wide_ws >= serial_ws,
@@ -1587,7 +1580,7 @@ fn wider_routes_use_the_workspace_they_query() {
             &mut s,
             &mut vt,
             &mut workspace,
-            exec,
+            &mut exec,
         )
         .unwrap();
         // SAFETY: `svd_into` returned `Ok`.
@@ -1598,7 +1591,7 @@ fn wider_routes_use_the_workspace_they_query() {
 
         // eigh: the family whose requirement visibly carries the item width.
         let serial_ws = eigh::eigh_workspace::<f64>(n, true, batch, seq).unwrap();
-        let wide_ws = eigh::eigh_workspace::<f64>(n, true, batch, exec).unwrap();
+        let wide_ws = eigh::eigh_workspace::<f64>(n, true, batch, &exec).unwrap();
         println!("{label} eigh: serial {serial_ws} bytes, route {wide_ws} bytes");
         assert!(
             wide_ws > serial_ws,
@@ -1613,7 +1606,7 @@ fn wider_routes_use_the_workspace_they_query() {
             &mut values,
             &mut vectors,
             &mut workspace,
-            exec,
+            &mut exec,
         )
         .unwrap();
         // SAFETY: `eigh_into` returned `Ok`.
@@ -1624,7 +1617,7 @@ fn wider_routes_use_the_workspace_they_query() {
 
         // lu
         let serial_ws = lu_workspace::<f64>(n, n, batch, seq).unwrap();
-        let wide_ws = lu_workspace::<f64>(n, n, batch, exec).unwrap();
+        let wide_ws = lu_workspace::<f64>(n, n, batch, &exec).unwrap();
         println!("{label} lu: serial {serial_ws} bytes, route {wide_ws} bytes");
         assert!(
             wide_ws >= serial_ws,
@@ -1643,7 +1636,7 @@ fn wider_routes_use_the_workspace_they_query() {
             &mut u,
             &mut parity,
             &mut workspace,
-            exec,
+            &mut exec,
         )
         .unwrap();
         // SAFETY: `lu_into` returned `Ok`.
@@ -1704,8 +1697,15 @@ fn wrappers_keep_the_callers_op_and_validate_before_routing() {
     let b_strides = [1isize, 2];
     let b = RawStridedRef::new(&wrong_rows, &b_dims, &b_strides, 0).unwrap();
     let mut x = Vec::new();
-    let error =
-        full_piv_lu_solve(Op::FullPivLuSolve, view, b, false, &mut x, Exec::serial()).unwrap_err();
+    let error = full_piv_lu_solve(
+        Op::FullPivLuSolve,
+        view,
+        b,
+        false,
+        &mut x,
+        &mut Exec::serial(),
+    )
+    .unwrap_err();
     assert!(
         matches!(
             error,

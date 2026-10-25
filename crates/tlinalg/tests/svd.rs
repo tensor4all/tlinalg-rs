@@ -55,7 +55,7 @@ fn check_svd(m: usize, n: usize, full: bool) {
         &mut u,
         &mut s,
         &mut vt,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -103,7 +103,7 @@ fn values_only_agrees_with_the_full_decomposition() {
         &mut Vec::new(),
         &mut full,
         &mut Vec::new(),
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     let mut only = Vec::new();
@@ -111,7 +111,7 @@ fn values_only_agrees_with_the_full_decomposition() {
         Op::SvdValues,
         RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
         &mut only,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     for (got, want) in only.iter().zip(full.iter()) {
@@ -140,7 +140,7 @@ fn complex_and_f32_reconstruct() {
         &mut u,
         &mut s,
         &mut vt,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     // `s` is carried in the complex scalar type with a zero imaginary part.
@@ -181,7 +181,7 @@ fn complex_and_f32_reconstruct() {
         &mut u32,
         &mut s32,
         &mut vt32,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
 
@@ -196,7 +196,7 @@ fn complex_and_f32_reconstruct() {
         &mut ur,
         &mut sr,
         &mut vtr,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert!(sr[0] > 0.0);
@@ -218,7 +218,7 @@ fn outputs_are_cleared_before_being_filled() {
         &mut u,
         &mut s,
         &mut vt,
-        Exec::serial(),
+        &mut Exec::serial(),
     )
     .unwrap();
     assert_eq!(u.len(), m * k);
@@ -243,7 +243,7 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
             &mut u,
             &mut s,
             &mut vt,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
         let mut values = Vec::new();
@@ -251,7 +251,7 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
             Op::SvdValues,
             RawStridedRef::new(&a, &[n, n], &[1, n as isize], 0).unwrap(),
             &mut values,
-            Exec::serial(),
+            &mut Exec::serial(),
         )
         .unwrap();
 
