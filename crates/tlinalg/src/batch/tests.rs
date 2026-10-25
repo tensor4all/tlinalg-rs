@@ -30,7 +30,7 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
     let err = run(
         Op::Svd,
         6,
-        &mut Exec::new(&pool, 3).unwrap(),
+        &mut scheduling::eager_token(&pool, 3),
         1.0,
         &mut (fixed_out(values_out.spare(), 1, "values"),),
         ScratchArena::new(&mut [], 0),
@@ -65,7 +65,7 @@ fn a_failing_lane_does_not_stop_the_later_ones() {
 fn the_lowest_failing_item_wins_and_outputs_stay_empty() {
     let pool = owned_pool(8);
     for budget in [1, 2, 3, 4, 8] {
-        let mut exec = Exec::new(&pool, budget).unwrap();
+        let mut exec = scheduling::eager_token(&pool, budget);
         for _ in 0..20 {
             let mut values = vec![9usize; 3];
             let mut values_out = VecOut::new(&mut values, 8);

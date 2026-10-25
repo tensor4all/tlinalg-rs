@@ -48,6 +48,16 @@ fn token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
     Exec::new(pool, budget).unwrap()
 }
 
+/// A token whose default-strategy model prices every multiply-add at a millisecond, so that even
+/// the tiny items of these scheduling tests carry enough estimated work to fan out. The tests of
+/// the work gate itself use [`token`] with the default model.
+pub(super) fn eager_token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
+    let model = WorkModel::default().with_muladds_per_ns(1e-6);
+    Exec::new(pool, budget)
+        .unwrap()
+        .with_batch_policy(BatchPolicy::new(BatchStrategy::Auto).with_model(model))
+}
+
 /// The ledger root of a token made by `Exec::new`.
 fn root(exec: &mut Exec<'_>) -> u64 {
     exec.token()
@@ -89,7 +99,7 @@ fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
         (5, 4),
         (8, 8),
     ] {
-        let mut exec = token(&pool, budget);
+        let mut exec = eager_token(&pool, budget);
         let granted = exec.budget();
         let lanes = expected_lanes(batch, granted);
         let mut values = vec![99];
@@ -206,6 +216,46 @@ fn a_single_small_item_stays_on_the_caller_at_width_one() {
     assert_eq!(values, [0]);
 }
 
+/// A batch of tiny items under the default policy stays serial and never enters the pool: the
+/// shared work model narrows the tiny total work to width one, so no lane fan-out pays the pool
+/// entry (this replaces the deleted per-dimension cutoff).
+#[test]
+fn a_tiny_batch_does_not_enter_the_pool() {
+    let pool = owned_pool(4);
+    let mut exec = token(&pool, 4);
+    let batch = 8;
+    let item_muladds = 4.0 * 4.0 * 4.0;
+    assert_eq!(
+        decide(&exec, batch, item_muladds),
+        Route { lanes: 1, slots: 1 }
+    );
+
+    let root = root(&mut exec);
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, batch);
+    LAST_LANES.set(0);
+    run(
+        Op::Solve,
+        batch,
+        &mut exec,
+        item_muladds,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| assert_eq!(par.degree(), 1),
+        |index, (values,), (), par| {
+            assert_eq!(par.degree(), 1);
+            assert!(!on_pool("test"));
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    assert_eq!(ledger::installs(root), 0, "no pool entry for a tiny batch");
+    values_out.publish();
+    assert_eq!(values, (0..batch).collect::<Vec<_>>());
+}
+
 /// One large item still receives the whole budget: the work model's width is the full pool, and
 /// the driver enters the pool once for that item.
 #[test]
@@ -287,7 +337,7 @@ fn work_runs_on_the_selected_pool_whoever_calls() {
     );
 
     let run_on_selected = |what: &str| {
-        let mut exec = token(&selected, 2);
+        let mut exec = eager_token(&selected, 2);
         let root = root(&mut exec);
         let mut values = Vec::new();
         let mut values_out = VecOut::new(&mut values, 8);
@@ -450,7 +500,7 @@ fn auto_lanes_do_not_depend_on_the_item_extent() {
     use crate::householder::{apply_reflectors, ReflectorShape};
     use crate::triangular_solve::{triangular_solve, TriangularSolveFlags};
     let pool = owned_pool(4);
-    let mut exec = token(&pool, 2);
+    let mut exec = eager_token(&pool, 2);
 
     let n = 2;
     let batch = 4;
@@ -537,7 +587,7 @@ fn auto_lanes_do_not_depend_on_the_item_extent() {
 fn packed_routes_fan_out_for_a_large_item() {
     use crate::packed_lu::{factor, factor_solve, solve_prepared};
     let pool = owned_pool(4);
-    let mut exec = token(&pool, 2);
+    let mut exec = eager_token(&pool, 2);
     let batch = 4;
     let n = 65;
     let mut lu = vec![0.0; n * n * batch];

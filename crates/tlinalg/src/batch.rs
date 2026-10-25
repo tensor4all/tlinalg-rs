@@ -829,6 +829,22 @@ impl Route {
 /// share as faer width. When `Auto` keeps one lane, the lane runs the items one after another at
 /// the decision's item width.
 pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route {
+    // `generic_auto` has no work gate in the default model (`min_work_per_lane_ns == 0`), so it
+    // would fan a batch of tiny items out over every slot and pay the pool entry for nothing.
+    // The shared `WidthPolicy` (the one body behind `Exec::width_for`) is the gate: when the
+    // whole batch is below its serial threshold the batch stays on the caller at width one.
+    if batch > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+        let model = &exec.batch_policy().model;
+        let rate = if model.muladds_per_ns > 0.0 {
+            model.muladds_per_ns
+        } else {
+            1.0
+        };
+        let item_ns = model.item_overhead_ns + item_muladds / rate;
+        if exec.width_for(item_ns * batch as f64, &model.width) <= 1 {
+            return Route { lanes: 1, slots: 1 };
+        }
+    }
     let decision = exec.batch_decision(&BatchQuery::new(batch, item_muladds));
     let lanes = decision.lanes.clamp(1, batch.max(1));
     let slots = if lanes > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
