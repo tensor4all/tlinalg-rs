@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "tlinalg-blas"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "blas-src",
  "cblas-sys",

@@ -20,7 +20,7 @@ publish = false
 
 [workspace.dependencies]
 tlinalg = { version = "0.5.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.4.1", path = "crates/tlinalg-blas" }
+tlinalg-blas = { version = "0.5.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's faer fork; the dependency key and `[lib] name` remain `faer`.
