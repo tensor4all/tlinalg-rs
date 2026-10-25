@@ -34,7 +34,7 @@ fn cholesky_into_typed<T: FaerScalar>(
     data_len: usize,
     l: *mut c_void,
     sizes: &tlinalg_cholesky_out,
-    parallel: Exec<'_>,
+    parallel: &mut Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut ll = Vec::new();

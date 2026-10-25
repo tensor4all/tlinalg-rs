@@ -43,7 +43,7 @@ fn lu_into_typed<T: FaerScalar>(
     u: *mut c_void,
     parity: *mut c_void,
     sizes: &tlinalg_lu_out,
-    parallel: Exec<'_>,
+    parallel: &mut Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut pp, mut ll, mut uu, mut par) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());

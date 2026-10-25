@@ -48,7 +48,7 @@ fn eigh_into_typed<T: FaerScalar>(
     values: *mut c_void,
     vectors: *mut c_void,
     sizes: &tlinalg_eigh_out,
-    parallel: Exec<'_>,
+    parallel: &mut Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut vv, mut ww) = (Vec::new(), Vec::new());
@@ -68,7 +68,7 @@ fn eigh_values_into_typed<T: FaerScalar>(
     data_len: usize,
     values: *mut c_void,
     sizes: &tlinalg_eigh_values_out,
-    parallel: Exec<'_>,
+    parallel: &mut Exec<'_>,
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let mut vv = Vec::new();

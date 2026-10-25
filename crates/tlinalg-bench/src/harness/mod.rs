@@ -182,7 +182,7 @@ fn info(threads: Option<usize>) {
 
 const CSV_HEADER: &str =
     "regime,family,dtype,m,n,batch,row,threads,total_ms,per_item_us,status,note,\
-samples_ms,rayon_threads,vendor_threads";
+samples_ms,pool_threads,vendor_threads";
 
 fn write_csv(path: &str, records: &[rows::Record]) -> Result<(), String> {
     let mut text = String::from(CSV_HEADER);
@@ -254,7 +254,7 @@ fn census(ctx: &Census<'_>, family: &str, case: Case, dtype: &str, ok: bool) -> 
                 "skipped".into()
             },
             note,
-            rayon_threads: threads,
+            pool_threads: threads,
             vendor_threads: threads,
         })
         .collect();
