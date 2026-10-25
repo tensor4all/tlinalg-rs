@@ -90,13 +90,13 @@ pub trait EigScalar: ScalarEntity {
 
     /// One lane's complete byte requirement for the route (`vectors` selects
     /// values-and-vectors or values only).
-    fn eig_req(n: usize, vectors: bool, par: faer::Par) -> faer::dyn_stack::StackReq;
+    fn eig_req(n: usize, vectors: bool, par: faer::ParShape) -> faer::dyn_stack::StackReq;
 
     /// Carve the lane scratch from a borrowed workspace chunk.
     fn eig_scratch<'w>(
         n: usize,
         vectors: bool,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut faer::dyn_stack::MemStack,
     ) -> Self::EigScratch<'w>;
 
@@ -107,7 +107,7 @@ pub trait EigScalar: ScalarEntity {
         values: &mut dyn crate::batch::Push<Self::Complex>,
         vectors: Option<&mut dyn crate::batch::Push<Self::Complex>>,
         scratch: &mut Self::EigScratch<'_>,
-        par: faer::Par,
+        par: faer::Par<'_>,
     ) -> crate::Result<()>;
 }
 

@@ -41,7 +41,7 @@ struct EighScratch<'w, E: faer::traits::ComplexField> {
 fn evd_req<E: faer::traits::ComplexField>(
     n: usize,
     vectors: ComputeEigenvectors,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     if n == 0 {
         StackReq::EMPTY
@@ -54,7 +54,7 @@ fn evd_req<E: faer::traits::ComplexField>(
 fn eigh_req<E: faer::traits::ComplexField>(
     n: usize,
     vectors: ComputeEigenvectors,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     StackReq::new::<E>(n).and(faer_req(evd_req::<E>(n, vectors, par)))
 }
@@ -63,7 +63,7 @@ impl<'w, E: faer::traits::ComplexField> EighScratch<'w, E> {
     fn new(
         n: usize,
         vectors: ComputeEigenvectors,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut MemStack,
     ) -> Self {
         let zero = <E as faer::traits::ComplexField>::zero_impl();
@@ -86,7 +86,7 @@ fn decompose<E: faer::traits::ComplexField>(
     mat: MatRef<'_, E>,
     vectors: Option<MatMut<'_, E>>,
     scratch: &mut EighScratch<'_, E>,
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) -> Result<()> {
     // The carved diagonal is already zeroed; only a scratch that an earlier item wrote needs
     // resetting.

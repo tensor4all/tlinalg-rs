@@ -39,7 +39,7 @@ pub(crate) fn lane_requirement(
     batch: usize,
     item_muladds: f64,
     check: impl FnOnce() -> Result<()>,
-    req: impl FnOnce(faer::Par) -> StackReq,
+    req: impl FnOnce(faer::ParShape) -> StackReq,
 ) -> Result<Option<(usize, usize)>> {
     let route = crate::batch::decide(exec, batch, item_muladds);
     if batch == 0 {

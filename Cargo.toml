@@ -27,7 +27,7 @@ tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # 0.24.8 adds the divide-and-conquer SVD secular-root fix (tensor4all/faer#28)
 # to the existing QR/EVD and householder fixes. A compatible range admits later
 # patch fixes without republishing tlinalg; tenferro shares this faer identity.
-faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon"] }
+faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon", "threadteam"] }
 # `strided-view` is the stride/metadata and `RawStridedRef` surface tlinalg consumes. A registry
 # source resolves to one 0.7.x version, so a compatible requirement keeps `RawStridedRef` one type
 # without forcing a tlinalg release for every strided patch.
@@ -41,7 +41,7 @@ tcontract-exec = { version = "0.6.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "4ea7f5cbb0347ab8689e112654466b596fdab9c3" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -55,14 +55,18 @@ openblas-src = { version = "0.10" }
 # Benchmarks only.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
-# Unpublished upstreams: delete the entries once the crates are on crates.io.
+# Unpublished upstreams: delete the entries once the crates are on crates.io. They are branch
+# revs (threadteam-rs, strided-rs, tcontract-rs `feat/dispatch-cost`, faer `exp/par-team-lifetime`)
+# that agree on one threadteam rev, so `Exec` and `TeamExec` are single types.
 [patch.crates-io]
-threadteam = { git = "https://github.com/tensor4all/threadteam-rs.git", rev = "97404b580951aa9d89910a739618ce044e988b16" }
-strided-traits = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
+threadteam = { git = "https://github.com/tensor4all/threadteam-rs.git", rev = "5afe0b4d2ea604d0d8fe6b563bacf4c80f2d0bc4" }
+strided-traits = { git = "https://github.com/tensor4all/strided-rs.git", rev = "6821b53e201a9684520ac8458467656143c934f2" }
+strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "6821b53e201a9684520ac8458467656143c934f2" }
+strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "6821b53e201a9684520ac8458467656143c934f2" }
+strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "6821b53e201a9684520ac8458467656143c934f2" }
+tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "4ea7f5cbb0347ab8689e112654466b596fdab9c3" }
+t4a-faer = { git = "https://github.com/tensor4all/faer.git", rev = "9cd64f022a275071b64fbd0872e7c1f4d8d51bf9" }
+t4a-faer-traits = { git = "https://github.com/tensor4all/faer.git", rev = "9cd64f022a275071b64fbd0872e7c1f4d8d51bf9" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

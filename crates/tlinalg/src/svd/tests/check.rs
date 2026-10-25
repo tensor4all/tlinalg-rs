@@ -100,12 +100,18 @@ fn only_decompositions_that_can_divide_are_checked() {
     let checked = |m: usize, n: usize, vectors| {
         let mut bytes = vec![
             MaybeUninit::<u8>::uninit();
-            svd_req::<c64>(m, n, vectors, faer::Par::Seq)
+            svd_req::<c64>(m, n, vectors, faer::ParShape::Seq)
                 .unaligned_bytes_required()
         ];
-        SvdScratch::<c64>::new(m, n, vectors, faer::Par::Seq, MemStack::new(&mut bytes))
-            .check
-            .is_some()
+        SvdScratch::<c64>::new(
+            m,
+            n,
+            vectors,
+            faer::ParShape::Seq,
+            MemStack::new(&mut bytes),
+        )
+        .check
+        .is_some()
     };
     assert!(!checked(127, 400, ComputeSvdVectors::Thin));
     assert!(checked(128, 128, ComputeSvdVectors::Thin));

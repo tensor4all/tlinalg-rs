@@ -49,19 +49,23 @@ fn solve_in_place<E: faer::traits::ComplexField>(
     lower: bool,
     transpose_a: bool,
     unit_diagonal: bool,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) {
     let effective_lower = lower != transpose_a;
     let a = if transpose_a { a.transpose() } else { a };
     match (effective_lower, unit_diagonal) {
         (true, false) => {
-            faer::linalg::triangular_solve::solve_lower_triangular_in_place(a, rhs, par);
+            faer::linalg::triangular_solve::solve_lower_triangular_in_place(a, rhs, par.reborrow());
         }
         (true, true) => {
-            faer::linalg::triangular_solve::solve_unit_lower_triangular_in_place(a, rhs, par);
+            faer::linalg::triangular_solve::solve_unit_lower_triangular_in_place(
+                a,
+                rhs,
+                par.reborrow(),
+            );
         }
         (false, false) => {
-            faer::linalg::triangular_solve::solve_upper_triangular_in_place(a, rhs, par);
+            faer::linalg::triangular_solve::solve_upper_triangular_in_place(a, rhs, par.reborrow());
         }
         (false, true) => {
             faer::linalg::triangular_solve::solve_unit_upper_triangular_in_place(a, rhs, par);
@@ -79,7 +83,7 @@ fn triangular_solve_item<T: FaerScalar>(
     b: MatRef<'_, T::Entity>,
     flags: TriangularSolveFlags,
     x: &mut Sink<'_, T>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) {
     let TriangularSolveFlags {
         left_side,
@@ -93,7 +97,7 @@ fn triangular_solve_item<T: FaerScalar>(
             T::from_entity(b[(index % b_rows, index / b_rows)])
         });
         let rhs = MatMut::from_column_major_slice_mut(T::entity_slice_mut(region), b_rows, b_cols);
-        solve_in_place(a, rhs, lower, transpose_a, unit_diagonal, par);
+        solve_in_place(a, rhs, lower, transpose_a, unit_diagonal, par.reborrow());
     } else {
         // Right-side solve `X A = B` is the left-side solve of the transposed system. Write `B`
         // into the output region and solve `Aᵀ Xᵀ = Bᵀ` on its transposed view in place; the

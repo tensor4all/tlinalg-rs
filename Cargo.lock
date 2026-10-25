@@ -415,7 +415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -656,7 +656,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1108,7 +1108,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1259,7 +1259,7 @@ dependencies = [
 [[package]]
 name = "strided-basic"
 version = "0.8.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1272,7 +1272,7 @@ dependencies = [
 [[package]]
 name = "strided-perm"
 version = "0.8.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "strided-view",
  "thiserror 1.0.69",
@@ -1283,7 +1283,7 @@ dependencies = [
 [[package]]
 name = "strided-traits"
 version = "0.7.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1292,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "strided-view"
 version = "0.7.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1356,9 +1356,8 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.24.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be6b5081aeb2525fdbe9ec27d6a2396f7ce850ab30899064b88a0a3364531a0"
+version = "0.24.9"
+source = "git+https://github.com/tensor4all/faer.git?rev=9cd64f022a275071b64fbd0872e7c1f4d8d51bf9#9cd64f022a275071b64fbd0872e7c1f4d8d51bf9"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1375,13 +1374,13 @@ dependencies = [
  "spindle",
  "t4a-faer-traits",
  "t4a-private-gemm-x86",
+ "threadteam",
 ]
 
 [[package]]
 name = "t4a-faer-traits"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b20254002b5028791c3b97cf7baebce6ea5f3541977348da1c109d16c1dc889"
+source = "git+https://github.com/tensor4all/faer.git?rev=9cd64f022a275071b64fbd0872e7c1f4d8d51bf9#9cd64f022a275071b64fbd0872e7c1f4d8d51bf9"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1424,7 +1423,7 @@ dependencies = [
 [[package]]
 name = "tcontract"
 version = "0.6.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=96d775ac8ac410596bc5fed0f038bda72d7181b9#96d775ac8ac410596bc5fed0f038bda72d7181b9"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=4ea7f5cbb0347ab8689e112654466b596fdab9c3#4ea7f5cbb0347ab8689e112654466b596fdab9c3"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1441,7 +1440,7 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=96d775ac8ac410596bc5fed0f038bda72d7181b9#96d775ac8ac410596bc5fed0f038bda72d7181b9"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=4ea7f5cbb0347ab8689e112654466b596fdab9c3#4ea7f5cbb0347ab8689e112654466b596fdab9c3"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1453,7 +1452,7 @@ dependencies = [
 [[package]]
 name = "tcontract-exec"
 version = "0.6.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=96d775ac8ac410596bc5fed0f038bda72d7181b9#96d775ac8ac410596bc5fed0f038bda72d7181b9"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=4ea7f5cbb0347ab8689e112654466b596fdab9c3#4ea7f5cbb0347ab8689e112654466b596fdab9c3"
 dependencies = [
  "thiserror 1.0.69",
  "threadteam",
@@ -1462,7 +1461,7 @@ dependencies = [
 [[package]]
 name = "tcontract-kernel"
 version = "0.3.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=96d775ac8ac410596bc5fed0f038bda72d7181b9#96d775ac8ac410596bc5fed0f038bda72d7181b9"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=4ea7f5cbb0347ab8689e112654466b596fdab9c3#4ea7f5cbb0347ab8689e112654466b596fdab9c3"
 dependencies = [
  "num-complex",
 ]
@@ -1519,8 +1518,10 @@ dependencies = [
 [[package]]
 name = "threadteam"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/threadteam-rs.git?rev=97404b580951aa9d89910a739618ce044e988b16#97404b580951aa9d89910a739618ce044e988b16"
+source = "git+https://github.com/tensor4all/threadteam-rs.git?rev=5afe0b4d2ea604d0d8fe6b563bacf4c80f2d0bc4#5afe0b4d2ea604d0d8fe6b563bacf4c80f2d0bc4"
 dependencies = [
+ "libc",
+ "loom",
  "rayon",
  "thiserror 1.0.69",
 ]
@@ -1760,7 +1761,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
