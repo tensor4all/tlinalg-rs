@@ -66,7 +66,9 @@ solve is deliberately **not** charged for a factorization it does not run.
   several lanes run `token.fork(lanes, ..)`, which divides the slots among the lanes in shares that
   differ by at most one and add up to `slots`. Inside a lane, `child.external(|width| ..)` enters the
   pool once (or runs in place for width one) and hands the share to faer as a plain width, mapped by
-  the pure helper `faer_par(width)` (`1` is `Par::Seq`).
+  the pure helper `faer_par(width)` (`1` is `Par::Seq`). A token (or child) that carries a team hands
+  faer its team as `Par::Team` instead (`with_faer_par`); the workspace queries use `ParShape`, which
+  depends on the width only.
 * A lane builds its scratch once, from its own chunk of the caller's workspace, and reuses it for
   every item of the lane. Shares differ by at most one, so the workspace query sizes a chunk at the
   widest share (`Route::item_width`), which covers every lane.

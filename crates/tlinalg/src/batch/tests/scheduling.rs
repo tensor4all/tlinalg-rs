@@ -687,3 +687,32 @@ fn forced_strategies_ignore_the_work_model() {
     crate::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();
     assert_eq!(LAST_LANES.get(), 2);
 }
+
+/// A token that carries a team hands faer a `Par::Team`; a plain token keeps the width it gets
+/// through `Exec::external`, as `Par::Rayon`.
+#[test]
+fn faer_gets_a_team_from_a_team_token_and_a_width_from_a_plain_one() {
+    let pool = threadteam::Pool::builder()
+        .threads(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let plain = threadteam::Exec::new(&pool, 4).unwrap();
+    assert!(!plain.carries_team());
+    let width = crate::with_faer_par(plain, |par| match par {
+        faer::Par::Rayon(width) => width.get(),
+        other => panic!("a plain token must give a width, got {other:?}"),
+    });
+    assert_eq!(width, 4);
+    let Ok(team) = pool.into_team(4) else {
+        // The host could not reserve the members; the plain route is covered above.
+        return;
+    };
+    let token = team.exec(4);
+    assert!(token.carries_team());
+    let size = crate::with_faer_par(token, |par| match par {
+        faer::Par::Team(team) => team.size().get(),
+        other => panic!("a team token must give its team, got {other:?}"),
+    });
+    assert_eq!(size, 4);
+}

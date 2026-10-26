@@ -118,7 +118,7 @@ fn svd_mem_req<E: faer::traits::ComplexField>(
     m: usize,
     n: usize,
     vectors: ComputeSvdVectors,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     if m.min(n) == 0 {
         // An empty matrix is never decomposed, so it needs no faer scratch.
@@ -145,7 +145,7 @@ fn svd_req<E: faer::traits::ComplexField>(
     m: usize,
     n: usize,
     vectors: ComputeSvdVectors,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     let k = m.min(n);
     let req = StackReq::new::<E>(n * v_cols(m, n, vectors))
@@ -164,7 +164,7 @@ impl<'w, E: faer::traits::ComplexField> SvdScratch<'w, E> {
         m: usize,
         n: usize,
         vectors: ComputeSvdVectors,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut MemStack,
     ) -> Self {
         let k = m.min(n);
@@ -206,7 +206,7 @@ fn reproduces<E: faer::traits::ComplexField>(
     v: MatRef<'_, E>,
     check: &mut Check<'_, E>,
     epsilon: f64,
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) -> bool {
     use faer::traits::math_utils::{from_f64, mul, neg, one};
 
@@ -238,7 +238,7 @@ fn svd_values_item<T: FaerScalar>(
     mat: MatRef<'_, T::Entity>,
     s: &mut impl Push<<T as ScalarEntity>::Real>,
     scratch: &mut SvdScratch<'_, T::Entity>,
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) -> Result<()> {
     let k = mat.nrows().min(mat.ncols());
     if k == 0 {
@@ -273,7 +273,7 @@ fn svd_item<T: FaerScalar>(
     full: bool,
     (u, s, vt): (&mut Sink<'_, T>, &mut impl Push<T>, &mut impl Push<T>),
     scratch: &mut SvdScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) -> Result<()> {
     let (m, n) = (mat.nrows(), mat.ncols());
     let k = m.min(n);
@@ -312,7 +312,7 @@ fn svd_item<T: FaerScalar>(
                     u_cols,
                 )),
                 Some(scratch.v.as_mut()),
-                par,
+                par.reborrow(),
                 MemStack::new(&mut *scratch.mem),
                 Default::default(),
             )
@@ -324,7 +324,7 @@ fn svd_item<T: FaerScalar>(
                     scratch.v.as_ref(),
                     check,
                     <T as ScalarEntity>::EPSILON,
-                    par,
+                    par.reborrow(),
                 )
         }
     };

@@ -49,7 +49,7 @@ pub(crate) struct LuScratch<'w, E: faer::traits::ComplexField> {
 }
 
 /// faer's own factor scratch for `m x n`.
-fn factor_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::Par) -> StackReq {
+fn factor_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::ParShape) -> StackReq {
     faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, E>(
         m,
         n,
@@ -60,7 +60,7 @@ fn factor_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::Par)
 
 /// One lane's complete requirement for a factorization: the work matrix, both permutations and
 /// faer's scratch.
-fn lu_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::Par) -> StackReq {
+fn lu_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::ParShape) -> StackReq {
     StackReq::new::<E>(m * n)
         .and(StackReq::new::<usize>(m))
         .and(StackReq::new::<usize>(m))
@@ -71,7 +71,7 @@ impl<'w, E: faer::traits::ComplexField> LuScratch<'w, E> {
     fn new(
         m: usize,
         n: usize,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut MemStack,
     ) -> (LuScratch<'w, E>, &'w mut MemStack) {
         let zero = <E as faer::traits::ComplexField>::zero_impl();
@@ -91,7 +91,7 @@ impl<'w, E: faer::traits::ComplexField> LuScratch<'w, E> {
     }
 
     /// Factor `mat` into the scratch; returns the transposition count.
-    fn factor(&mut self, mat: MatRef<'_, E>, par: faer::Par) -> usize {
+    fn factor(&mut self, mat: MatRef<'_, E>, par: faer::Par<'_>) -> usize {
         self.lu.copy_from(mat);
         faer::linalg::lu::partial_pivoting::factor::lu_in_place(
             self.lu.as_mut(),
@@ -117,7 +117,7 @@ fn lu_item<T: FaerScalar>(
     mat: MatRef<'_, T::Entity>,
     (p, l, u, parity): LuSinks<'_, '_, T>,
     scratch: &mut LuScratch<'_, T::Entity>,
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) {
     let (m, n) = (mat.nrows(), mat.ncols());
     let k = m.min(n);
@@ -334,7 +334,7 @@ fn solve_req<E: faer::traits::ComplexField>(
     n: usize,
     nrhs: usize,
     transpose_a: bool,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     if transpose_a {
         faer::linalg::lu::partial_pivoting::solve::solve_transpose_in_place_scratch::<usize, E>(
@@ -350,7 +350,7 @@ fn lu_solve_req<E: faer::traits::ComplexField>(
     n: usize,
     nrhs: usize,
     transpose_a: bool,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     lu_req::<E>(n, n, par).and(faer_req(solve_req::<E>(n, nrhs, transpose_a, par)))
 }
@@ -360,7 +360,7 @@ impl<'w, E: faer::traits::ComplexField> LuSolveScratch<'w, E> {
         n: usize,
         nrhs: usize,
         transpose_a: bool,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut MemStack,
     ) -> Self {
         let (factor, stack) = LuScratch::<E>::new(n, n, par, stack);
@@ -380,11 +380,11 @@ fn solve_item<T: FaerScalar>(
     mut destination: MatMut<'_, T::Entity>,
     transpose_a: bool,
     scratch: &mut LuSolveScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) -> Result<()> {
     let n = a.nrows();
     let lu = &mut scratch.factor;
-    lu.factor(a, par);
+    lu.factor(a, par.reborrow());
     for i in 0..n {
         if lu.lu[(i, i)] == <T::Entity as Default>::default() {
             return Err(Error::Singular { op });
@@ -403,7 +403,7 @@ fn solve_item<T: FaerScalar>(
             lu.lu.as_ref(),
             perm,
             destination,
-            par,
+            par.reborrow(),
             stack,
         );
     } else {

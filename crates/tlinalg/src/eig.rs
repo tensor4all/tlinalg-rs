@@ -311,7 +311,11 @@ fn imag_is_effectively_zero(real: f64, imag: f64, eps: f64) -> bool {
 }
 
 /// faer's eigensolver scratch for `n x n` (empty for `n == 0`, which is never decomposed).
-fn evd_req<E: faer::traits::ComplexField>(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+fn evd_req<E: faer::traits::ComplexField>(
+    n: usize,
+    vectors: bool,
+    par: faer::ParShape,
+) -> StackReq {
     if n == 0 {
         StackReq::EMPTY
     } else {
@@ -362,7 +366,7 @@ macro_rules! impl_eig_real {
         impl EigScalar for $real {
             type EigScratch<'w> = RealEigScratch<'w, $real>;
 
-            fn eig_req(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+            fn eig_req(n: usize, vectors: bool, par: faer::ParShape) -> StackReq {
                 StackReq::new::<$real>(n * if vectors { n } else { 0 })
                     .and(StackReq::new::<$real>(n))
                     .and(StackReq::new::<$real>(n))
@@ -372,7 +376,7 @@ macro_rules! impl_eig_real {
             fn eig_scratch<'w>(
                 n: usize,
                 vectors: bool,
-                par: faer::Par,
+                par: faer::ParShape,
                 stack: &'w mut MemStack,
             ) -> Self::EigScratch<'w> {
                 let (u, stack) = if vectors {
@@ -402,7 +406,7 @@ macro_rules! impl_eig_real {
                 values: &mut dyn Push<$complex>,
                 vectors: Option<&mut dyn Push<$complex>>,
                 scratch: &mut Self::EigScratch<'_>,
-                par: faer::Par,
+                par: faer::Par<'_>,
             ) -> Result<()> {
                 let n = mat.nrows();
                 let RealEigScratch { u, s_re, s_im, mem } = scratch;
@@ -469,7 +473,7 @@ macro_rules! impl_eig_complex {
         impl EigScalar for $complex {
             type EigScratch<'w> = ComplexEigScratch<'w, $entity>;
 
-            fn eig_req(n: usize, vectors: bool, par: faer::Par) -> StackReq {
+            fn eig_req(n: usize, vectors: bool, par: faer::ParShape) -> StackReq {
                 StackReq::new::<$entity>(n * if vectors { n } else { 0 })
                     .and(StackReq::new::<$entity>(n))
                     .and(faer_req(evd_req::<$entity>(n, vectors, par)))
@@ -478,7 +482,7 @@ macro_rules! impl_eig_complex {
             fn eig_scratch<'w>(
                 n: usize,
                 vectors: bool,
-                par: faer::Par,
+                par: faer::ParShape,
                 stack: &'w mut MemStack,
             ) -> Self::EigScratch<'w> {
                 let zero = <$entity>::new(0.0, 0.0);
@@ -506,7 +510,7 @@ macro_rules! impl_eig_complex {
                 values: &mut dyn Push<$complex>,
                 vectors: Option<&mut dyn Push<$complex>>,
                 scratch: &mut Self::EigScratch<'_>,
-                par: faer::Par,
+                par: faer::Par<'_>,
             ) -> Result<()> {
                 let n = mat.nrows();
                 let zero = <$entity>::new(0.0, 0.0);

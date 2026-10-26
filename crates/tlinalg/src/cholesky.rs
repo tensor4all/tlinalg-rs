@@ -30,7 +30,7 @@ fn cholesky_item<T: FaerScalar>(
     mat: faer::MatRef<'_, T::Entity>,
     l: &mut Sink<'_, T>,
     mem: &mut [MaybeUninit<u8>],
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) -> Result<()> {
     let n = mat.nrows();
     // The output chunk is the destructible copy. Fill it with `mat` and factor in place;
@@ -55,7 +55,7 @@ fn cholesky_item<T: FaerScalar>(
 }
 
 /// faer's own factor scratch for `n x n`.
-fn req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
+fn req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> StackReq {
     faer::linalg::cholesky::llt::factor::cholesky_in_place_scratch::<E>(n, par, Default::default())
 }
 

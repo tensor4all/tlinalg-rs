@@ -62,7 +62,7 @@ fn qr_req<E: faer::traits::ComplexField>(
     m: usize,
     n: usize,
     pivoting: bool,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     let k = m.min(n);
     let block = block_size::<E>(m, n);
@@ -114,7 +114,7 @@ impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
         m: usize,
         n: usize,
         pivoting: bool,
-        par: faer::Par,
+        par: faer::ParShape,
         stack: &'w mut MemStack,
     ) -> QrScratch<'w, E> {
         let k = m.min(n);
@@ -143,7 +143,7 @@ impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
     }
 
     /// Write the thin `Q` from the reflectors in `work`/`coeff` into the caller's output.
-    fn form_q<T: FaerScalar<Entity = E>>(&mut self, q: &mut Sink<'_, T>, par: faer::Par) {
+    fn form_q<T: FaerScalar<Entity = E>>(&mut self, q: &mut Sink<'_, T>, par: faer::Par<'_>) {
         let (m, k) = (self.work.nrows(), self.work.nrows().min(self.work.ncols()));
         // `Q = H_1 ... H_k I`: the output region starts as the thin identity.
         let region = T::entity_slice_mut(q.fill(m * k, |index| {
@@ -169,7 +169,7 @@ fn qr_req_factor<E: faer::traits::ComplexField>(
     m: usize,
     n: usize,
     pivoting: bool,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     let block = block_size::<E>(m, n);
     if pivoting {
@@ -207,7 +207,7 @@ fn qr_item<T: FaerScalar>(
     q: &mut Sink<'_, T>,
     r: &mut impl Push<T>,
     scratch: &mut QrScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) {
     scratch.work.copy_from(mat);
     scratch
@@ -216,7 +216,7 @@ fn qr_item<T: FaerScalar>(
     faer::linalg::qr::no_pivoting::factor::qr_in_place(
         scratch.work.as_mut(),
         scratch.coeff.as_mut(),
-        par,
+        par.reborrow(),
         MemStack::new(&mut *scratch.factor_mem),
         Default::default(),
     );
@@ -234,7 +234,7 @@ fn rank_revealing_qr_item<T: FaerScalar>(
     mat: MatRef<'_, T::Entity>,
     (q, r, permutation): (&mut Sink<'_, T>, &mut impl Push<T>, &mut Sink<'_, i64>),
     scratch: &mut QrScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) -> Result<()> {
     let (m, n) = (mat.nrows(), mat.ncols());
     let k = m.min(n);
@@ -279,7 +279,7 @@ fn rank_revealing_qr_item<T: FaerScalar>(
         scratch.coeff.as_mut(),
         forward,
         &mut *scratch.inverse_permutation,
-        par,
+        par.reborrow(),
         MemStack::new(&mut *scratch.factor_mem),
         Default::default(),
     );

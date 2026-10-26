@@ -128,7 +128,7 @@ fn compact_factor_panel<T: FaerScalar>(
     start: usize,
     bs: usize,
     coeff: &mut impl Push<T>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) {
     let rows = qr.nrows();
     for j in start..start + bs {
@@ -160,7 +160,7 @@ fn compact_factor_panel<T: FaerScalar>(
                 tile,
                 Conj::No,
                 target,
-                par,
+                par.reborrow(),
                 MemStack::new(mem),
             );
         }
@@ -175,7 +175,7 @@ fn compact_factor_item<T: FaerScalar>(
     cols: usize,
     coeff: &mut impl Push<T>,
     scratch: &mut CompactFactorScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) {
     let CompactFactorScratch { factor, mem } = scratch;
     let block = factor.nrows();
@@ -184,7 +184,7 @@ fn compact_factor_item<T: FaerScalar>(
     let mut start = 0;
     while start < k {
         let bs = block.min(k - start);
-        compact_factor_panel::<T>(&mut qr, factor, mem, start, bs, coeff, par);
+        compact_factor_panel::<T>(&mut qr, factor, mem, start, bs, coeff, par.reborrow());
         if start + bs < cols {
             // Apply the panel's whole reflector sequence to the trailing columns at once, as the
             // compact-WY factor of the block. QR applies `H_0` first and `H_(bs-1)` last, so the
@@ -200,7 +200,7 @@ fn compact_factor_item<T: FaerScalar>(
                 basis,
                 bs,
                 1,
-                par,
+                par.reborrow(),
             );
             let factor_tile = factor.as_ref().subrows(0, bs).subcols(0, bs);
             let target = trailing.rb_mut().subrows_mut(start, rows - start);
@@ -209,7 +209,7 @@ fn compact_factor_item<T: FaerScalar>(
                 factor_tile,
                 Conj::Yes,
                 target,
-                par,
+                par.reborrow(),
                 MemStack::new(mem),
             );
         }
@@ -577,7 +577,7 @@ pub fn apply_reflectors_into<T: FaerScalar>(
                 factors: MatMut::from_column_major_slice_mut(factors, block, k),
             }
         },
-        |index, (c,), scratch, par| {
+        |index, (c,), scratch, mut par| {
             if !apply {
                 return Ok(());
             }
@@ -603,7 +603,7 @@ pub fn apply_reflectors_into<T: FaerScalar>(
                     basis.subrows(start, rows - start).subcols(start, bs),
                     bs,
                     1,
-                    par,
+                    par.reborrow(),
                 );
                 start += bs;
             }
@@ -613,7 +613,7 @@ pub fn apply_reflectors_into<T: FaerScalar>(
                 // `Qᴴ`: the conjugate of the transposed sequence. The real scalars are their own
                 // conjugate, so this is the plain transpose for them, as before.
                 faer::linalg::householder::apply_block_householder_sequence_transpose_on_the_left_in_place_with_conj(
-                    basis, factors.as_ref(), Conj::Yes, matrix, par, stack,
+                    basis, factors.as_ref(), Conj::Yes, matrix, par.reborrow(), stack,
                 );
             } else {
                 faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_with_conj(

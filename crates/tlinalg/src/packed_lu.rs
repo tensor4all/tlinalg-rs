@@ -57,7 +57,7 @@ pub(crate) struct FactorScratch<'w, T: FaerScalar> {
 }
 
 /// faer's own factor scratch for `m x n`.
-fn factor_req<T: FaerScalar>(m: usize, n: usize, par: faer::Par) -> StackReq {
+fn factor_req<T: FaerScalar>(m: usize, n: usize, par: faer::ParShape) -> StackReq {
     faer::linalg::lu::partial_pivoting::factor::lu_in_place_scratch::<usize, T::Entity>(
         m,
         n,
@@ -68,7 +68,7 @@ fn factor_req<T: FaerScalar>(m: usize, n: usize, par: faer::Par) -> StackReq {
 
 /// One lane's complete requirement for a factorization: four permutations and faer's scratch. The
 /// matrix is the caller's in-place buffer, not scratch.
-fn factor_lane_req<T: FaerScalar>(m: usize, n: usize, par: faer::Par) -> StackReq {
+fn factor_lane_req<T: FaerScalar>(m: usize, n: usize, par: faer::ParShape) -> StackReq {
     StackReq::new::<usize>(m)
         .and(StackReq::new::<usize>(m))
         .and(StackReq::new::<usize>(m))
@@ -80,7 +80,7 @@ impl<'w, T: FaerScalar> FactorScratch<'w, T> {
     /// Size the scratch for `m x n` matrices from one lane's borrowed workspace chunk.
     ///
     /// The parallelism participates because faer sizes its scratch per thread.
-    fn new(m: usize, n: usize, par: faer::Par, stack: &'w mut MemStack) -> Self {
+    fn new(m: usize, n: usize, par: faer::ParShape, stack: &'w mut MemStack) -> Self {
         let (perm, stack) = zeros::<usize>(stack, m, &0);
         let (perm_inv, stack) = zeros::<usize>(stack, m, &0);
         let (current, stack) = zeros::<usize>(stack, m, &0);
@@ -102,7 +102,7 @@ impl<'w, T: FaerScalar> FactorScratch<'w, T> {
     /// `ipiv`. Returns whether the permutation is odd.
     fn factor(
         &mut self,
-        par: faer::Par,
+        par: faer::Par<'_>,
         matrix: MatMut<'_, T::Entity>,
         ipiv: &mut [i32],
         op: Op,
@@ -454,7 +454,7 @@ pub fn validate_pivots(op: Op, n: usize, ipiv: &[i32]) -> Result<()> {
 /// Conjugation conjugates `L` and `U` implicitly.
 // INVARIANT: the flags mirror the host's solve attributes one-to-one.
 fn solve_one<T: FaerScalar>(
-    par: faer::Par,
+    mut par: faer::Par<'_>,
     (n, nrhs): (usize, usize),
     lu: MatRef<'_, T::Entity>,
     ipiv: &[i32],
@@ -470,10 +470,13 @@ fn solve_one<T: FaerScalar>(
                 lu_t,
                 conj,
                 x.rb_mut(),
-                par,
+                par.reborrow(),
             );
             faer::linalg::triangular_solve::solve_unit_upper_triangular_in_place_with_conj(
-                lu_t, conj, x, par,
+                lu_t,
+                conj,
+                x,
+                par.reborrow(),
             );
         }
         apply_row_swaps(rhs, n, nrhs, ipiv, true);
@@ -484,7 +487,7 @@ fn solve_one<T: FaerScalar>(
             lu,
             conj,
             x.rb_mut(),
-            par,
+            par.reborrow(),
         );
         faer::linalg::triangular_solve::solve_upper_triangular_in_place_with_conj(lu, conj, x, par);
     }
@@ -744,10 +747,10 @@ pub fn factor_solve_into<T: FaerScalar>(
         ),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| FactorScratch::<T>::new(n, n, par, MemStack::new(stack)),
-        |_index, (lu, ipiv, output), scratch, par| {
+        |_index, (lu, ipiv, output), scratch, mut par| {
             {
                 let mat = MatMut::from_column_major_slice_mut(T::entity_slice_mut(lu), n, n);
-                scratch.factor(par, mat, ipiv, op)?;
+                scratch.factor(par.reborrow(), mat, ipiv, op)?;
             }
             if rhs_len > 0 {
                 if (0..n).any(|i| lu[i + i * n] == zero) {

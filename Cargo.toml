@@ -24,10 +24,10 @@ tlinalg-blas = { version = "0.5.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's faer fork; the dependency key and `[lib] name` remain `faer`.
-# 0.24.8 adds the divide-and-conquer SVD secular-root fix (tensor4all/faer#28)
+# 0.25 takes `par` in the high-level methods; 0.24.8 added the SVD secular-root fix (tensor4all/faer#28)
 # to the existing QR/EVD and householder fixes. A compatible range admits later
 # patch fixes without republishing tlinalg; tenferro shares this faer identity.
-faer = { package = "t4a-faer", version = "0.24.8", default-features = false, features = ["std", "rayon"] }
+faer = { package = "t4a-faer", version = "0.25.0", default-features = false, features = ["std", "rayon", "threadteam"] }
 # `strided-view` is the stride/metadata and `RawStridedRef` surface tlinalg consumes. A registry
 # source resolves to one 0.7.x version, so a compatible requirement keeps `RawStridedRef` one type
 # without forcing a tlinalg release for every strided patch.
@@ -36,12 +36,12 @@ strided-view = { version = "0.7.0" }
 threadteam = { version = "0.1.0" }
 # The `Exec` bundle every entry point takes (a threadteam token, workspace, batch policy) and the
 # batch-lane vocabulary. One source with the git-only `tcontract-capi` below, so the forwarded
-# `Exec` is the same type the C API takes; `[patch.crates-io]` supplies the unpublished revision.
+# `Exec` is the same type the C API takes.
 tcontract-exec = { version = "0.6.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "71a11a80" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -55,14 +55,13 @@ openblas-src = { version = "0.10" }
 # Benchmarks only.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
-# Unpublished upstreams: delete the entries once the crates are on crates.io.
-[patch.crates-io]
-threadteam = { git = "https://github.com/tensor4all/threadteam-rs.git", rev = "97404b580951aa9d89910a739618ce044e988b16" }
-strided-traits = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
-tcontract-exec = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "96d775ac8ac410596bc5fed0f038bda72d7181b9" }
+# tcontract-capi is private and not on crates.io, so tcontract-rs's own crates reached through
+# it are pointed at the published releases: each crate exists once in the graph and the forwarded
+# `Exec` is one type.
+[patch."https://github.com/tensor4all/tcontract-rs.git"]
+tcontract = { version = "0.6.0" }
+tcontract-exec = { version = "0.6.0" }
+tcontract-kernel = { version = "0.3.0" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

@@ -59,7 +59,9 @@
 //! [`threadteam::Exec`] token (a pool reference and a budget of slots), the workspace and the
 //! batch policy. The token is the only budget and the only way work starts: the batch is split
 //! into lanes with `fork`, which divides the budget among the lanes, and each lane hands its share
-//! to faer as a plain width through `Exec::external`. A batch with at least `budget` items
+//! to faer as a plain width through `Exec::external`, or as `Par::Team` when the token carries a
+//! team (`threadteam::Exec::carries_team`). Whether a batch fans out is the token's rule
+//! (`Exec::width_for`: serial time against the dispatch cost of the token's kind). A batch with at least `budget` items
 //! therefore runs one sequential item stream per slot (`Par::Seq` items); a smaller batch gives
 //! each item its share as faer width. A serial token runs on the calling thread and enters no
 //! pool; nothing falls back to an ambient pool. The token bounds the lanes it starts, not faer's
@@ -99,10 +101,47 @@ mod sealed {
 ///
 /// A pure `width -> Par` map used inside `Exec::external`, which has already entered the pool (or
 /// kept the caller on width one): width one is `Seq`, anything wider is faer's own rayon degree.
-pub(crate) fn faer_par(width: usize) -> faer::Par {
+pub(crate) fn faer_par(width: usize) -> faer::Par<'static> {
     if width <= 1 {
         faer::Par::Seq
     } else {
         faer::Par::rayon(width)
     }
+}
+
+/// The shape of the parallelism of `width` slots, for the workspace queries (which depend on
+/// the degree, not on how the members are reached).
+pub(crate) fn faer_shape(width: usize) -> faer::ParShape {
+    if width <= 1 {
+        faer::ParShape::Seq
+    } else {
+        faer::ParShape::rayon(width)
+    }
+}
+
+/// Runs `f` with the parallelism faer should use for `token`.
+///
+/// A token that carries a team (minted by a `threadteam::Team`, or a child of one) hands faer its
+/// team as `Par::Team`: faer's regions run on the reserved members as team sections, at the
+/// dispatch cost its floors were derived from. Any other token keeps `Exec::external`, which
+/// hands over its width as `faer_par` (and enters the pool once, or not at all from inside it).
+pub(crate) fn with_faer_par<R: Send>(
+    mut token: threadteam::Exec<'_>,
+    f: impl FnOnce(faer::Par<'_>) -> R + Send,
+) -> R {
+    if token.carries_team() {
+        let mut f = Some(f);
+        // A team token returns its carried team at once, without acquisition.
+        let ran = token.team(|team| {
+            let f = f.take().expect("the closure runs once");
+            f(faer::Par::Team(team))
+        });
+        // A refusal is unreachable for a token that carries a team; fall back to the width.
+        if let Ok(value) = ran {
+            return value;
+        }
+        let f = f.take().expect("a refused team did not run the closure");
+        return token.external(|width| f(faer_par(width.get())));
+    }
+    token.external(|width| f(faer_par(width.get())))
 }

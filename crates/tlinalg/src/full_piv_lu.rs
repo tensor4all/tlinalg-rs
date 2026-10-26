@@ -54,7 +54,7 @@ struct FullPivScratch<'w, E: faer::traits::ComplexField> {
 }
 
 /// faer's own factor scratch for `n x n`.
-fn factor_req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
+fn factor_req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> StackReq {
     faer::linalg::lu::full_pivoting::factor::lu_in_place_scratch::<usize, E>(
         n,
         n,
@@ -65,7 +65,7 @@ fn factor_req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackR
 
 /// One lane's complete requirement for a factorization: the work matrix, four permutations and
 /// faer's scratch.
-fn full_piv_req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> StackReq {
+fn full_piv_req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> StackReq {
     StackReq::new::<E>(n * n)
         .and(StackReq::new::<usize>(n))
         .and(StackReq::new::<usize>(n))
@@ -75,7 +75,7 @@ fn full_piv_req<E: faer::traits::ComplexField>(n: usize, par: faer::Par) -> Stac
 }
 
 impl<'w, E: faer::traits::ComplexField> FullPivScratch<'w, E> {
-    fn new(n: usize, par: faer::Par, stack: &'w mut MemStack) -> (Self, &'w mut MemStack) {
+    fn new(n: usize, par: faer::ParShape, stack: &'w mut MemStack) -> (Self, &'w mut MemStack) {
         let zero = <E as faer::traits::ComplexField>::zero_impl();
         let (lu, stack) = zeros::<E>(stack, n * n, &zero);
         let (row_perm, stack) = zeros::<usize>(stack, n, &0);
@@ -97,7 +97,7 @@ impl<'w, E: faer::traits::ComplexField> FullPivScratch<'w, E> {
     }
 
     /// Factor `mat` into the scratch; returns the transposition count.
-    fn factor(&mut self, mat: MatRef<'_, E>, par: faer::Par) -> usize {
+    fn factor(&mut self, mat: MatRef<'_, E>, par: faer::Par<'_>) -> usize {
         self.lu.copy_from(mat);
         faer::linalg::lu::full_pivoting::factor::lu_in_place(
             self.lu.as_mut(),
@@ -124,7 +124,7 @@ fn full_piv_lu_item<T: FaerScalar>(
         &mut impl Push<T>,
     ),
     scratch: &mut FullPivScratch<'_, T::Entity>,
-    par: faer::Par,
+    par: faer::Par<'_>,
 ) {
     let n = mat.nrows();
     let transpositions = scratch.factor(mat, par);
@@ -358,7 +358,11 @@ struct FullPivSolveScratch<'w, E: faer::traits::ComplexField> {
 }
 
 /// faer's own in-place solve scratch for `n x nrhs`.
-fn solve_req<E: faer::traits::ComplexField>(n: usize, nrhs: usize, par: faer::Par) -> StackReq {
+fn solve_req<E: faer::traits::ComplexField>(
+    n: usize,
+    nrhs: usize,
+    par: faer::ParShape,
+) -> StackReq {
     faer::linalg::lu::full_pivoting::solve::solve_in_place_scratch::<usize, E>(n, nrhs, par)
 }
 
@@ -366,13 +370,13 @@ fn solve_req<E: faer::traits::ComplexField>(n: usize, nrhs: usize, par: faer::Pa
 fn full_piv_solve_req<E: faer::traits::ComplexField>(
     n: usize,
     nrhs: usize,
-    par: faer::Par,
+    par: faer::ParShape,
 ) -> StackReq {
     full_piv_req::<E>(n, par).and(faer_req(solve_req::<E>(n, nrhs, par)))
 }
 
 impl<'w, E: faer::traits::ComplexField> FullPivSolveScratch<'w, E> {
-    fn new(n: usize, nrhs: usize, par: faer::Par, stack: &'w mut MemStack) -> Self {
+    fn new(n: usize, nrhs: usize, par: faer::ParShape, stack: &'w mut MemStack) -> Self {
         let (factor, stack) = FullPivScratch::<E>::new(n, par, stack);
         let (solve_mem, _) = bytes(
             stack,
@@ -394,11 +398,11 @@ fn full_piv_lu_solve_item<T: FaerScalar>(
     transpose_a: bool,
     x: &mut Sink<'_, T>,
     scratch: &mut FullPivSolveScratch<'_, T::Entity>,
-    par: faer::Par,
+    mut par: faer::Par<'_>,
 ) -> Result<()> {
     let n = a.nrows();
     let factor = &mut scratch.factor;
-    factor.factor(a, par);
+    factor.factor(a, par.reborrow());
     let lu = factor.lu.as_ref();
     let max_diagonal = (0..n)
         .map(|i| T::entity_magnitude(lu[(i, i)]))
@@ -427,7 +431,7 @@ fn full_piv_lu_solve_item<T: FaerScalar>(
             row_perm,
             col_perm,
             work.as_mut(),
-            par,
+            par.reborrow(),
             stack,
         );
     } else {

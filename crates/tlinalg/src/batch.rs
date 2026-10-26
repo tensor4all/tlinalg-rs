@@ -794,13 +794,18 @@ pub(crate) fn check_workspace(
     Ok(())
 }
 
+/// Dispatches the lanes of a batch perform, declared to the token's width rule: one fork over the
+/// items. The regions inside one item decide for themselves (faer's own floors are derived from the
+/// same dispatch cost), so the item is granted a width, not charged for its inner sections.
+const LANE_SECTIONS: u32 = 1;
+
 /// The resolved route of one batched call: how many lanes run the batch and how many of the
 /// token's slots they share.
 ///
 /// `lanes` nonempty contiguous item ranges run concurrently; `slots` is the budget the call spends
 /// (`token.limit(slots)`), divided among the lanes by `Exec::fork` in shares that differ by at
 /// most one. A lane runs its items one after another at its share's width, handed to faer through
-/// `Exec::external`. The token's budget is the only budget: nothing here clamps against a pool.
+/// `Exec::external` (or as a team, for a token that carries one). The token's budget is the only budget: nothing here clamps against a pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Route {
     pub(crate) lanes: usize,
@@ -814,9 +819,9 @@ impl Route {
         self.slots.div_ceil(self.lanes)
     }
 
-    /// The faer parallelism of the widest lane, for the workspace queries.
-    pub(crate) fn par(self) -> faer::Par {
-        crate::faer_par(self.item_width())
+    /// The faer parallelism shape of the widest lane, for the workspace queries.
+    pub(crate) fn par(self) -> faer::ParShape {
+        crate::faer_shape(self.item_width())
     }
 }
 
@@ -831,8 +836,9 @@ impl Route {
 pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route {
     // `generic_auto` has no work gate in the default model (`min_work_per_lane_ns == 0`), so it
     // would fan a batch of tiny items out over every slot and pay the pool entry for nothing.
-    // The shared `WidthPolicy` (the one body behind `Exec::width_for`) is the gate: when the
-    // whole batch is below its serial threshold the batch stays on the caller at width one.
+    // The token's width rule (`Exec::width_for`: serial time against `PAYS` times the dispatch
+    // cost of the token's kind) is the gate: when the whole batch does not repay one fork over
+    // the lanes it stays on the caller at width one.
     if batch > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
         let model = &exec.batch_policy().model;
         let rate = if model.muladds_per_ns > 0.0 {
@@ -841,7 +847,7 @@ pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route 
             1.0
         };
         let item_ns = model.item_overhead_ns + item_muladds / rate;
-        if exec.width_for(item_ns * batch as f64, &model.width) <= 1 {
+        if exec.width_for(item_ns * batch as f64, LANE_SECTIONS) <= 1 {
             return Route { lanes: 1, slots: 1 };
         }
     }
@@ -890,8 +896,8 @@ pub(crate) fn run<'w, O, S, MK, F>(
 ) -> Result<()>
 where
     O: Outputs,
-    MK: Fn(faer::Par, &'w mut [MaybeUninit<u8>]) -> S + Sync,
-    F: Fn(usize, &mut O::Item, &mut S, faer::Par) -> Result<()> + Sync,
+    MK: Fn(faer::ParShape, &'w mut [MaybeUninit<u8>]) -> S + Sync,
+    F: Fn(usize, &mut O::Item, &mut S, faer::Par<'_>) -> Result<()> + Sync,
 {
     let route = decide(exec, batch, item_muladds);
     outputs.prepare(op, batch)?;
@@ -910,17 +916,16 @@ where
         // consumed inside this block, before `outputs` is touched again by `commit`.
         let parts = unsafe { outputs.parts(batch) };
         let parts = &parts;
-        let run_lane = |lane: usize, width: usize| -> Result<()> {
-            let faer_par = crate::faer_par(width);
+        let run_lane = |lane: usize, mut faer_par: faer::Par<'_>| -> Result<()> {
             let (first, last) = lane_bounds(batch, lanes, lane);
             // SAFETY: each call site passes a distinct lane index, whose chunk is disjoint from the
             // others'.
             let region = unsafe { workspace.lane(lane) };
-            let mut scratch = make_scratch(faer_par, region);
+            let mut scratch = make_scratch(faer_par.shape(), region);
             for index in first..last {
                 // SAFETY: `index` is below the batch count and the lane ranges are disjoint.
                 let mut item_out = unsafe { O::item(parts, index) };
-                item(index, &mut item_out, &mut scratch, faer_par)?;
+                item(index, &mut item_out, &mut scratch, faer_par.reborrow())?;
                 if !O::item_complete(&item_out) {
                     return Err(Error::Inconsistent {
                         op,
@@ -932,13 +937,13 @@ where
         };
         let token = exec.token().limit(slots);
         if lanes == 1 {
-            token.external(|width| run_lane(0, width.get()))
+            crate::with_faer_par(token, |par| run_lane(0, par))
         } else {
             // Each lane stops independently; report the lowest failing lane deterministically.
             let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
             let (run_lane, failure_ref) = (&run_lane, &failure);
             token.fork(lanes, |lane, child| {
-                if let Err(error) = child.external(|width| run_lane(lane, width.get())) {
+                if let Err(error) = crate::with_faer_par(child, |par| run_lane(lane, par)) {
                     let mut slot = failure_ref
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
