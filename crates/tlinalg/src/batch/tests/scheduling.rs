@@ -58,6 +58,29 @@ pub(super) fn eager_token<'a>(pool: &'a Pool<'a>, budget: usize) -> Exec<'a> {
         .with_batch_policy(BatchPolicy::new(BatchStrategy::Auto).with_model(model))
 }
 
+/// A team of `threads` members on a pool whose workers are named `{name}-{index}`, or `None` when
+/// the host cannot reserve the members (the plain routes are covered by the other tests).
+fn named_team(name: &'static str, threads: usize) -> Option<threadteam::Team> {
+    threadteam::Pool::builder()
+        .threads(threads)
+        .thread_name(move |index| format!("{name}-{index}"))
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .into_team(threads)
+        .ok()
+}
+
+/// The token of a team under the eager model of [`eager_token`].
+fn eager_team_token(team: &threadteam::Team, budget: usize) -> Exec<'_> {
+    let model = WorkModel::default().with_muladds_per_ns(1e-6);
+    Exec::from_token(
+        team.exec(budget),
+        None,
+        BatchPolicy::new(BatchStrategy::Auto).with_model(model),
+    )
+}
+
 /// The ledger root of a token made by `Exec::new`.
 fn root(exec: &mut Exec<'_>) -> u64 {
     exec.token()
@@ -84,6 +107,14 @@ fn expected_lanes(batch: usize, budget: usize) -> usize {
 
 #[test]
 fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
+    // A plain token gives faer no width (every lane is `Par::Seq`); a team token shares its
+    // budget out as lane widths.
+    for use_team in [false, true] {
+        driver_bounds_lanes(use_team);
+    }
+}
+
+fn driver_bounds_lanes(use_team: bool) {
     let pool = owned_pool(8);
     // (batch, budget). `(5, 4)` is the exact-partition case: four nonempty ranges. `(3, 4)` is a
     // batch smaller than the budget: three lanes whose shares are 2, 1 and 1.
@@ -99,7 +130,18 @@ fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
         (5, 4),
         (8, 8),
     ] {
-        let mut exec = eager_token(&pool, budget);
+        let team = if use_team {
+            let Some(team) = named_team("test", 8) else {
+                return;
+            };
+            Some(team)
+        } else {
+            None
+        };
+        let mut exec = match &team {
+            Some(team) => eager_team_token(team, budget),
+            None => eager_token(&pool, budget),
+        };
         let granted = exec.budget();
         let lanes = expected_lanes(batch, granted);
         let mut values = vec![99];
@@ -126,7 +168,8 @@ fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
                 assert!(par.degree() >= 1 && par.degree() <= max_width);
                 if lanes <= 1 && max_width == 1 {
                     assert_eq!(std::thread::current().id(), caller, "a serial route");
-                } else {
+                } else if !use_team {
+                    // A team's leader is the caller; plain lanes run on the pool's workers.
                     assert!(on_pool("test"), "wrong numerical pool");
                 }
                 let n = active.fetch_add(1, SeqCst) + 1;
@@ -148,7 +191,13 @@ fn driver_bounds_lanes_and_widths_and_visits_each_item_once() {
             lanes,
             "one scratch per lane, {batch}/{budget}"
         );
-        if lanes > 1 {
+        if lanes > 1 && !use_team {
+            assert!(
+                widths.iter().all(|&w| w == 1),
+                "{batch}/{budget}: no team, no width"
+            );
+        }
+        if lanes > 1 && use_team {
             // The shares add up to the budget, and a batch with at least `budget` items runs every
             // item sequentially (`Par::Seq`).
             assert_eq!(widths.iter().sum::<usize>(), granted, "{batch}/{budget}");
@@ -180,7 +229,14 @@ fn a_single_small_item_stays_on_the_caller_at_width_one() {
     let mut exec = token(&pool, 4);
     // A 4x4 solve is a few dozen multiply-adds, far below the model's serial threshold.
     let item_muladds = 4.0 * 4.0 * 4.0;
-    assert_eq!(decide(&exec, 1, item_muladds), Route { lanes: 1, slots: 1 });
+    assert_eq!(
+        decide(&exec, 1, item_muladds),
+        Route {
+            lanes: 1,
+            slots: 1,
+            team: false
+        }
+    );
 
     let caller = std::thread::current().id();
     let root = root(&mut exec);
@@ -227,7 +283,11 @@ fn a_tiny_batch_does_not_enter_the_pool() {
     let item_muladds = 4.0 * 4.0 * 4.0;
     assert_eq!(
         decide(&exec, batch, item_muladds),
-        Route { lanes: 1, slots: 1 }
+        Route {
+            lanes: 1,
+            slots: 1,
+            team: false
+        }
     );
 
     let root = root(&mut exec);
@@ -256,16 +316,70 @@ fn a_tiny_batch_does_not_enter_the_pool() {
     assert_eq!(values, (0..batch).collect::<Vec<_>>());
 }
 
-/// One large item still receives the whole budget: the work model's width is the full pool, and
-/// the driver enters the pool once for that item.
+/// One large item on a plain token has no team to hand faer: the route is one lane of one slot,
+/// faer runs `Par::Seq` on the caller and the pool is never entered.
 #[test]
-fn a_single_large_item_still_gets_the_whole_budget() {
+fn a_single_large_item_on_a_plain_token_runs_serially() {
     let pool = owned_pool(4);
     let mut exec = token(&pool, 4);
     let item_muladds = 1e9;
-    assert_eq!(decide(&exec, 1, item_muladds), Route { lanes: 1, slots: 4 });
+    assert_eq!(
+        decide(&exec, 1, item_muladds),
+        Route {
+            lanes: 1,
+            slots: 1,
+            team: false
+        }
+    );
 
+    let caller = std::thread::current().id();
     let root = root(&mut exec);
+    let mut values = Vec::new();
+    let mut values_out = VecOut::new(&mut values, 1);
+    LAST_LANES.set(0);
+    run(
+        Op::Svd,
+        1,
+        &mut exec,
+        item_muladds,
+        &mut (fixed_out(values_out.spare(), 1, "values"),),
+        ScratchArena::new(&mut [], 0),
+        |par, _| assert_eq!(par.degree(), 1),
+        |index, (values,), (), par| {
+            assert!(matches!(par, faer::Par::Seq));
+            assert_eq!(std::thread::current().id(), caller);
+            values.push(index);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(LAST_LANES.get(), 1);
+    assert_eq!(
+        ledger::installs(root),
+        0,
+        "a plain token never enters the pool"
+    );
+    values_out.publish();
+    assert_eq!(values, [0]);
+}
+
+/// One large item on a team token still receives the whole budget, as a team.
+#[test]
+fn a_single_large_item_on_a_team_gets_the_whole_budget() {
+    let Some(team) = named_team("test", 4) else {
+        return;
+    };
+    let mut exec = Exec::from_token(team.exec(4), None, BatchPolicy::default());
+    let item_muladds = 1e9;
+    assert_eq!(
+        decide(&exec, 1, item_muladds),
+        Route {
+            lanes: 1,
+            slots: 4,
+            team: true
+        }
+    );
+
     let mut values = Vec::new();
     let mut values_out = VecOut::new(&mut values, 1);
     LAST_LANES.set(0);
@@ -278,16 +392,14 @@ fn a_single_large_item_still_gets_the_whole_budget() {
         ScratchArena::new(&mut [], 0),
         |par, _| assert_eq!(par.degree(), 4),
         |index, (values,), (), par| {
+            assert!(matches!(par, faer::Par::Team(_)));
             assert_eq!(par.degree(), 4);
-            assert!(on_pool("test"));
             values.push(index);
             Ok(())
         },
     )
     .unwrap();
     assert_eq!(LAST_LANES.get(), 1);
-    assert_eq!(ledger::installs(root), 1, "the pool is entered once");
-    assert!(ledger::max_live(root) <= 4);
     values_out.publish();
     assert_eq!(values, [0]);
 }
@@ -298,7 +410,14 @@ fn a_single_large_item_still_gets_the_whole_budget() {
 fn a_serial_token_runs_every_item_on_the_caller() {
     let caller = std::thread::current().id();
     let mut exec = Exec::serial();
-    assert_eq!(decide(&exec, 8, 1e9), Route { lanes: 1, slots: 1 });
+    assert_eq!(
+        decide(&exec, 8, 1e9),
+        Route {
+            lanes: 1,
+            slots: 1,
+            team: false
+        }
+    );
     let mut values = Vec::new();
     let mut values_out = VecOut::new(&mut values, 8);
     LAST_LANES.set(0);
@@ -379,6 +498,12 @@ fn work_runs_on_the_selected_pool_whoever_calls() {
 /// budget.
 #[test]
 fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
+    for use_team in [false, true] {
+        forced_strategies(use_team);
+    }
+}
+
+fn forced_strategies(use_team: bool) {
     let pool = owned_pool(8);
     for (strategy, lanes, item_threads) in [
         (BatchStrategy::Sequential, 1usize, 1usize),
@@ -392,7 +517,21 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             2,
         ),
     ] {
-        let mut exec = token(&pool, 4).with_batch_policy(BatchPolicy::new(strategy));
+        // Without a team the items get no width: a forced `Inner`/`Split` item width is one.
+        let granted_threads = if use_team { item_threads } else { 1 };
+        let team = if use_team {
+            let Some(team) = named_team("test", 8) else {
+                return;
+            };
+            Some(team)
+        } else {
+            None
+        };
+        let policy = BatchPolicy::new(strategy);
+        let mut exec = match &team {
+            Some(team) => Exec::from_token(team.exec(4), None, policy),
+            None => token(&pool, 4).with_batch_policy(policy),
+        };
         let root = root(&mut exec);
         let mut values = Vec::new();
         let mut values_out = VecOut::new(&mut values, 8);
@@ -407,11 +546,11 @@ fn forced_strategies_are_clamped_and_item_threads_reach_the_items() {
             &mut (fixed_out(values_out.spare(), 1, "values"),),
             ScratchArena::new(&mut [], 0),
             |par, _| {
-                assert_eq!(par.degree(), item_threads, "scratch {strategy:?}");
+                assert_eq!(par.degree(), granted_threads, "scratch {strategy:?}");
                 scratch_builds.fetch_add(1, SeqCst);
             },
             |index, (values,), (), par| {
-                assert_eq!(par.degree(), item_threads, "item {strategy:?}");
+                assert_eq!(par.degree(), granted_threads, "item {strategy:?}");
                 items.fetch_add(1, SeqCst);
                 values.push(index);
                 Ok(())
@@ -688,10 +827,10 @@ fn forced_strategies_ignore_the_work_model() {
     assert_eq!(LAST_LANES.get(), 2);
 }
 
-/// A token that carries a team hands faer a `Par::Team`; a plain token keeps the width it gets
-/// through `Exec::external`, as `Par::Rayon`.
+/// A token that carries a team hands faer a `Par::Team`; a plain token gives it `Par::Seq`
+/// (there is no `Par::Rayon` route).
 #[test]
-fn faer_gets_a_team_from_a_team_token_and_a_width_from_a_plain_one() {
+fn faer_gets_a_team_from_a_team_token_and_seq_from_a_plain_one() {
     let pool = threadteam::Pool::builder()
         .threads(4)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -699,11 +838,12 @@ fn faer_gets_a_team_from_a_team_token_and_a_width_from_a_plain_one() {
         .unwrap();
     let plain = threadteam::Exec::new(&pool, 4).unwrap();
     assert!(!plain.carries_team());
-    let width = crate::with_faer_par(plain, |par| match par {
-        faer::Par::Rayon(width) => width.get(),
-        other => panic!("a plain token must give a width, got {other:?}"),
+    crate::with_faer_par(plain, |par| {
+        assert!(
+            matches!(par, faer::Par::Seq),
+            "a plain token must give Seq, got {par:?}"
+        );
     });
-    assert_eq!(width, 4);
     let Ok(team) = pool.into_team(4) else {
         // The host could not reserve the members; the plain route is covered above.
         return;

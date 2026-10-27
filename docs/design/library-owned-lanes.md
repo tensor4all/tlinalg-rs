@@ -12,7 +12,7 @@ parallelism. The bundle carries one `threadteam::Exec` token (a pool reference a
 slots), the `WorkspaceProvider`, and the shared `BatchPolicy`. The token cannot be copied, so two
 operations cannot both claim the whole budget, and the budget it holds is the only budget: this
 crate never clamps against a pool and never starts a task by any route other than the token's
-`fork` and `external`. A serial token runs on the calling thread and enters no pool; nothing falls
+`fork`. A serial token runs on the calling thread and enters no pool; nothing falls
 back to an ambient pool.
 
 ## Route
@@ -62,13 +62,13 @@ solve is deliberately **not** charged for a factorization it does not run.
 
 * `lanes` is at most the item count; the driver partitions `0..batch` into **exactly `lanes` nonempty
   contiguous ranges** (`[lane*batch/lanes, (lane+1)*batch/lanes)`).
-* `token.limit(slots)` narrows the call to its slots. One lane runs `token.external(..)` directly;
+* `token.limit(slots)` narrows the call to its slots. One lane runs on the token directly;
   several lanes run `token.fork(lanes, ..)`, which divides the slots among the lanes in shares that
-  differ by at most one and add up to `slots`. Inside a lane, `child.external(|width| ..)` enters the
-  pool once (or runs in place for width one) and hands the share to faer as a plain width, mapped by
-  the pure helper `faer_par(width)` (`1` is `Par::Seq`). A token (or child) that carries a team hands
-  faer its team as `Par::Team` instead (`with_faer_par`); the workspace queries use `ParShape`, which
-  depends on the width only.
+  differ by at most one and add up to `slots`. Inside a lane, a token (or child) that carries a team
+  hands faer its team as `Par::Team` (`with_faer_par`); a token without a team runs faer as
+  `Par::Seq` and never enters a pool for it, so the route grants such a token no item width and
+  the lanes are its only parallel axis. There is no `Par::rayon` route. The workspace queries use
+  `ParShape::team(width)` for a team token and `ParShape::Seq` otherwise, the shape that will run.
 * A lane builds its scratch once, from its own chunk of the caller's workspace, and reuses it for
   every item of the lane. Shares differ by at most one, so the workspace query sizes a chunk at the
   widest share (`Route::item_width`), which covers every lane.

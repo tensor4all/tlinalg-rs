@@ -23,7 +23,7 @@ the shared rules were unavailable.
   provider; cross-provider checks go in `tlinalg-parity`, kernel benchmarks in `tlinalg-bench`. A
   parity failure is a bug in a provider or in a documented convention, not a tolerance to loosen.
 * Only `threadteam` starts tasks: parallelism reaches this crate as the `threadteam::Exec` token inside
-  `tcontract_exec::Exec` (`fork` for lanes; `external` for a width handed to faer, or a team `Par::Team` when the token carries a team). There is no direct
+  `tcontract_exec::Exec` (`fork` for lanes; a team `Par::Team` for faer when the token carries a team, `Par::Seq` otherwise; never `Par::rayon`). There is no direct
   `rayon` dependency (`cargo deny check bans`), and this crate neither depends on spindle nor opens a
   spindle region (`with_lock`); that belongs to t4a-faer (tensor4all/faer#59).
 * The public types are published behaviour: changing `Error`, the `tcontract_exec::Exec` token, or

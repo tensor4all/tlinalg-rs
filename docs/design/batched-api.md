@@ -33,8 +33,9 @@ batch-direction fan-out). Per-matrix entry points become crate-private helpers.
   one item, so a small item stays on the caller instead of entering the pool.
 * Forced strategies go through the same decision on the token's budget. The driver partitions into
   **exactly** the decided number of nonempty contiguous ranges, never above `batch` or the budget.
-  Lanes are `token.fork`ed, and each lane hands its share to faer through `Exec::external` (a plain width) or, for a token that
-  carries a team, as `Par::Team`; the scratch is sized at the same width (`ParShape`).
+  Lanes are `token.fork`ed, and each lane hands its share to faer as `Par::Team` when the token carries a team and runs faer as
+  `Par::Seq` otherwise (no item width is granted then); the scratch is sized for the shape that runs
+  (`ParShape::team(width)` or `ParShape::Seq`).
 * **faer 0.24.4 does not guarantee a strict active-thread bound from that width.** Its wide-RHS
   recursion and rounded-up splitting can exceed the requested width. The token bounds the lanes it
   starts (checked with the `threadteam` ledger), not faer's internal tasks; no hard bound on all

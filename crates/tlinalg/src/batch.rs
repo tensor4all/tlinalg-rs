@@ -804,12 +804,14 @@ const LANE_SECTIONS: u32 = 1;
 ///
 /// `lanes` nonempty contiguous item ranges run concurrently; `slots` is the budget the call spends
 /// (`token.limit(slots)`), divided among the lanes by `Exec::fork` in shares that differ by at
-/// most one. A lane runs its items one after another at its share's width, handed to faer through
-/// `Exec::external` (or as a team, for a token that carries one). The token's budget is the only budget: nothing here clamps against a pool.
+/// most one. A lane runs its items one after another at its share's width, handed to faer as a team when the
+/// token carries one (a token without a team runs faer as `Par::Seq`). The token's budget is the only budget: nothing here clamps against a pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Route {
     pub(crate) lanes: usize,
     pub(crate) slots: usize,
+    /// Whether the token carries a team: only then does faer run wider than `Seq`.
+    pub(crate) team: bool,
 }
 
 impl Route {
@@ -819,9 +821,14 @@ impl Route {
         self.slots.div_ceil(self.lanes)
     }
 
-    /// The faer parallelism shape of the widest lane, for the workspace queries.
+    /// The faer parallelism shape of the widest lane, for the workspace queries: the shape of a
+    /// team of that width when the token carries one, `Seq` otherwise (what will actually run).
     pub(crate) fn par(self) -> faer::ParShape {
-        crate::faer_shape(self.item_width())
+        if self.team {
+            crate::faer_shape(self.item_width())
+        } else {
+            faer::ParShape::Seq
+        }
     }
 }
 
@@ -834,6 +841,9 @@ impl Route {
 /// share as faer width. When `Auto` keeps one lane, the lane runs the items one after another at
 /// the decision's item width.
 pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route {
+    // Only a team gives faer internal parallelism; without one every item runs `Par::Seq`, so the
+    // lanes are the only parallel axis and no item width is granted.
+    let team = exec.token_ref().carries_team();
     // `generic_auto` has no work gate in the default model (`min_work_per_lane_ns == 0`), so it
     // would fan a batch of tiny items out over every slot and pay the pool entry for nothing.
     // The token's width rule (`Exec::width_for`: serial time against `PAYS` times the dispatch
@@ -848,17 +858,27 @@ pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route 
         };
         let item_ns = model.item_overhead_ns + item_muladds / rate;
         if exec.width_for(item_ns * batch as f64, LANE_SECTIONS) <= 1 {
-            return Route { lanes: 1, slots: 1 };
+            return Route {
+                lanes: 1,
+                slots: 1,
+                team,
+            };
         }
     }
-    let decision = exec.batch_decision(&BatchQuery::new(batch, item_muladds));
+    let decision =
+        exec.batch_decision(&BatchQuery::new(batch, item_muladds).with_item_parallel(team));
     let lanes = decision.lanes.clamp(1, batch.max(1));
     let slots = if lanes > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
         exec.budget()
     } else {
-        lanes * decision.item_threads.max(1)
+        lanes
+            * if team {
+                decision.item_threads.max(1)
+            } else {
+                1
+            }
     };
-    Route { lanes, slots }
+    Route { lanes, slots, team }
 }
 
 /// Run the batch on one caller-owned resource.
@@ -881,8 +901,8 @@ pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route 
 ///
 /// # faer's width
 ///
-/// The width a lane hands to faer is its share of the budget; how faer schedules it is faer's.
-/// The token bounds the lanes it starts, not faer's internal tasks.
+/// A lane whose token carries a team hands faer that team (its share of the budget); a lane without
+/// one runs faer as `Par::Seq`. The token bounds the lanes it starts, not faer's internal tasks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run<'w, O, S, MK, F>(
     op: Op,
@@ -906,7 +926,7 @@ where
     }
     // INVARIANT: `decide` clamps the lanes to the item count, so `lane_bounds` yields exactly
     // `route.lanes` nonempty ranges.
-    let Route { lanes, slots } = route;
+    let Route { lanes, slots, .. } = route;
     debug_assert!(lanes >= 1 && lanes <= batch, "lanes={lanes} batch={batch}");
     let slots = NonZeroUsize::new(slots.max(1)).expect("max(1) is nonzero");
     #[cfg(test)]
