@@ -19,7 +19,7 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.6.0", path = "crates/tlinalg" }
+tlinalg = { version = "0.7.0", path = "crates/tlinalg" }
 tlinalg-blas = { version = "0.5.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
@@ -37,11 +37,11 @@ threadteam = { version = "0.1.0" }
 # The `Exec` bundle every entry point takes (a threadteam token, workspace, batch policy) and the
 # batch-lane vocabulary. One source with the git-only `tcontract-capi` below, so the forwarded
 # `Exec` is the same type the C API takes.
-tcontract-exec = { version = "0.6.0" }
+tcontract-exec = { version = "0.7.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "71a11a80" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "83d18f42" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -59,8 +59,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # it are pointed at the published releases: each crate exists once in the graph and the forwarded
 # `Exec` is one type.
 [patch."https://github.com/tensor4all/tcontract-rs.git"]
-tcontract = { version = "0.6.0" }
-tcontract-exec = { version = "0.6.0" }
+tcontract = { version = "0.7.0" }
+tcontract-exec = { version = "0.7.0" }
 tcontract-kernel = { version = "0.3.0" }
 
 [workspace.lints.rust]

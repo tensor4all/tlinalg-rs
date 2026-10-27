@@ -68,26 +68,31 @@ pub fn bench_strategy() -> tcontract_exec::BatchStrategy {
 
 /// The pool and budget the parallel faer rows run on.
 pub struct Env {
-    pool: tcontract_exec::Pool<'static>,
+    /// A team, not a plain pool: faer runs parallel only on a team token.
+    team: threadteam::Team,
     threads: NonZeroUsize,
     /// Read once at construction, so `par()` does not touch the environment inside a timed call.
     policy: tcontract_exec::BatchPolicy,
 }
 
 impl Env {
-    /// Build a pool of [`bench_threads`] workers.
+    /// Build a team of [`bench_threads`] workers.
     pub fn new() -> Self {
         Self::with_threads(bench_threads())
     }
 
-    /// Build a pool with the caller's explicit thread budget.
+    /// Build a team with the caller's explicit thread budget.
     pub fn with_threads(threads: NonZeroUsize) -> Self {
         let pool = threadteam::Pool::builder()
             .threads(threads.get())
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("a benchmark pool");
+        let team = pool
+            .into_team(threads.get())
+            .unwrap_or_else(|e| panic!("a benchmark team: {e}"));
         Self {
-            pool: tcontract_exec::Pool::owned(pool),
+            team,
             threads,
             policy: tcontract_exec::BatchPolicy::new(bench_strategy()),
         }
@@ -100,9 +105,7 @@ impl Env {
 
     /// The token for the pool, with the cached `TLINALG_BENCH_STRATEGY` policy applied.
     pub fn par(&self) -> tcontract_exec::Exec<'_> {
-        tcontract_exec::Exec::new(&self.pool, self.threads.get())
-            .expect("a nonzero benchmark budget")
-            .with_batch_policy(self.policy)
+        tcontract_exec::Exec::from_token(self.team.exec(self.threads.get()), None, self.policy)
     }
 }
 

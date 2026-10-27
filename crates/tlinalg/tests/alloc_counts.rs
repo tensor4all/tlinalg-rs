@@ -1509,8 +1509,16 @@ fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
 #[test]
 fn wider_routes_use_the_workspace_they_query() {
     let _guard = serialised();
-    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
-    let pool = Pool::borrow(&tp);
+    // Only a team gives faer a width: a plain pool token is `Par::Seq` and sizes like serial.
+    let Ok(team) = threadteam::Pool::builder()
+        .threads(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .into_team(4)
+    else {
+        return;
+    };
     // Large enough that faer's per-thread scratch term is visible.
     let n = 128;
     let batch = 4;
@@ -1538,9 +1546,7 @@ fn wider_routes_use_the_workspace_they_query() {
             },
         ),
     ] {
-        let mut exec = Exec::new(&pool, 4)
-            .unwrap()
-            .with_batch_policy(BatchPolicy::new(strategy));
+        let mut exec = Exec::from_token(team.exec(4), None, BatchPolicy::new(strategy));
 
         // qr
         let serial_ws = qr::qr_workspace::<f64>(n, n, batch, seq).unwrap();

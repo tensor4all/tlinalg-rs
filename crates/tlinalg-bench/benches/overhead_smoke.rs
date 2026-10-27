@@ -245,8 +245,14 @@ fn l4() {
     let serial_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut Exec::serial()).unwrap();
     });
-    let pool = tcontract_exec::Pool::owned(threadteam::Pool::builder().threads(2).build().unwrap());
-    let mut exec = Exec::new(&pool, 2).unwrap();
+    let team = threadteam::Pool::builder()
+        .threads(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .into_team(2)
+        .expect("a 2T team");
+    let mut exec = Exec::from_token(team.exec(2), None, tcontract_exec::BatchPolicy::default());
     let pool_ns = per_matrix(batch, 64, || {
         tlinalg::qr::qr(Op::Qr, view, &mut q, &mut r, &mut exec).unwrap();
     });

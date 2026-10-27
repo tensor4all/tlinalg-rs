@@ -110,7 +110,7 @@ and `n = 32, 128, 512` single matrices) and `t64x24` (a tall matrix, SVD and QR)
 to three rows:
 
 * `faer-1lane` — one sequential lane: per-item cost plus the batch loop, no threading.
-* `faer-{N}t` — an explicit `N`-worker pool and requested budget (`TLINALG_BENCH_THREADS`,
+* `faer-{N}t` — an explicit `N`-member team and requested budget (`TLINALG_BENCH_THREADS`,
   default the available parallelism); tlinalg's `Auto` route forks the budget over outer lanes and
   hands each lane's share to faer as its width.
   `TLINALG_BENCH_STRATEGY=auto|sequential|outer|inner|split:N` forces a route.
