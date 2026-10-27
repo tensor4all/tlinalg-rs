@@ -1428,9 +1428,9 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7751329c90dea1d89e5e3a7abc947cbcf74971c1f42812bc0716ae0e7a71c2cc"
+checksum = "c4bf337293f760e34b1755fee484d55de4686d5fae8cbe5cac8783ac43adedf1"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1447,7 +1447,7 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=71a11a80#71a11a80b454fec3e465c62dd00a6294d3254c1d"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=83d18f42#83d18f428eb89d895e4881e9389c55ce7ab4339a"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1458,9 +1458,9 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85236a88bda76ad961516f67b15098b28bbc3b1be2ac3f65ca79d867edaa0e76"
+checksum = "2494cdc0d84b859777ec623426116ead0a12775acce03cb6c2f9e17cae8e4a5f"
 dependencies = [
  "thiserror 1.0.69",
  "threadteam",
@@ -1554,7 +1554,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tlinalg"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "num-complex",
  "strided-view",

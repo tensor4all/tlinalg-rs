@@ -41,7 +41,7 @@ tcontract-exec = { version = "0.7.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "e686a20b" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "83d18f42" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
