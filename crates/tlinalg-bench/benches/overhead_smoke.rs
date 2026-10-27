@@ -247,6 +247,7 @@ fn l4() {
     });
     let team = threadteam::Pool::builder()
         .threads(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
         .build()
         .unwrap()
         .into_team(2)

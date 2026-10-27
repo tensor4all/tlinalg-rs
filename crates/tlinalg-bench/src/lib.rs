@@ -85,6 +85,7 @@ impl Env {
     pub fn with_threads(threads: NonZeroUsize) -> Self {
         let pool = threadteam::Pool::builder()
             .threads(threads.get())
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("a benchmark pool");
         let team = pool
