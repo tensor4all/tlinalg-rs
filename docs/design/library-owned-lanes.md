@@ -64,11 +64,13 @@ solve is deliberately **not** charged for a factorization it does not run.
   contiguous ranges** (`[lane*batch/lanes, (lane+1)*batch/lanes)`).
 * `token.limit(slots)` narrows the call to its slots. One lane runs on the token directly;
   several lanes run `token.fork(lanes, ..)`, which divides the slots among the lanes in shares that
-  differ by at most one and add up to `slots`. Inside a lane, a token (or child) that carries a team
-  hands faer its team as `Par::Team` (`with_faer_par`); a token without a team runs faer as
-  `Par::Seq` and never enters a pool for it, so the route grants such a token no item width and
+  differ by at most one and add up to `slots`. Inside a lane, a token (or child) of more than one
+  slot that carries a team hands faer its team as `Par::Team` (`tcontract_exec::with_faer_par`);
+  a token of one slot runs faer as `Par::Seq`, and a token without a team does too and never
+  enters a pool for it, so the route grants such a token no item width and
   the lanes are its only parallel axis. There is no `Par::rayon` route. The workspace queries use
-  `ParShape::team(width)` for a team token and `ParShape::Seq` otherwise, the shape that will run.
+  `ParShape::team(width)` for a team token of width above one and `ParShape::Seq` otherwise, the
+  shape that will run.
 * A lane builds its scratch once, from its own chunk of the caller's workspace, and reuses it for
   every item of the lane. Shares differ by at most one, so the workspace query sizes a chunk at the
   widest share (`Route::item_width`), which covers every lane.
