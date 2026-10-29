@@ -957,13 +957,14 @@ where
         };
         let token = exec.token().limit(slots);
         if lanes == 1 {
-            crate::with_faer_par(token, |par| run_lane(0, par))
+            tcontract_exec::with_faer_par(token, |par| run_lane(0, par))
         } else {
             // Each lane stops independently; report the lowest failing lane deterministically.
             let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
             let (run_lane, failure_ref) = (&run_lane, &failure);
             token.fork(lanes, |lane, child| {
-                if let Err(error) = crate::with_faer_par(child, |par| run_lane(lane, par)) {
+                if let Err(error) = tcontract_exec::with_faer_par(child, |par| run_lane(lane, par))
+                {
                     let mut slot = failure_ref
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);

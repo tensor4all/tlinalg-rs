@@ -59,8 +59,9 @@
 //! [`threadteam::Exec`] token (a pool reference and a budget of slots), the workspace and the
 //! batch policy. The token is the only budget and the only way work starts: the batch is split
 //! into lanes with `fork`, which divides the budget among the lanes, and each lane hands its share
-//! to faer as `Par::Team` when the token carries a team (`threadteam::Exec::carries_team`) and
-//! runs faer as `Par::Seq` otherwise: only a team gives faer internal parallelism, while batch
+//! to faer as `Par::Team` when the token carries a team (`threadteam::Exec::carries_team`) and the
+//! share is more than one slot, and runs faer as `Par::Seq` otherwise
+//! (`tcontract_exec::with_faer_par`): only a team gives faer internal parallelism, while batch
 //! lanes fork on any token. Whether a batch fans out is the token's rule
 //! (`Exec::width_for`: serial time against the dispatch cost of the token's kind). A batch with at least `budget` items
 //! therefore runs one sequential item stream per slot (`Par::Seq` items); a smaller batch gives
@@ -107,33 +108,4 @@ pub(crate) fn faer_shape(width: usize) -> faer::ParShape {
     } else {
         faer::ParShape::team(width)
     }
-}
-
-/// Runs `f` with the parallelism faer should use for `token`.
-///
-/// A token that carries a team (minted by a `threadteam::Team`, or a child of one) hands faer its
-/// team as `Par::Team`: faer's regions run on the reserved members as team sections, at the
-/// dispatch cost its floors were derived from. A token without a team runs faer as `Par::Seq` on
-/// the calling thread and never enters a pool for it. Batch lanes still fork through `threadteam`
-/// before this point, so batch-level parallelism stays; only faer-internal parallelism needs a
-/// team. There is no `Par::rayon` route.
-pub(crate) fn with_faer_par<R: Send>(
-    mut token: threadteam::Exec<'_>,
-    f: impl FnOnce(faer::Par<'_>) -> R + Send,
-) -> R {
-    if token.carries_team() {
-        let mut f = Some(f);
-        // A team token returns its carried team at once, without acquisition.
-        let ran = token.team(|team| {
-            let f = f.take().expect("the closure runs once");
-            f(faer::Par::Team(team))
-        });
-        // A refusal is unreachable for a token that carries a team; run serially.
-        if let Ok(value) = ran {
-            return value;
-        }
-        let f = f.take().expect("a refused team did not run the closure");
-        return f(faer::Par::Seq);
-    }
-    f(faer::Par::Seq)
 }
