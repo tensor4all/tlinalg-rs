@@ -365,6 +365,24 @@ macro_rules! dtype_battery {
                 });
                 out.push(("qr.q", unsafe { bytes_uninit(&q) }));
                 out.push(("qr.r", unsafe { bytes_uninit(&r) }));
+                // The initialised-destination entry shares the body: same zero gate, same bits.
+                let (mut iq, mut ir) = (
+                    vec![value(f64::NAN); q.len()],
+                    vec![value(f64::NAN); r.len()],
+                );
+                zero_gate!("qr_into_init", {
+                    qr::qr_into_init(
+                        Op::Qr,
+                        view,
+                        &mut iq,
+                        &mut ir,
+                        &mut workspace[offset..offset + ws],
+                        seq,
+                    )
+                    .unwrap()
+                });
+                assert_eq!(bytes_of(&iq), unsafe { bytes_uninit(&q) }, "qr_into_init Q");
+                assert_eq!(bytes_of(&ir), unsafe { bytes_uninit(&r) }, "qr_into_init R");
                 if compare_wrapper {
                     let (mut wq, mut wr) = (Vec::new(), Vec::new());
                     qr::qr(Op::Qr, view, &mut wq, &mut wr, seq).unwrap();
@@ -435,6 +453,37 @@ macro_rules! dtype_battery {
                 out.push(("svd.u", unsafe { bytes_uninit(&u) }));
                 out.push(("svd.s", unsafe { bytes_uninit(&s) }));
                 out.push(("svd.vt", unsafe { bytes_uninit(&vt) }));
+                let mut iu = vec![value(f64::NAN); u.len()];
+                let mut is = vec![value(f64::NAN); s.len()];
+                let mut ivt = vec![value(f64::NAN); vt.len()];
+                zero_gate!("svd_into_init", {
+                    svd::svd_into_init(
+                        Op::Svd,
+                        view,
+                        false,
+                        &mut iu,
+                        &mut is,
+                        &mut ivt,
+                        &mut workspace[offset..offset + ws],
+                        seq,
+                    )
+                    .unwrap()
+                });
+                assert_eq!(
+                    bytes_of(&iu),
+                    unsafe { bytes_uninit(&u) },
+                    "svd_into_init U"
+                );
+                assert_eq!(
+                    bytes_of(&is),
+                    unsafe { bytes_uninit(&s) },
+                    "svd_into_init S"
+                );
+                assert_eq!(
+                    bytes_of(&ivt),
+                    unsafe { bytes_uninit(&vt) },
+                    "svd_into_init VH"
+                );
                 if compare_wrapper {
                     let (mut wu, mut ws_, mut wv) = (Vec::new(), Vec::new(), Vec::new());
                     svd::svd(Op::Svd, view, false, &mut wu, &mut ws_, &mut wv, seq).unwrap();
@@ -490,6 +539,29 @@ macro_rules! dtype_battery {
                 });
                 out.push(("eigh.values", unsafe { bytes_uninit(&values) }));
                 out.push(("eigh.vectors", unsafe { bytes_uninit(&vectors) }));
+                let mut ivalues = vec![value(f64::NAN); values.len()];
+                let mut ivectors = vec![value(f64::NAN); vectors.len()];
+                zero_gate!("eigh_into_init", {
+                    eigh::eigh_into_init(
+                        Op::Eigh,
+                        view,
+                        &mut ivalues,
+                        &mut ivectors,
+                        &mut workspace[offset..offset + ws],
+                        seq,
+                    )
+                    .unwrap()
+                });
+                assert_eq!(
+                    bytes_of(&ivalues),
+                    unsafe { bytes_uninit(&values) },
+                    "eigh_into_init values"
+                );
+                assert_eq!(
+                    bytes_of(&ivectors),
+                    unsafe { bytes_uninit(&vectors) },
+                    "eigh_into_init vectors"
+                );
                 if compare_wrapper {
                     let (mut wv, mut wm) = (Vec::new(), Vec::new());
                     eigh::eigh(Op::Eigh, view, &mut wv, &mut wm, seq).unwrap();
