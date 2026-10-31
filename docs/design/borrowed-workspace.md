@@ -66,6 +66,11 @@ pub fn <family>_into(<inputs>, <outputs as caller-owned mut>, workspace: &mut [M
   output) holding exactly `item_len * batch` elements, compact column-major in batch order. The
   kernel initialises every element; an item that writes fewer than its `item_len` is a detected
   `Error::Inconsistent` rather than uninitialised memory handed back.
+* `svd_into_init`, `qr_into_init` and `eigh_into_init` take the same outputs as initialised
+  `&mut [T]` for a caller that writes into existing storage without `unsafe`. They share one body
+  with the matching `*_into` entry (generic over the output slot type), so lengths, checks, error
+  order and kernels are the same code; contents on entry are never read and every element is
+  written on success.
 * In-place families keep their existing caller-owned buffers (`&mut [T]`, a `RawStridedMut`
   destination, the packed LU factor/RHS arrays).
 * The `Vec` wrappers hand the vector's reserved spare capacity to the same `*_into` route, so

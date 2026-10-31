@@ -8,8 +8,8 @@
 //! * resolves the lane route from the shared batch policy and forks the lanes over the caller's
 //!   `Exec` token ([`run`]),
 //! * hands every batch item its own disjoint output view: spare capacity of a library-owned vector
-//!   ([`VecOut`]), a caller-owned uninitialised slice ([`FixedOut`]), or a caller-owned compact
-//!   in-place buffer ([`InPlace`]),
+//!   ([`VecOut`]), a caller-owned uninitialised or initialised slice ([`FixedOut`]), or a
+//!   caller-owned compact in-place buffer ([`InPlace`]),
 //! * carves each lane's scratch out of the caller's borrowed workspace ([`ScratchArena`]).
 //!
 //! # Output soundness
@@ -423,16 +423,28 @@ impl<'a, T: ScalarEntity> BatchedMut<'a, T> {
     }
 }
 
-/// Sequential writer over one item's uninitialised output chunk.
+/// Sequential writer over one item's output chunk, uninitialised or initialised.
 pub(crate) struct Sink<'a, U> {
-    buf: &'a mut [MaybeUninit<U>],
+    buf: Chunk<'a, U>,
     pos: usize,
+}
+
+/// The storage behind a [`Sink`]: a `*_into` entry's uninitialised chunk or a `*_into_init`
+/// entry's initialised one. Both are written strictly in order and never read before written.
+enum Chunk<'a, U> {
+    Uninit(&'a mut [MaybeUninit<U>]),
+    Init(&'a mut [U]),
 }
 
 impl<U> Sink<'_, U> {
     /// Write the next element. Panics (safely) if the kernel writes past its chunk.
     pub(crate) fn push(&mut self, value: U) {
-        self.buf[self.pos].write(value);
+        match &mut self.buf {
+            Chunk::Uninit(buf) => {
+                buf[self.pos].write(value);
+            }
+            Chunk::Init(buf) => buf[self.pos] = value,
+        }
         self.pos += 1;
     }
 
@@ -440,19 +452,61 @@ impl<U> Sink<'_, U> {
     /// initialised, for the kernel to update in place. Panics (safely) past the chunk end.
     pub(crate) fn fill(&mut self, len: usize, mut value: impl FnMut(usize) -> U) -> &mut [U] {
         let start = self.pos;
-        let region = &mut self.buf[start..start + len];
-        for (index, slot) in region.iter_mut().enumerate() {
-            slot.write(value(index));
-        }
         self.pos += len;
-        // SAFETY: every element of `region` was written just above, so the `MaybeUninit<U>`
-        // slice is fully initialised; `MaybeUninit<U>` has the layout of `U`, and the returned
-        // borrow keeps `self` (and so the chunk) exclusively borrowed while it lives.
-        unsafe { &mut *(region as *mut [MaybeUninit<U>] as *mut [U]) }
+        match &mut self.buf {
+            Chunk::Uninit(buf) => {
+                let region = &mut buf[start..start + len];
+                for (index, slot) in region.iter_mut().enumerate() {
+                    slot.write(value(index));
+                }
+                // SAFETY: every element of `region` was written just above, so the
+                // `MaybeUninit<U>` slice is fully initialised; `MaybeUninit<U>` has the layout of
+                // `U`, and the returned borrow keeps `self` (and so the chunk) exclusively
+                // borrowed while it lives.
+                unsafe { &mut *(region as *mut [MaybeUninit<U>] as *mut [U]) }
+            }
+            Chunk::Init(buf) => {
+                let region = &mut buf[start..start + len];
+                for (index, slot) in region.iter_mut().enumerate() {
+                    *slot = value(index);
+                }
+                region
+            }
+        }
     }
 
     fn is_full(&self) -> bool {
-        self.pos == self.buf.len()
+        let len = match &self.buf {
+            Chunk::Uninit(buf) => buf.len(),
+            Chunk::Init(buf) => buf.len(),
+        };
+        self.pos == len
+    }
+}
+
+/// An element type a caller-owned output chunk can be made of: `MaybeUninit<U>` for the `*_into`
+/// entries, `U` itself for the `*_into_init` entries. One [`FixedOut`] serves both, so the two
+/// entry families share every check and the driver.
+pub(crate) trait Slot<U>: Send + Sized {
+    /// A writer over one item's chunk.
+    fn sink(buf: &mut [Self]) -> Sink<'_, U>;
+}
+
+impl<U: Send> Slot<U> for MaybeUninit<U> {
+    fn sink(buf: &mut [Self]) -> Sink<'_, U> {
+        Sink {
+            buf: Chunk::Uninit(buf),
+            pos: 0,
+        }
+    }
+}
+
+impl<U: Send> Slot<U> for U {
+    fn sink(buf: &mut [Self]) -> Sink<'_, U> {
+        Sink {
+            buf: Chunk::Init(buf),
+            pos: 0,
+        }
     }
 }
 
@@ -579,32 +633,42 @@ impl<'a, U: Send> Outputs for InPlace<'a, U> {
     unsafe fn commit(&mut self, _: usize) {}
 }
 
-/// A caller-owned buffer of `item_len` elements per batch item, written from uninitialised storage.
+/// A caller-owned buffer of `item_len` elements per batch item, of slot type `S` (see [`Slot`]).
 ///
-/// This is the output side of the `*_into` entry points: the caller owns the storage, the kernel
-/// initialises every element, and a kernel that writes fewer elements than the item holds is a
-/// detected bug rather than uninitialised memory handed back to the caller.
-pub(crate) struct FixedOut<'a, U> {
-    slice: &'a mut [MaybeUninit<U>],
+/// This is the output side of the `*_into` (uninitialised) and `*_into_init` (initialised) entry
+/// points: the caller owns the storage, the kernel writes every element, and a kernel that writes
+/// fewer elements than the item holds is a detected bug rather than uninitialised memory handed
+/// back to the caller.
+pub(crate) struct FixedOut<'a, U, S> {
+    slice: &'a mut [S],
     item_len: usize,
     role: &'static str,
+    _value: core::marker::PhantomData<fn() -> U>,
 }
 
-/// A caller-owned output buffer of `item_len` elements per batch item.
-pub(crate) fn fixed_out<'a, U>(
-    slice: &'a mut [MaybeUninit<U>],
-    item_len: usize,
-    role: &'static str,
-) -> FixedOut<'a, U> {
-    FixedOut {
-        slice,
-        item_len,
-        role,
+impl<'a, U, S: Slot<U>> FixedOut<'a, U, S> {
+    /// A caller-owned output buffer of `item_len` elements per batch item.
+    pub(crate) fn new(slice: &'a mut [S], item_len: usize, role: &'static str) -> Self {
+        Self {
+            slice,
+            item_len,
+            role,
+            _value: core::marker::PhantomData,
+        }
     }
 }
 
-impl<'a, U: Send> Outputs for FixedOut<'a, U> {
-    type Parts = (SharedPtr<MaybeUninit<U>>, usize);
+/// A caller-owned uninitialised output buffer of `item_len` elements per batch item.
+pub(crate) fn fixed_out<'a, U: Send>(
+    slice: &'a mut [MaybeUninit<U>],
+    item_len: usize,
+    role: &'static str,
+) -> FixedOut<'a, U, MaybeUninit<U>> {
+    FixedOut::new(slice, item_len, role)
+}
+
+impl<'a, U: Send + 'a, S: Slot<U>> Outputs for FixedOut<'a, U, S> {
+    type Parts = (SharedPtr<S>, usize);
     type Item = Sink<'a, U>;
 
     fn prepare(&mut self, op: Op, batch: usize) -> Result<()> {
@@ -633,7 +697,7 @@ impl<'a, U: Send> Outputs for FixedOut<'a, U> {
         // SAFETY: as for `Out`: the caller's slice holds `batch * item_len` elements and distinct
         // indices cover disjoint ranges.
         let buf = unsafe { core::slice::from_raw_parts_mut(ptr.0.add(index * item_len), item_len) };
-        Sink { buf, pos: 0 }
+        S::sink(buf)
     }
 
     fn item_complete(item: &Sink<'a, U>) -> bool {

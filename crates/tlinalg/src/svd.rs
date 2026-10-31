@@ -37,7 +37,7 @@ use faer::{MatMut, MatRef};
 
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, fixed_out, BatchedRef, Push, Sink, VecOut};
+use crate::batch::{self, fixed_out, BatchedRef, FixedOut, Push, Sink, Slot, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, push_identity, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -602,6 +602,69 @@ pub fn svd_into<T: FaerScalar>(
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
 ) -> Result<()> {
+    svd_slots(op, input, full, u, s, vt, workspace, exec)
+}
+
+/// SVD of every matrix of a batch into caller-owned, initialised storage.
+///
+/// The same call as [`svd_into`] with the outputs as `&mut [T]`: same lengths, workspace, token,
+/// checks and error order. The outputs are overwritten — their contents on entry are never read —
+/// and every element is written on success.
+///
+/// # Errors
+///
+/// As [`svd_into`]: [`Error::InvalidArgument`] when `input` has rank below 2, an output length does
+/// not match, or a size overflows, [`crate::Error::InsufficientWorkspace`] for a short workspace,
+/// and [`Error::NonConvergence`] for the lowest-indexed item faer fails to converge on. Every
+/// argument error and a short workspace are reported before anything is written, so the outputs
+/// are untouched; after [`Error::NonConvergence`] their contents are unspecified (items already run
+/// stay written).
+///
+/// # Examples
+///
+/// ```
+/// use strided_view::RawStridedRef;
+/// use tcontract_exec::Exec;
+/// use tlinalg::{svd::{svd_into_init, svd_workspace}, Op};
+///
+/// let a = [3.0_f64, 0.0, 0.0, 1.0];
+/// let mut exec = Exec::serial();
+/// let mut workspace =
+///     vec![core::mem::MaybeUninit::uninit(); svd_workspace::<f64>(2, 2, false, 1, &exec).unwrap()];
+/// let (mut u, mut s, mut vt) = ([f64::NAN; 4], [f64::NAN; 2], [f64::NAN; 4]);
+/// svd_into_init(
+///     Op::Svd, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), false,
+///     &mut u, &mut s, &mut vt, &mut workspace, &mut exec,
+/// ).unwrap();
+/// assert_eq!(s, [3.0, 1.0]);
+/// ```
+// INVARIANT: as `svd_into`.
+#[allow(clippy::too_many_arguments)]
+pub fn svd_into_init<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    full: bool,
+    u: &mut [T],
+    s: &mut [T],
+    vt: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
+    svd_slots(op, input, full, u, s, vt, workspace, exec)
+}
+
+/// The body of [`svd_into`] and [`svd_into_init`], generic over the output slot type.
+#[allow(clippy::too_many_arguments)]
+fn svd_slots<T: FaerScalar, S: Slot<T>>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    full: bool,
+    u: &mut [S],
+    s: &mut [S],
+    vt: &mut [S],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
     let (u_len, vt_len, k, item_muladds) = svd_shape::<T>(op, m, n, full)?;
@@ -622,9 +685,9 @@ pub fn svd_into<T: FaerScalar>(
         exec,
         item_muladds,
         &mut (
-            fixed_out(u, u_len, "U"),
-            fixed_out(s, k, "singular values"),
-            fixed_out(vt, vt_len, "VH"),
+            FixedOut::<T, S>::new(u, u_len, "U"),
+            FixedOut::<T, S>::new(s, k, "singular values"),
+            FixedOut::<T, S>::new(vt, vt_len, "VH"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| SvdScratch::<T::Entity>::new(m, n, vectors, par, MemStack::new(stack)),

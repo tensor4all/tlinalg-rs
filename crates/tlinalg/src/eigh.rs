@@ -21,7 +21,7 @@ use faer::linalg::evd::ComputeEigenvectors;
 use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, fixed_out, BatchedRef, VecOut};
+use crate::batch::{self, fixed_out, BatchedRef, FixedOut, Slot, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -292,6 +292,63 @@ pub fn eigh_into<T: FaerScalar>(
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
 ) -> Result<()> {
+    eigh_slots(op, input, values, vectors, workspace, exec)
+}
+
+/// Eigendecomposition of every `n x n` Hermitian matrix of a batch into caller-owned, initialised
+/// storage, `A = V diag(w) Vᴴ`.
+///
+/// The same call as [`eigh_into`] with the outputs as `&mut [T]`: same lengths, workspace, token,
+/// checks and error order. The outputs are overwritten — their contents on entry are never read —
+/// and every element is written on success.
+///
+/// # Errors
+///
+/// As [`eigh_into`]: [`Error::InvalidArgument`] when `input` is not a batch of square matrices, an
+/// output length does not match, or the vector count overflows,
+/// [`crate::Error::InsufficientWorkspace`] for a short workspace, and [`Error::NonConvergence`] for
+/// the lowest-indexed item faer fails to converge on. Every argument error and a short workspace
+/// are reported before anything is written, so the outputs are untouched; after
+/// [`Error::NonConvergence`] their contents are unspecified (items already run stay written).
+///
+/// # Examples
+///
+/// ```
+/// use strided_view::RawStridedRef;
+/// use tcontract_exec::Exec;
+/// use tlinalg::{eigh::{eigh_into_init, eigh_workspace}, Op};
+///
+/// let a = [2.0_f64, 0.0, 0.0, 1.0];
+/// let mut exec = Exec::serial();
+/// let mut workspace =
+///     vec![core::mem::MaybeUninit::uninit(); eigh_workspace::<f64>(2, true, 1, &exec).unwrap()];
+/// let (mut w, mut v) = ([f64::NAN; 2], [f64::NAN; 4]);
+/// eigh_into_init(
+///     Op::Eigh, RawStridedRef::new(&a, &[2, 2], &[1, 2], 0).unwrap(), &mut w, &mut v,
+///     &mut workspace, &mut exec,
+/// ).unwrap();
+/// assert_eq!(w, [1.0, 2.0]);
+/// ```
+pub fn eigh_into_init<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    values: &mut [T],
+    vectors: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
+    eigh_slots(op, input, values, vectors, workspace, exec)
+}
+
+/// The body of [`eigh_into`] and [`eigh_into_init`], generic over the output slot type.
+fn eigh_slots<T: FaerScalar, S: Slot<T>>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    values: &mut [S],
+    vectors: &mut [S],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
@@ -312,8 +369,8 @@ pub fn eigh_into<T: FaerScalar>(
         exec,
         item_muladds,
         &mut (
-            fixed_out(values, n, "eigenvalues"),
-            fixed_out(vectors, v_len, "eigenvectors"),
+            FixedOut::<T, S>::new(values, n, "eigenvalues"),
+            FixedOut::<T, S>::new(vectors, v_len, "eigenvectors"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| {

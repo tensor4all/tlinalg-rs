@@ -22,7 +22,7 @@ use faer::dyn_stack::{MemStack, StackReq};
 use faer::{Conj, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
-use crate::batch::{self, fixed_out, BatchedRef, Push, Sink, VecOut};
+use crate::batch::{self, fixed_out, BatchedRef, FixedOut, Push, Sink, Slot, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, push_masked, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -363,6 +363,60 @@ pub fn qr_into<T: FaerScalar>(
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
 ) -> Result<()> {
+    qr_slots(op, input, q, r, workspace, exec)
+}
+
+/// Thin QR of every `m x n` matrix of a batch, `A = Q R`, into caller-owned, initialised storage.
+///
+/// The same call as [`qr_into`] with the outputs as `&mut [T]`: same lengths, workspace, token,
+/// checks and error order. The outputs are overwritten — their contents on entry are never read —
+/// and every element is written on success.
+///
+/// # Errors
+///
+/// As [`qr_into`]: [`Error::InvalidArgument`](crate::Error::InvalidArgument) for a malformed
+/// descriptor, an output length that does not match the shape, or a size overflow;
+/// [`crate::Error::InsufficientWorkspace`] for a short workspace. Every error is reported before
+/// anything is written, so the outputs are untouched on error.
+///
+/// # Examples
+///
+/// ```
+/// use strided_view::RawStridedRef;
+/// use tcontract_exec::Exec;
+/// use tlinalg::{qr::{qr_into_init, qr_workspace}, Op};
+///
+/// let a = [3.0_f64, 4.0];
+/// let mut exec = Exec::serial();
+/// let mut workspace =
+///     vec![core::mem::MaybeUninit::uninit(); qr_workspace::<f64>(2, 1, 1, &exec).unwrap()];
+/// let (mut q, mut r) = ([f64::NAN; 2], [f64::NAN; 1]);
+/// qr_into_init(
+///     Op::Qr, RawStridedRef::new(&a, &[2, 1], &[1, 2], 0).unwrap(), &mut q, &mut r,
+///     &mut workspace, &mut exec,
+/// ).unwrap();
+/// assert!((r[0].abs() - 5.0).abs() < 1e-12);
+/// ```
+pub fn qr_into_init<T: FaerScalar>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    q: &mut [T],
+    r: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
+    qr_slots(op, input, q, r, workspace, exec)
+}
+
+/// The body of [`qr_into`] and [`qr_into_init`], generic over the output slot type.
+fn qr_slots<T: FaerScalar, S: Slot<T>>(
+    op: Op,
+    input: RawStridedRef<'_, T>,
+    q: &mut [S],
+    r: &mut [S],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
     let (q_len, r_len, item_muladds) = qr_shape::<T>(op, m, n)?;
@@ -381,7 +435,10 @@ pub fn qr_into<T: FaerScalar>(
         input.batch(),
         exec,
         item_muladds,
-        &mut (fixed_out(q, q_len, "Q"), fixed_out(r, r_len, "R")),
+        &mut (
+            FixedOut::<T, S>::new(q, q_len, "Q"),
+            FixedOut::<T, S>::new(r, r_len, "R"),
+        ),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| QrScratch::<T::Entity>::new(m, n, false, par, MemStack::new(stack)),
         |index, (q, r), scratch, par| {
