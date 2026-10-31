@@ -367,6 +367,11 @@ fn svd_item<T: FaerScalar>(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn work_for_test<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
+    work::<T>(m, n)
+}
+
 /// The vector mode and the output widths for `full`.
 fn mode(m: usize, n: usize, full: bool) -> (usize, usize, ComputeSvdVectors) {
     if full {
@@ -377,8 +382,20 @@ fn mode(m: usize, n: usize, full: bool) -> (usize, usize, ComputeSvdVectors) {
     }
 }
 
-fn work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
-    weighted_muladds::<T>(m as f64 * n as f64 * m.min(n) as f64)
+/// The share of an SVD's estimated work a team inside one item can pay back.
+///
+/// Measured width curves (`tlinalg-rs#88`, `docs/design/team-payback.md`): a team inside one
+/// `svd`/`svd_values` item is slower than serial at every shape up to `256 x 256` (`s(8)` 0.60 to
+/// 0.85) and first pays at `512 x 512` (`s(8)` 1.36, f64). The share places the grant boundary
+/// between those two, so the crate never hands a small SVD a team it cannot pay for.
+const PAYBACK_SHARE: f64 = 6.0e-4;
+
+/// The work estimate an SVD reports to the batch policy.
+fn work<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
+    batch::Work::paying(
+        weighted_muladds::<T>(m as f64 * n as f64 * m.min(n) as f64),
+        PAYBACK_SHARE,
+    )
 }
 
 /// Reject shapes whose products the lane requirement multiplies (faer's `svd_scratch` multiplies
@@ -398,7 +415,7 @@ fn svd_shape<T: FaerScalar>(
     m: usize,
     n: usize,
     full: bool,
-) -> Result<(usize, usize, usize, f64)> {
+) -> Result<(usize, usize, usize, batch::Work)> {
     let (u_cols, v_cols, vectors) = mode(m, n, full);
     check_shape(op, m, n, vectors)?;
     let u_len = checked_product(op, "U", &[m, u_cols])?;
@@ -504,12 +521,12 @@ pub fn svd_values_into<T: FaerScalar>(
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
     check_shape(op, m, n, ComputeSvdVectors::No)?;
-    let item_muladds = work::<T>(m, n);
+    let item_work = work::<T>(m, n);
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape(op, m, n, ComputeSvdVectors::No),
         |par| svd_req::<T::Entity>(m, n, ComputeSvdVectors::No, par),
     )?;
@@ -519,7 +536,7 @@ pub fn svd_values_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (fixed_out(s, m.min(n), "singular values"),),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| {
@@ -667,13 +684,13 @@ fn svd_slots<T: FaerScalar, S: Slot<T>>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let (u_len, vt_len, k, item_muladds) = svd_shape::<T>(op, m, n, full)?;
+    let (u_len, vt_len, k, item_work) = svd_shape::<T>(op, m, n, full)?;
     let vectors = mode(m, n, full).2;
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape(op, m, n, vectors),
         |par| svd_req::<T::Entity>(m, n, vectors, par),
     )?;
@@ -683,7 +700,7 @@ fn svd_slots<T: FaerScalar, S: Slot<T>>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (
             FixedOut::<T, S>::new(u, u_len, "U"),
             FixedOut::<T, S>::new(s, k, "singular values"),

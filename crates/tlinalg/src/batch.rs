@@ -896,6 +896,62 @@ impl Route {
     }
 }
 
+/// The estimated work of one batch item, in the two quantities the route consumes.
+///
+/// The shared decision needs one number, but a family needs two: the **whole** estimated work of one
+/// item decides whether a batch is worth fanning out over the lanes (that work is split, so it pays
+/// for the fork), while only the part a *team inside one item* can pay back decides whether that
+/// item should receive more than one slot. For a GEMM-shaped family the two are the same number and
+/// [`Work::all`] says so; for a factorization whose work is dominated by a serial phase the second
+/// is a small share of the first ([`Work::paying`]), and granting the item a team it cannot pay for
+/// makes the call slower, not faster.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Work {
+    /// The whole estimated work of one item, in multiply-add equivalents at the model's rate.
+    pub(crate) total: f64,
+    /// The share of `total` a team inside one item can pay back, in `0..=1`.
+    pub(crate) payback_share: f64,
+}
+
+impl Work {
+    /// Work whose whole estimate a team can pay back: the identity for a GEMM-shaped family.
+    pub(crate) const fn all(total: f64) -> Self {
+        Self {
+            total,
+            payback_share: 1.0,
+        }
+    }
+
+    /// Work of which only `payback_share` of the estimate is convertible by a team inside one item.
+    ///
+    /// `payback_share` is **not** a parallel fraction: it is the share of the estimate that has to
+    /// repay the dispatch cost of a team before that team is worth entering, calibrated on measured
+    /// width curves (`tlinalg-rs#88`, `docs/design/team-payback.md`).
+    pub(crate) const fn paying(total: f64, payback_share: f64) -> Self {
+        Self {
+            total,
+            payback_share,
+        }
+    }
+}
+
+impl From<f64> for Work {
+    fn from(total: f64) -> Self {
+        Work::all(total)
+    }
+}
+
+/// The nanoseconds the model prices `muladds` at, on the token's own model.
+fn item_ns(exec: &Exec<'_>, muladds: f64) -> f64 {
+    let model = &exec.batch_policy().model;
+    let rate = if model.muladds_per_ns > 0.0 {
+        model.muladds_per_ns
+    } else {
+        1.0
+    };
+    model.item_overhead_ns + muladds / rate
+}
+
 /// The batch route for this call, from the shared [`tcontract_exec::BatchPolicy`].
 ///
 /// The policy decides how many lanes the batch splits into and, for a forced strategy, the width of
@@ -904,7 +960,13 @@ impl Route {
 /// items runs one sequential item stream per slot while a smaller batch lets every item use its
 /// share as faer width. When `Auto` keeps one lane, the lane runs the items one after another at
 /// the decision's item width.
-pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route {
+///
+/// The item width a team may receive is capped by the item's [`Work::payback_share`]: the width rule
+/// is asked what a team can pay back out of the convertible part of the estimate, and no route
+/// hands an item more slots than that. The cap never widens a route, and at a share of one it is
+/// inert, so a GEMM-shaped family keeps the decision's width exactly.
+pub(crate) fn decide(exec: &Exec<'_>, batch: usize, work: impl Into<Work>) -> Route {
+    let work = work.into();
     // Only a team gives faer internal parallelism; without one every item runs `Par::Seq`, so the
     // lanes are the only parallel axis and no item width is granted.
     let team = exec.token_ref().carries_team();
@@ -913,31 +975,45 @@ pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route 
     // The token's width rule (`Exec::width_for`: serial time against `PAYS` times the dispatch
     // cost of the token's kind) is the gate: when the whole batch does not repay one fork over
     // the lanes it stays on the caller at width one.
-    if batch > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
-        let model = &exec.batch_policy().model;
-        let rate = if model.muladds_per_ns > 0.0 {
-            model.muladds_per_ns
-        } else {
-            1.0
+    let auto = matches!(exec.batch_policy().strategy, BatchStrategy::Auto);
+    if batch > 1
+        && auto
+        && exec.width_for(item_ns(exec, work.total) * batch as f64, LANE_SECTIONS) <= 1
+    {
+        return Route {
+            lanes: 1,
+            slots: 1,
+            team,
         };
-        let item_ns = model.item_overhead_ns + item_muladds / rate;
-        if exec.width_for(item_ns * batch as f64, LANE_SECTIONS) <= 1 {
-            return Route {
-                lanes: 1,
-                slots: 1,
-                team,
-            };
-        }
     }
     let decision =
-        exec.batch_decision(&BatchQuery::new(batch, item_muladds).with_item_parallel(team));
+        exec.batch_decision(&BatchQuery::new(batch, work.total).with_item_parallel(team));
     let lanes = decision.lanes.clamp(1, batch.max(1));
-    let slots = if lanes > 1 && matches!(exec.batch_policy().strategy, BatchStrategy::Auto) {
+    // The widest item a team inside one item can pay for, from the convertible part of the
+    // estimate. `usize::MAX` when the whole estimate is convertible: the decision's own width then
+    // stands, exactly as before the cap existed. A forced strategy is the caller's own instruction
+    // and is honoured (clamped to the items and the budget, never narrowed here), so the cap is a
+    // property of `Auto` alone.
+    let payback_width = if auto && team && work.payback_share < 1.0 {
+        exec.width_for(
+            item_ns(exec, work.total * work.payback_share),
+            LANE_SECTIONS,
+        )
+        .max(1)
+    } else {
+        usize::MAX
+    };
+    let slots = if lanes > 1 && auto {
+        // The lanes share the budget, so the widest item of the route is the budget divided
+        // among them; a team inside one item never exceeds what it can pay back.
         exec.budget()
+            .div_ceil(lanes)
+            .min(payback_width)
+            .saturating_mul(lanes)
     } else {
         lanes
             * if team {
-                decision.item_threads.max(1)
+                decision.item_threads.max(1).min(payback_width)
             } else {
                 1
             }
@@ -951,7 +1027,7 @@ pub(crate) fn decide(exec: &Exec<'_>, batch: usize, item_muladds: f64) -> Route 
 /// the token, each lane running its items sequentially at the width of its share. A serial token
 /// (or one lane at width one) stays on the calling thread and enters no pool.
 ///
-/// `item_muladds` is the family's work estimate, the input of the shared decision.
+/// `work` is the family's estimate of one item, the input of the shared decision (see [`Work`]).
 ///
 /// `make_scratch` builds one lane's scratch from that lane's borrowed workspace chunk, reused for
 /// every item of that lane. It is called with the width the lane's share granted, which never
@@ -972,7 +1048,7 @@ pub(crate) fn run<'w, O, S, MK, F>(
     op: Op,
     batch: usize,
     exec: &mut Exec<'_>,
-    item_muladds: f64,
+    work: impl Into<Work>,
     outputs: &mut O,
     workspace: ScratchArena<'w>,
     make_scratch: MK,
@@ -983,7 +1059,7 @@ where
     MK: Fn(faer::ParShape, &'w mut [MaybeUninit<u8>]) -> S + Sync,
     F: Fn(usize, &mut O::Item, &mut S, faer::Par<'_>) -> Result<()> + Sync,
 {
-    let route = decide(exec, batch, item_muladds);
+    let route = decide(exec, batch, work);
     outputs.prepare(op, batch)?;
     if batch == 0 {
         return Ok(());
