@@ -72,6 +72,42 @@ fn work<T: ScalarEntity>(n: usize) -> f64 {
     weighted_muladds::<T>((n as f64).powi(3))
 }
 
+/// Cost of one general eigendecomposition item, including the values only route,
+/// in weighted multiply adds: one real scalar multiply add is one unit and a
+/// complex scalar counts four.
+///
+/// This returns the planner's existing estimate. Existing formulas are evaluated
+/// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, where the caller measures the rate in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(tlinalg::eig::estimate_work::<f64>(8), 512.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
+    work::<T>(n)
+}
+
+/// The work a team inside one general eigendecomposition item can pay back.
+///
+/// This is [`estimate_work`] times the family's share of one, with the same
+/// units, independence and allocation guarantees.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::eig::{estimate_payback_work, estimate_work};
+/// assert_eq!(estimate_payback_work::<f64>(8), estimate_work::<f64>(8));
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(n: usize) -> f64 {
+    estimate_work::<T>(n)
+}
+
 /// The query with the caller's operation, so a wrapper reports its own `Op`.
 fn eig_bytes<T: FaerScalar>(
     op: Op,

@@ -128,6 +128,60 @@ fn item_muladds<T: FaerScalar>(
     weighted_muladds::<T>(n as f64 * n as f64 * solved as f64 / 2.0)
 }
 
+/// Cost of one triangular solve item, in weighted multiply adds.
+///
+/// `n` is the coefficient order; `b_rows` and `b_cols` describe the right hand
+/// side. Only `flags.left_side` affects the estimate.
+/// One unit is one real scalar multiply add; a complex scalar counts four.
+/// This returns the planner's existing estimate. Existing formulas are evaluated
+/// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, where the caller measures the rate in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::triangular_solve::{estimate_work, TriangularSolveFlags};
+/// let flags = TriangularSolveFlags {
+///     left_side: true, lower: true, transpose_a: false, unit_diagonal: false,
+/// };
+/// assert_eq!(estimate_work::<f64>(6, 6, 2, flags), 36.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(
+    n: usize,
+    b_rows: usize,
+    b_cols: usize,
+    flags: TriangularSolveFlags,
+) -> f64 {
+    item_muladds::<T>(n, b_rows, b_cols, flags)
+}
+
+/// The work a team inside one triangular solve item can pay back.
+///
+/// This is [`estimate_work`] times the family's share of one, with the same
+/// units, independence and allocation guarantees.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::triangular_solve::{estimate_payback_work, estimate_work, TriangularSolveFlags};
+/// let flags = TriangularSolveFlags {
+///     left_side: true, lower: true, transpose_a: false, unit_diagonal: false,
+/// };
+/// assert_eq!(estimate_payback_work::<f64>(6, 6, 2, flags), estimate_work::<f64>(6, 6, 2, flags));
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(
+    n: usize,
+    b_rows: usize,
+    b_cols: usize,
+    flags: TriangularSolveFlags,
+) -> f64 {
+    estimate_work::<T>(n, b_rows, b_cols, flags)
+}
+
 /// Bytes one batched triangular solve needs in its borrowed workspace: none.
 ///
 /// The output chunk is the work matrix and faer's triangular solve takes no workspace, so this is

@@ -222,6 +222,41 @@ fn work<T: ScalarEntity>(rows: usize, cols: usize) -> f64 {
     weighted_muladds::<T>(rows as f64 * cols as f64 * rows.min(cols) as f64)
 }
 
+/// Cost of one compact Householder factorization item, in weighted multiply adds.
+///
+/// One unit is one real scalar multiply add; a complex scalar counts four.
+/// This returns the planner's existing estimate. Existing formulas are evaluated
+/// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, where the caller measures the rate in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(tlinalg::householder::estimate_work::<f64>(12, 6), 432.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(rows: usize, cols: usize) -> f64 {
+    work::<T>(rows, cols)
+}
+
+/// The work a team inside one compact Householder factorization item can pay back.
+///
+/// This is [`estimate_work`] times the family's share of one, with the same
+/// units, independence and allocation guarantees.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::householder::{estimate_payback_work, estimate_work};
+/// assert_eq!(estimate_payback_work::<f64>(12, 6), estimate_work::<f64>(12, 6));
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(rows: usize, cols: usize) -> f64 {
+    estimate_work::<T>(rows, cols)
+}
+
 /// Reject a shape whose products the lane requirement multiplies (including the one inside faer's
 /// block-size recommendation).
 fn check_shape<E: faer::traits::ComplexField>(op: Op, rows: usize, cols: usize) -> Result<()> {
@@ -437,6 +472,37 @@ struct ApplyScratch<'w, E: faer::traits::ComplexField> {
 /// The work estimate a reflector application reports to the batch policy.
 fn apply_work<T: ScalarEntity>(shape: ReflectorShape) -> f64 {
     weighted_muladds::<T>(shape.rows as f64 * shape.cols as f64 * shape.k as f64)
+}
+
+/// Cost of applying reflectors to one item with the given dimensions.
+///
+/// Units, `f64` rounding, rate ownership and query guarantees are those of
+/// [`estimate_work`]. This calls the existing reflector application model.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::householder::{estimate_apply_reflectors_work, ReflectorShape};
+/// let shape = ReflectorShape { rows: 12, a_cols: 6, cols: 3, k: 6 };
+/// assert_eq!(estimate_apply_reflectors_work::<f64>(shape), 216.0);
+/// ```
+pub fn estimate_apply_reflectors_work<T: FaerScalar>(shape: ReflectorShape) -> f64 {
+    apply_work::<T>(shape)
+}
+
+/// The work a team inside one reflector application item can pay back.
+///
+/// This is [`estimate_apply_reflectors_work`] times the family's share of one.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::householder::{estimate_apply_reflectors_payback_work, estimate_apply_reflectors_work, ReflectorShape};
+/// let shape = ReflectorShape { rows: 12, a_cols: 6, cols: 3, k: 6 };
+/// assert_eq!(estimate_apply_reflectors_payback_work::<f64>(shape), estimate_apply_reflectors_work::<f64>(shape));
+/// ```
+pub fn estimate_apply_reflectors_payback_work<T: FaerScalar>(shape: ReflectorShape) -> f64 {
+    estimate_apply_reflectors_work::<T>(shape)
 }
 
 /// Reject shapes whose products the apply requirement multiplies.

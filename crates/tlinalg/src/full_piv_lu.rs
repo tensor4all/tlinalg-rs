@@ -157,6 +157,69 @@ fn solve_work<T: ScalarEntity>(n: usize, nrhs: usize) -> f64 {
     weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs)
 }
 
+/// Cost of one full pivot LU factorization item, in weighted multiply adds.
+///
+/// One unit is one real scalar multiply add; a complex scalar counts four.
+/// This returns the planner's existing estimate. Existing formulas are evaluated
+/// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, where the caller measures the rate in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(tlinalg::full_piv_lu::estimate_work::<f64>(6), 72.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
+    work::<T>(n)
+}
+
+/// The work a team inside one full pivot LU factorization item can pay back.
+///
+/// This is [`estimate_work`] times the family's share of one, with the same
+/// units, independence and allocation guarantees.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::full_piv_lu::{estimate_payback_work, estimate_work};
+/// assert_eq!(estimate_payback_work::<f64>(6), estimate_work::<f64>(6));
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(n: usize) -> f64 {
+    estimate_work::<T>(n)
+}
+
+/// Cost of one full pivot LU factor then solve item with `nrhs` right hand sides.
+///
+/// Includes the factorization. Units, `f64` rounding, rate ownership and query
+/// guarantees are those of [`estimate_work`]. This calls the existing solve model.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(tlinalg::full_piv_lu::estimate_solve_work::<f64>(6, 2), 144.0);
+/// ```
+pub fn estimate_solve_work<T: FaerScalar>(n: usize, nrhs: usize) -> f64 {
+    solve_work::<T>(n, nrhs)
+}
+
+/// The work a team inside one full pivot LU factor then solve item can pay back.
+///
+/// This is [`estimate_solve_work`] times the family's share of one.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::full_piv_lu::{estimate_solve_payback_work, estimate_solve_work};
+/// assert_eq!(estimate_solve_payback_work::<f64>(6, 2), estimate_solve_work::<f64>(6, 2));
+/// ```
+pub fn estimate_solve_payback_work<T: FaerScalar>(n: usize, nrhs: usize) -> f64 {
+    estimate_solve_work::<T>(n, nrhs)
+}
+
 /// Reject shapes whose products the lane requirement multiplies.
 fn check_shape(op: Op, n: usize) -> Result<()> {
     checked_product(op, "matrix", &[n, n])?;

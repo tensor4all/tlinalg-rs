@@ -1,5 +1,7 @@
+mod estimates;
 mod payback;
 mod scheduling;
+pub(super) use estimates::record_work;
 pub(super) use scheduling::record_lanes;
 
 use super::{

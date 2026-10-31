@@ -398,6 +398,44 @@ fn work<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
     )
 }
 
+/// Cost of one SVD item, including full, reduced and values only routes,
+/// in weighted multiply adds: one real scalar multiply add is one unit and a
+/// complex scalar counts four.
+///
+/// This returns the planner's existing estimate. Existing formulas are evaluated
+/// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, where the caller measures the rate in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(tlinalg::svd::estimate_work::<f64>(12, 6), 432.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
+    work::<T>(m, n).total
+}
+
+/// The work a team inside one SVD item can pay back.
+///
+/// This is [`estimate_work`] times the planner's `payback_share`, not a parallel
+/// fraction or a predicted speedup. It has the same units, independence and
+/// allocation guarantees as [`estimate_work`].
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::svd::{estimate_payback_work, estimate_work};
+/// assert_eq!(estimate_payback_work::<f64>(12, 6), estimate_work::<f64>(12, 6) * 6.0e-4);
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
+    let work = work::<T>(m, n);
+    work.total * work.payback_share
+}
+
 /// Reject shapes whose products the lane requirement multiplies (faer's `svd_scratch` multiplies
 /// the dimensions itself).
 fn check_shape(op: Op, m: usize, n: usize, vectors: ComputeSvdVectors) -> Result<()> {

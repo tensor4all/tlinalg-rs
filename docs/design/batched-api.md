@@ -4,7 +4,10 @@ The maintainer's intent: the whole tlinalg (and tlinalg-blas) public API is **to
 A host calls each family **once per batch**; the library owns the batch loop (and, for tlinalg, the
 batch-direction fan-out). Per-matrix entry points become crate-private helpers.
 
-## Shape of every entry point
+## Shape of every execution entry point
+
+Work estimates are metadata queries rather than execution entry points: they take shapes and a
+scalar type, report one item's work, and need neither operands nor an execution token.
 
 * Input: one `RawStridedRef<'_, T>` of rank `2 + B`, dims `[rows, cols, b_1, ..., b_B]`, arbitrary
   (validated, non-negative) strides. Matrix dims first, batch dims after (tenferro's column-major
