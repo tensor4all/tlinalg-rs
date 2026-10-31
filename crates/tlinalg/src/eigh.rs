@@ -146,9 +146,22 @@ fn check_shape(op: Op, n: usize) -> Result<()> {
     Ok(())
 }
 
+/// The share of an eigendecomposition's estimated work a team inside one item can pay back.
+///
+/// Measured width curves (`tlinalg-rs#88`, `docs/design/team-payback.md`): a team inside one `eigh`
+/// item is slower than serial up to `256 x 256` (`s(8)` 0.73 to 0.92) and first pays at
+/// `512 x 512` (`s(8)` 1.17, f64) — the same boundary as SVD, whose bidiagonalization is the
+/// same kind of serial wall.
+const PAYBACK_SHARE: f64 = 6.0e-4;
+
 /// The work estimate a Hermitian eigendecomposition reports to the batch policy.
-fn work<T: ScalarEntity>(n: usize) -> f64 {
-    weighted_muladds::<T>((n as f64).powi(3))
+fn work<T: ScalarEntity>(n: usize) -> batch::Work {
+    batch::Work::paying(weighted_muladds::<T>((n as f64).powi(3)), PAYBACK_SHARE)
+}
+
+#[cfg(test)]
+pub(crate) fn work_for_test<T: ScalarEntity>(n: usize) -> batch::Work {
+    work::<T>(n)
 }
 
 /// The query with the caller's operation, so a wrapper reports its own `Op`.
@@ -193,12 +206,12 @@ pub fn eigh_values_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
-    let item_muladds = work::<T>(n);
+    let item_work = work::<T>(n);
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape(op, n),
         |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::No, par),
     )?;
@@ -208,7 +221,7 @@ pub fn eigh_values_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (fixed_out(values, n, "eigenvalues"),),
         batch::ScratchArena::new(workspace, per_lane),
         |par, stack| {
@@ -352,12 +365,12 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
     let input = BatchedRef::square(op, "input", input)?;
     let n = input.rows();
     let v_len = checked_product(op, "eigenvector matrix", &[n, n])?;
-    let item_muladds = work::<T>(n);
+    let item_work = work::<T>(n);
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape(op, n),
         |par| eigh_req::<T::Entity>(n, ComputeEigenvectors::Yes, par),
     )?;
@@ -367,7 +380,7 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (
             FixedOut::<T, S>::new(values, n, "eigenvalues"),
             FixedOut::<T, S>::new(vectors, v_len, "eigenvectors"),

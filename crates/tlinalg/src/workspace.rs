@@ -37,11 +37,11 @@ pub(crate) fn lane_requirement(
     op: Op,
     exec: &Exec<'_>,
     batch: usize,
-    item_muladds: f64,
+    work: impl Into<crate::batch::Work>,
     check: impl FnOnce() -> Result<()>,
     req: impl FnOnce(faer::ParShape) -> StackReq,
 ) -> Result<Option<(usize, usize)>> {
-    let route = crate::batch::decide(exec, batch, item_muladds);
+    let route = crate::batch::decide(exec, batch, work);
     if batch == 0 {
         return Ok(None);
     }

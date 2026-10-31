@@ -17,7 +17,7 @@ back to an ambient pool.
 
 ## Route
 
-`batch::decide(exec, batch, item_muladds)` resolves a `Route { lanes, slots }` from the shared
+`batch::decide(exec, batch, work)` resolves a `Route { lanes, slots }` from the shared
 `Exec::batch_decision`, which is the one policy source (`BatchPolicy` and `WorkModel` stay with
 `tcontract_exec`, rule 4 of the cross-repo document):
 
@@ -34,10 +34,19 @@ The decision depends on the budget, the policy and the batch alone, so the works
 matching `_into` call resolve the same route. The item extent does not enter it; the work estimate
 does, through the shared model.
 
+The estimate a family feeds the decision is a `batch::Work`: the whole work of one item, and the
+share of it a team *inside one item* can pay back (`payback_share`). The lanes split the whole
+estimate, so the fan-out sees all of it; an item's own width comes from the convertible share, and
+`Auto` never hands an item more slots than that. A GEMM-shaped family reports a share of one and its
+routes are exactly what the decision gives; the decomposition families whose serial phase dominates
+report a small share, and those shares are calibrated against measured width curves — see
+[team-payback.md](team-payback.md). A forced strategy is the caller's own instruction and is not
+narrowed by the cap.
+
 ## Per-family work estimates
 
-`batch::run` is fed one item's multiply-adds, the input of the shared decision, so RHS/reflector
-extents are expressed as work rather than as a size. The estimates distinguish the actual route:
+`batch::run` is fed one item's estimate, the input of the shared decision, so RHS/reflector extents
+are expressed as work rather than as a size. The estimates distinguish the actual route:
 
 | route | `item_muladds` |
 |---|---|
@@ -54,6 +63,9 @@ extents are expressed as work rather than as a size. The estimates distinguish t
 | packed_lu factor | `m n k - (m+n) k^2/2 + k^3/3` |
 | packed_lu solve_prepared | `n^2 nrhs` (prepared) |
 | packed_lu factor_solve | factor + `n^2 nrhs` |
+
+`qr`, `eigh` and `svd` carry a `payback_share` below one; every other row reports `Work::all` (a
+share of one).
 
 Every estimate is scaled by the scalar's weight (4 for a complex multiply-add). A prepared packed
 solve is deliberately **not** charged for a factorization it does not run.

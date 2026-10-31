@@ -94,7 +94,7 @@ fn check_shape<E: faer::traits::ComplexField>(op: Op, m: usize, n: usize) -> Res
 /// The output lengths and the work estimate of an `m x n` batch, with every product the lane
 /// requirement multiplies checked (this is the validation the `Vec` wrappers run before they size a
 /// workspace, and `_into` runs before it builds one).
-fn qr_shape<T: FaerScalar>(op: Op, m: usize, n: usize) -> Result<(usize, usize, f64)> {
+fn qr_shape<T: FaerScalar>(op: Op, m: usize, n: usize) -> Result<(usize, usize, batch::Work)> {
     check_shape::<T::Entity>(op, m, n)?;
     let k = m.min(n);
     let q_len = checked_product(op, "Q", &[m, k])?;
@@ -102,10 +102,26 @@ fn qr_shape<T: FaerScalar>(op: Op, m: usize, n: usize) -> Result<(usize, usize, 
     Ok((q_len, r_len, qr_work::<T>(m, n)))
 }
 
+/// The share of a QR factorization's estimated work a team inside one item can pay back.
+///
+/// Measured width curves (`tlinalg-rs#88`, `docs/design/team-payback.md`): a team inside one `qr`
+/// item is slower than serial up to `128 x 128` (`s(8)` 0.58 to 0.74) and pays from `192 x 192`
+/// (`s(8)` 1.03) onward, reaching 2.16 at `512 x 512`. QR converts more of its work than SVD does
+/// (its trailing update is GEMM-shaped), so its share is larger.
+const PAYBACK_SHARE: f64 = 1.0e-2;
+
 /// The work estimate a QR factorization reports to the batch policy.
-fn qr_work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
+fn qr_work<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
     let k = m.min(n);
-    weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0)
+    batch::Work::paying(
+        weighted_muladds::<T>(m as f64 * n as f64 * k as f64 - (k as f64).powi(3) / 3.0),
+        PAYBACK_SHARE,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn work_for_test<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
+    qr_work::<T>(m, n)
 }
 
 impl<'w, E: faer::traits::ComplexField> QrScratch<'w, E> {
@@ -326,12 +342,12 @@ fn qr_bytes<T: FaerScalar>(
     batch: usize,
     exec: &Exec<'_>,
 ) -> Result<usize> {
-    let item_muladds = qr_work::<T>(m, n);
+    let item_work = qr_work::<T>(m, n);
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        item_muladds,
+        item_work,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, pivoting, par),
     )?;
@@ -419,12 +435,12 @@ fn qr_slots<T: FaerScalar, S: Slot<T>>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let (q_len, r_len, item_muladds) = qr_shape::<T>(op, m, n)?;
+    let (q_len, r_len, item_work) = qr_shape::<T>(op, m, n)?;
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, false, par),
     )?;
@@ -434,7 +450,7 @@ fn qr_slots<T: FaerScalar, S: Slot<T>>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (
             FixedOut::<T, S>::new(q, q_len, "Q"),
             FixedOut::<T, S>::new(r, r_len, "R"),
@@ -562,12 +578,12 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
     let (m, n) = (input.rows(), input.cols());
-    let (q_len, r_len, item_muladds) = qr_shape::<T>(op, m, n)?;
+    let (q_len, r_len, item_work) = qr_shape::<T>(op, m, n)?;
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
-        item_muladds,
+        item_work,
         || check_shape::<T::Entity>(op, m, n),
         |par| qr_req::<T::Entity>(m, n, true, par),
     )?;
@@ -577,7 +593,7 @@ pub fn rank_revealing_qr_into<T: FaerScalar>(
         op,
         input.batch(),
         exec,
-        item_muladds,
+        item_work,
         &mut (
             fixed_out(q, q_len, "Q"),
             fixed_out(r, r_len, "R"),
