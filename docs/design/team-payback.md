@@ -40,6 +40,10 @@ behaviour the measured dispatch rows describe.
 | `svd`, `svd_values` | 6e-4 | refuses to 256, grants from 512 |
 | every other family | 1 | unchanged |
 
+The shape queries `estimate_work()` and `estimate_payback_work()` publicly expose `total` and
+`total * payback_share` per item, respectively, using the existing formulas without selecting a strategy.
+Both return `f64`; the caller measures its rate and divides work by that rate to obtain seconds.
+
 ## What the cap does not do
 
 * It does not touch the fan-out of a batch: a batch of 16 small `svd`s still splits into the lanes

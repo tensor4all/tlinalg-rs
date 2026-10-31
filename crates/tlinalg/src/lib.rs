@@ -12,7 +12,7 @@
 //!
 //! # Batches
 //!
-//! Every entry point is batched (`docs/design/batched-api.md` in the repository): an input is a
+//! Every execution entry point is batched (`docs/design/batched-api.md` in the repository): an input is a
 //! rank-`2 + B` [`strided_view::RawStridedRef`] `[rows, cols, b_1, ..., b_B]`, outputs are compact
 //! column-major items in batch order (first batch axis fastest). The lane decision is the shared
 //! [`tcontract_exec::Exec::batch_decision`], configured through
@@ -53,9 +53,26 @@
 //! crate never names a host `DType`. Terminal storage—tensor construction, placement tagging, and
 //! the error wrapper that carries an error into the host's error type—also stays in the host.
 //!
+//! # Work estimates
+//!
+//! Each numerical family exposes `estimate_work::<T>(shape args) -> f64` and
+//! `estimate_payback_work::<T>(shape args) -> f64`. These describe one batch item,
+//! not the sum over a batch. Modules with distinct routes also name their solve
+//! or reflector application estimates explicitly. The queries take no operands
+//! or execution token, select no strategy, run in O(1), and allocate nothing.
+//! They expose the existing planner estimates without changing their formulas.
+//! One weighted multiply add is one real scalar multiply add; complex scalars
+//! count four. Existing formulas are evaluated in `f64`, so integers beyond
+//! `2^53` cannot all be represented exactly.
+//!
+//! No duration is returned. The caller measures a rate in weighted multiply adds
+//! per second on its machine and divides work by that rate to obtain seconds.
+//! A shared rate belongs to the caller or a crate above both tlinalg and
+//! tcontract, not to either provider.
+//!
 //! # Parallelism
 //!
-//! Every entry point takes `&mut` [`tcontract_exec::Exec`], which bundles one
+//! Every execution entry point takes `&mut` [`tcontract_exec::Exec`], which bundles one
 //! [`threadteam::Exec`] token (a pool reference and a budget of slots), the workspace and the
 //! batch policy. The token is the only budget and the only way work starts: the batch is split
 //! into lanes with `fork`, which divides the budget among the lanes, and each lane hands its share

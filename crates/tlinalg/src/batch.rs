@@ -967,6 +967,8 @@ fn item_ns(exec: &Exec<'_>, muladds: f64) -> f64 {
 /// inert, so a GEMM-shaped family keeps the decision's width exactly.
 pub(crate) fn decide(exec: &Exec<'_>, batch: usize, work: impl Into<Work>) -> Route {
     let work = work.into();
+    #[cfg(test)]
+    tests::record_work(work);
     // Only a team gives faer internal parallelism; without one every item runs `Par::Seq`, so the
     // lanes are the only parallel axis and no item width is granted.
     let team = exec.token_ref().carries_team();

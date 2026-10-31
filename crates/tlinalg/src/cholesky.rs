@@ -70,6 +70,42 @@ fn work<T: ScalarEntity>(n: usize) -> f64 {
     weighted_muladds::<T>((n as f64).powi(3) / 6.0)
 }
 
+/// Cost of one Cholesky item, in weighted multiply adds.
+///
+/// One unit is one real scalar multiply add; a complex scalar counts four.
+/// This returns the planner's existing estimate, evaluated in `f64`. Integers
+/// beyond `2^53` cannot all be represented exactly in `f64`.
+/// The query is O(1), allocates nothing, and is independent of the machine,
+/// batch count, thread width and execution strategy. It selects no strategy.
+/// Convert to seconds as `work / rate`, using a rate the caller measures in
+/// weighted multiply adds per second. Shared rates belong to the caller or a
+/// crate above both tlinalg and tcontract, not to either provider.
+///
+/// # Examples
+///
+/// ```
+/// let work = tlinalg::cholesky::estimate_work::<f64>(12);
+/// assert_eq!(work, 288.0);
+/// ```
+pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
+    work::<T>(n)
+}
+
+/// The work a team inside one Cholesky item can pay back.
+///
+/// This is [`estimate_work`] times the family's share of one, with the same
+/// units, independence and allocation guarantees.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::cholesky::{estimate_payback_work, estimate_work};
+/// assert_eq!(estimate_payback_work::<f64>(12), estimate_work::<f64>(12));
+/// ```
+pub fn estimate_payback_work<T: FaerScalar>(n: usize) -> f64 {
+    estimate_work::<T>(n)
+}
+
 /// Bytes one batched Cholesky call needs in its borrowed workspace.
 ///
 /// # Errors
