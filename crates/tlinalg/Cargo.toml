@@ -1,6 +1,9 @@
 [package]
 name = "tlinalg"
 description = "faer-backed tensor-free linear-algebra kernels with their own borrowed I/O, scratch, parallelism and error vocabulary."
+keywords = ["linear-algebra", "kernels", "blas", "hpc", "tensor"]
+categories = ["mathematics", "science"]
+documentation = "https://docs.rs/tlinalg"
 version = "0.8.0"
 edition.workspace = true
 rust-version.workspace = true
