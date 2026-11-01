@@ -19,29 +19,32 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.8.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.5.0", path = "crates/tlinalg-blas" }
+tlinalg = { version = "0.8.1", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.5.1", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
 # tensor4all's faer fork; the dependency key and `[lib] name` remain `faer`.
-# 0.27 takes threadteam 0.2 (0.26 was the threadteam-only release, 0.25 took `par` in the
-# high-level methods; 0.24.8 added the SVD secular-root fix, tensor4all/faer#28). A compatible
-# range admits later patch fixes without republishing tlinalg; tenferro shares this faer identity.
-faer = { package = "t4a-faer", version = "0.27.0", default-features = false, features = ["std", "rayon", "threadteam"] }
+# 0.28 takes threadteam 0.3 (0.27 took 0.2, 0.26 was the threadteam-only release, 0.25 took `par`
+# in the high-level methods; 0.24.8 added the SVD secular-root fix, tensor4all/faer#28). A
+# compatible range admits later patch fixes without republishing tlinalg; tenferro shares this
+# faer identity.
+faer = { package = "t4a-faer", version = "0.28.0", default-features = false, features = ["std", "rayon", "threadteam"] }
 # `strided-view` is the stride/metadata and `RawStridedRef` surface tlinalg consumes. A registry
 # source resolves to one 0.7.x version, so a compatible requirement keeps `RawStridedRef` one type
 # without forcing a tlinalg release for every strided patch.
 strided-view = { version = "0.7.0" }
 # The placement token (formerly `strided-exec`): `threadteam::Exec` / `Pool`.
-threadteam = { version = "0.2.0" }
+# 0.3 is the release t4a-faer 0.28 and tcontract-exec 0.9.1 take; one version in the graph or the
+# `Par`/`Exec` types the three crates exchange are distinct types.
+threadteam = { version = "0.3.0" }
 # The `Exec` bundle every entry point takes (a threadteam token, workspace, batch policy) and the
 # batch-lane vocabulary. One source with the git-only `tcontract-capi` below, so the forwarded
 # `Exec` is the same type the C API takes.
-tcontract-exec = { version = "0.9.0" }
+tcontract-exec = { version = "0.9.1" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
 # `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
 # than the one `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "9f793ede" }
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "0dad476e" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -59,9 +62,9 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # it are pointed at the published releases: each crate exists once in the graph and the forwarded
 # `Exec` is one type.
 [patch."https://github.com/tensor4all/tcontract-rs.git"]
-tcontract = { version = "0.9.0" }
-tcontract-exec = { version = "0.9.0" }
-tcontract-kernel = { version = "0.3.0" }
+tcontract = { version = "0.9.1" }
+tcontract-exec = { version = "0.9.1" }
+tcontract-kernel = { version = "0.3.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
