@@ -1,16 +1,22 @@
 # tlinalg
 
-> Tensor-free linear algebra kernels in Rust over faer, with borrowed workspaces and caller owned parallelism.
+> Tensor-free linear algebra kernels in Rust over faer, batched at every entry point, with borrowed workspaces and caller owned parallelism.
 
-`tlinalg` wraps the dense kernels a tensor code needs (batched factorizations and solves) without
-introducing a tensor type of its own. Inputs and outputs are borrowed, scratch is supplied by the
-caller, and parallel work runs on a caller owned `threadteam` team. There is no global thread pool.
+`tlinalg` wraps the dense kernels a tensor code needs (factorizations, solves, and the small
+helpers around them) without introducing a tensor type of its own. Every execution entry point is
+batched: an input is column-major items in batch order (first batch axis fastest), and the lane
+decision belongs to the caller through `tcontract_exec::BatchPolicy`. Scratch is supplied by the
+caller and parallel work runs on a caller owned `threadteam` team. There is no global thread pool.
+
+Work estimates are part of the API: `estimate_work::<T>(shape args) -> f64` and
+`estimate_payback_work::<T>(shape args) -> f64` describe one batch item in weighted multiply-adds,
+not in time.
 
 ## Key documentation
 
 - [README](README.md): scope, the batch API, and the parallel model.
 - [API reference](https://docs.rs/tlinalg): public types, batch entry points, and error types.
-- [Batched API](docs/design/batched-api.md): why the batch is the unit, and what a plan owns.
+- [Batched API](docs/design/batched-api.md): why the batch is the unit, and what a call owns.
 - [Borrowed workspaces](docs/design/borrowed-workspace.md): the scratch contract and its sizing.
 - [Team payback](docs/design/team-payback.md): when a batch is worth attaching a team to.
 - [Repository rules](AGENTS.md): conventions for changes, tests, and benchmarking.
