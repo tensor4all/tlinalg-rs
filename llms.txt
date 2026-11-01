@@ -1,0 +1,21 @@
+# tlinalg
+
+> Tensor-free linear algebra kernels in Rust over faer, with borrowed workspaces and caller owned parallelism.
+
+`tlinalg` wraps the dense kernels a tensor code needs (batched factorizations and solves) without
+introducing a tensor type of its own. Inputs and outputs are borrowed, scratch is supplied by the
+caller, and parallel work runs on a caller owned `threadteam` team. There is no global thread pool.
+
+## Key documentation
+
+- [README](README.md): scope, the batch API, and the parallel model.
+- [API reference](https://docs.rs/tlinalg): public types, batch entry points, and error types.
+- [Batched API](docs/design/batched-api.md): why the batch is the unit, and what a plan owns.
+- [Borrowed workspaces](docs/design/borrowed-workspace.md): the scratch contract and its sizing.
+- [Team payback](docs/design/team-payback.md): when a batch is worth attaching a team to.
+- [Repository rules](AGENTS.md): conventions for changes, tests, and benchmarking.
+
+## Repository
+
+- GitHub: https://github.com/tensor4all/tlinalg-rs
+- Language: Rust (edition 2021), workspace at the repository root.
