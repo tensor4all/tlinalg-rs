@@ -56,6 +56,8 @@ The crate documentation is the specification for the rest:
 * the execution and budget contract — `tcontract_exec::Exec`;
 * library-owned batch lanes on the shared work model and the accepted faer count-hint limitation —
   [`docs/design/library-owned-lanes.md`](docs/design/library-owned-lanes.md);
+* work counts, the calibrated rates that price them, and why a duration is advisory —
+  [`docs/design/estimate-rates.md`](docs/design/estimate-rates.md);
 * output assembly and lane scratch — `docs/design/batched-api.md`;
 * the error vocabulary — `tlinalg::Error`.
 

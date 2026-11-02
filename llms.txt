@@ -10,7 +10,9 @@ caller and parallel work runs on a caller owned `threadteam` team. There is no g
 
 Work estimates are part of the API: `estimate_work::<T>(shape args) -> f64` and
 `estimate_payback_work::<T>(shape args) -> f64` describe one batch item in weighted multiply-adds,
-not in time.
+not in time. `svd::estimate`, `qr::estimate` and `eigh::estimate` return the same count next to an
+advisory `Duration`: `None` unless the caller measured this host with
+`estimate::Rates::calibrate()` (opt-in, one short probe), and never a scheduling input.
 
 ## Key documentation
 
@@ -19,6 +21,8 @@ not in time.
 - [Batched API](docs/design/batched-api.md): why the batch is the unit, and what a call owns.
 - [Borrowed workspaces](docs/design/borrowed-workspace.md): the scratch contract and its sizing.
 - [Team payback](docs/design/team-payback.md): when a batch is worth attaching a team to.
+- [Estimate rates](docs/design/estimate-rates.md): work counts, the calibrated rate table, and why a
+duration is advisory.
 - [Repository rules](AGENTS.md): conventions for changes, tests, and benchmarking.
 
 ## Repository

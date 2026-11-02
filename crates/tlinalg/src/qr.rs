@@ -23,6 +23,7 @@ use faer::{Conj, MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, fixed_out, BatchedRef, FixedOut, Push, Sink, Slot, VecOut};
+use crate::estimate::{Estimate, Rates};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, push_masked, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -126,9 +127,9 @@ fn qr_work<T: ScalarEntity>(m: usize, n: usize) -> batch::Work {
 /// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
 /// The query is O(1), allocates nothing, and is independent of the machine,
 /// batch count, thread width and execution strategy. It selects no strategy.
-/// Convert to seconds as `work / rate`, where the caller measures the rate in
-/// weighted multiply adds per second. Shared rates belong to the caller or a
-/// crate above both tlinalg and tcontract, not to either provider.
+/// Convert to seconds as `work / rate` with the rate in weighted multiply adds per
+/// second. [`crate::estimate::Rates`] measures its rates per nanosecond
+/// instead, so `work / rate` with one of those is nanoseconds.
 ///
 /// # Examples
 ///
@@ -154,6 +155,29 @@ pub fn estimate_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
 pub fn estimate_payback_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
     let work = qr_work::<T>(m, n);
     work.total * work.payback_share
+}
+
+/// One QR or rank revealing QR item's work, and this host's time for it when the caller calibrated.
+///
+/// `work` is [`estimate_work`] exactly — the same multiply-add count, unchanged by any
+/// calibration. `duration` is `work` divided by [`Rates::panel`], the rate the QR probe measures,
+/// and is `None` when `rates` is `None`: an uncalibrated caller never receives a made-up time. See
+/// [`Rates::calibrate`] for what the probe measures, on which shape, and why the estimate is
+/// advisory rather than a measurement of this item.
+///
+/// Pivoting and the caller's `Op` do not enter the model: neither changes the count.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::qr;
+///
+/// let uncalibrated = qr::estimate::<f64>(12, 6, None);
+/// assert_eq!(uncalibrated.work, qr::estimate_work::<f64>(12, 6));
+/// assert!(uncalibrated.duration.is_none());
+/// ```
+pub fn estimate<T: FaerScalar>(m: usize, n: usize, rates: Option<&Rates>) -> Estimate {
+    Estimate::of(qr_work::<T>(m, n).total, rates.map(Rates::panel))
 }
 
 #[cfg(test)]

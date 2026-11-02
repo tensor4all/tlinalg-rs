@@ -191,9 +191,9 @@ fn solve_prepared_work<T: ScalarEntity>(n: usize, nrhs: usize) -> f64 {
 /// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
 /// The query is O(1), allocates nothing, and is independent of the machine,
 /// batch count, thread width and execution strategy. It selects no strategy.
-/// Convert to seconds as `work / rate`, where the caller measures the rate in
-/// weighted multiply adds per second. Shared rates belong to the caller or a
-/// crate above both tlinalg and tcontract, not to either provider.
+/// Convert to seconds as `work / rate` with the rate in weighted multiply adds per
+/// second. [`crate::estimate::Rates`] measures its rates per nanosecond
+/// instead, so `work / rate` with one of those is nanoseconds.
 ///
 /// # Examples
 ///

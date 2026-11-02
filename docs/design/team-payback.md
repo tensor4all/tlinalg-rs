@@ -60,9 +60,11 @@ curves above with its `s(8)`, and the assertion that the model refuses a team ex
 lost time and grants it where the team gained, on the measured `x86_64-avx512` team dispatch row.
 Cells within 10% of break-even are excluded — they say nothing about the boundary.
 
-## Open
+## Time estimates
 
-The public `*_estimate(..) -> Duration` API asked for in the same issue is not part of this change.
-It needs one shared rate model across `tlinalg` and `tcontract` (`tcontract-rs#163`), which is a
-cross-crate decision; the crate-internal model above is where that API would read the per-operation
-numbers from.
+The public `svd_estimate` / `qr_estimate` / `eigh_estimate` half of `tensor4all/tlinalg-rs#88` landed
+as `svd::estimate`, `qr::estimate` and `eigh::estimate`: each returns `Estimate { work, duration }`,
+where `work` is the same count as above and `duration` is this host's rate divided into it, or
+`None` until the caller calibrates with `estimate::Rates::calibrate()`. The rates, the probe shapes
+and the advisory boundary are [`estimate-rates.md`](estimate-rates.md). It changes nothing here: the
+share in this document prices the *work* the lanes and items plan with, and no duration reaches it.

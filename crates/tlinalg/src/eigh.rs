@@ -22,6 +22,7 @@ use faer::{MatMut, MatRef};
 use strided_view::RawStridedRef;
 
 use crate::batch::{self, fixed_out, BatchedRef, FixedOut, Slot, VecOut};
+use crate::estimate::{Estimate, Rates};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -167,9 +168,9 @@ fn work<T: ScalarEntity>(n: usize) -> batch::Work {
 /// in `f64`; integers beyond `2^53` cannot all be represented exactly in `f64`.
 /// The query is O(1), allocates nothing, and is independent of the machine,
 /// batch count, thread width and execution strategy. It selects no strategy.
-/// Convert to seconds as `work / rate`, where the caller measures the rate in
-/// weighted multiply adds per second. Shared rates belong to the caller or a
-/// crate above both tlinalg and tcontract, not to either provider.
+/// Convert to seconds as `work / rate` with the rate in weighted multiply adds per
+/// second. [`crate::estimate::Rates`] measures its rates per nanosecond
+/// instead, so `work / rate` with one of those is nanoseconds.
 ///
 /// # Examples
 ///
@@ -195,6 +196,33 @@ pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
 pub fn estimate_payback_work<T: FaerScalar>(n: usize) -> f64 {
     let work = work::<T>(n);
     work.total * work.payback_share
+}
+
+/// One Hermitian eigendecomposition item's work, and this host's time for it when the caller
+/// calibrated.
+///
+/// `work` is [`estimate_work`] exactly — the same multiply-add count, unchanged by any
+/// calibration. `duration` is `work` divided by [`Rates::bidiagonal`], and is `None` when `rates`
+/// is `None`: an uncalibrated caller never receives a made-up time. See [`Rates::calibrate`] for
+/// what the probe measures, on which shape, and why the estimate is advisory rather than a
+/// measurement of this item.
+///
+/// The rate is a proxy: it is the `svd` probe's, since no tridiagonal reduction is timed
+/// separately. It is the same kind of serial phase, which is not the same as measuring it.
+///
+/// The values-only route and the caller's `Op` do not enter the model: neither changes the count.
+///
+/// # Examples
+///
+/// ```
+/// use tlinalg::eigh;
+///
+/// let uncalibrated = eigh::estimate::<f64>(8, None);
+/// assert_eq!(uncalibrated.work, eigh::estimate_work::<f64>(8));
+/// assert!(uncalibrated.duration.is_none());
+/// ```
+pub fn estimate<T: FaerScalar>(n: usize, rates: Option<&Rates>) -> Estimate {
+    Estimate::of(work::<T>(n).total, rates.map(Rates::bidiagonal))
 }
 
 #[cfg(test)]

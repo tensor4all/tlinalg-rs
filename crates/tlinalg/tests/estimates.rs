@@ -192,3 +192,141 @@ fn every_work_query_is_allocation_free() {
     });
     assert_eq!(count, 0);
 }
+
+// The estimates, and the one measured rate table they optionally price with.
+
+/// The three families that publish a time, with the class rate their duration is documented as
+/// using and the shape arguments of one item.
+fn timed_estimates(
+    rates: Option<&tlinalg::estimate::Rates>,
+    n: usize,
+) -> [(&'static str, tlinalg::estimate::Estimate, f64); 3] {
+    let rate = |get: fn(&tlinalg::estimate::Rates) -> f64| rates.map(get).unwrap_or(0.0);
+    [
+        (
+            "svd",
+            svd::estimate::<f64>(n, n, rates),
+            rate(tlinalg::estimate::Rates::bidiagonal),
+        ),
+        (
+            "qr",
+            qr::estimate::<f64>(n, n, rates),
+            rate(tlinalg::estimate::Rates::panel),
+        ),
+        (
+            "eigh",
+            eigh::estimate::<f64>(n, rates),
+            rate(tlinalg::estimate::Rates::bidiagonal),
+        ),
+    ]
+}
+
+#[test]
+fn work_grows_with_the_dimension() {
+    let side = [1usize, 8, 16, 32, 64, 128];
+    for pair in side.windows(2) {
+        let (small, large) = (pair[0], pair[1]);
+        assert!(svd::estimate_work::<f64>(large, large) > svd::estimate_work::<f64>(small, small));
+        assert!(qr::estimate_work::<f64>(large, large) > qr::estimate_work::<f64>(small, small));
+        assert!(eigh::estimate_work::<f64>(large) > eigh::estimate_work::<f64>(small));
+        // A wider matrix is more work, at a fixed row count.
+        assert!(svd::estimate_work::<f64>(16, large) > svd::estimate_work::<f64>(16, small));
+        assert!(qr::estimate_work::<f64>(16, large) > qr::estimate_work::<f64>(16, small));
+    }
+}
+
+#[test]
+fn timed_work_matches_the_work_query() {
+    for n in [0, 1, 7, 13] {
+        for (name, estimate, _) in timed_estimates(None, n) {
+            let expected = match name {
+                "svd" => svd::estimate_work::<f64>(n, n),
+                "qr" => qr::estimate_work::<f64>(n, n),
+                _ => eigh::estimate_work::<f64>(n),
+            };
+            assert_eq!(estimate.work.to_bits(), expected.to_bits(), "{name} {n}");
+        }
+    }
+    // The scalar weight is part of the work, so a complex item costs exactly four real ones.
+    for n in [1, 7, 13] {
+        assert_eq!(
+            svd::estimate::<Complex64>(n, n, None).work.to_bits(),
+            (4.0 * svd::estimate::<f64>(n, n, None).work).to_bits()
+        );
+        assert_eq!(
+            qr::estimate::<Complex64>(n, n, None).work.to_bits(),
+            (4.0 * qr::estimate::<f64>(n, n, None).work).to_bits()
+        );
+        assert_eq!(
+            eigh::estimate::<Complex64>(n, None).work.to_bits(),
+            (4.0 * eigh::estimate::<f64>(n, None).work).to_bits()
+        );
+    }
+}
+
+#[test]
+fn work_is_the_documented_count_for_the_shape() {
+    // One real multiply-add is one unit; the complex scalars are the same count times four.
+    for (m, n) in [(12, 6), (6, 12), (8, 8), (0, 5), (5, 0)] {
+        let k = m.min(n) as f64;
+        let (m, n) = (m as f64, n as f64);
+        assert_eq!(svd::estimate_work::<f64>(m as usize, n as usize), m * n * k);
+        // `2mnk - 2/3 k^3` flops, in multiply-adds.
+        assert_eq!(
+            qr::estimate_work::<f64>(m as usize, n as usize),
+            m * n * k - k * k * k / 3.0
+        );
+    }
+    for n in [0usize, 1, 8, 17] {
+        assert_eq!(eigh::estimate_work::<f64>(n), (n as f64).powi(3));
+    }
+}
+
+#[test]
+fn an_uncalibrated_estimate_never_reports_a_time() {
+    for n in [0, 1, 13, 256] {
+        for (name, estimate, _) in timed_estimates(None, n) {
+            assert!(estimate.duration.is_none(), "{name} {n}");
+        }
+    }
+}
+
+#[test]
+fn a_calibrated_estimate_adds_a_time_and_changes_no_work() {
+    // The one calibration of the suite: a 1024-cube product and two 128-cube factorizations. The
+    // probe is intentionally not timed against an absolute bound — the machine decides that — only
+    // against its own rate.
+    let rates = tlinalg::estimate::Rates::calibrate();
+    for rate in [rates.gemm(), rates.bidiagonal(), rates.panel()] {
+        assert!(rate.is_finite() && rate > 0.0, "measured rate {rate}");
+    }
+    for n in [0, 1, 13, 64] {
+        let calibrated = timed_estimates(Some(&rates), n);
+        let uncalibrated = timed_estimates(None, n);
+        for ((name, estimate, rate), (_, plain, _)) in calibrated.into_iter().zip(uncalibrated) {
+            // A rate is a guess about the host; the work count is the model's fact and no
+            // calibration may move it, so nothing a decision reads can change here.
+            assert_eq!(estimate.work.to_bits(), plain.work.to_bits(), "{name} {n}");
+            let duration = estimate.duration.unwrap_or_else(|| {
+                panic!("{name} {n}: a calibrated estimate must carry a duration")
+            });
+            // Internal consistency only: the duration is this work over this rate, to the one
+            // nanosecond a `Duration` can represent.
+            let ns = duration.as_secs_f64() * 1e9;
+            let expected = estimate.work / rate;
+            assert!(
+                (ns - expected).abs() <= 1.0 + expected * 1e-9,
+                "{name} {n}: {ns} ns is not work {} over rate {rate}",
+                estimate.work
+            );
+        }
+    }
+    // An empty item is no work and, calibrated, no time either.
+    for (name, estimate, _) in timed_estimates(Some(&rates), 0) {
+        assert_eq!(
+            estimate.duration,
+            Some(std::time::Duration::ZERO),
+            "{name} 0"
+        );
+    }
+}

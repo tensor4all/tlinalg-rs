@@ -53,7 +53,7 @@
 //! crate never names a host `DType`. Terminal storage—tensor construction, placement tagging, and
 //! the error wrapper that carries an error into the host's error type—also stays in the host.
 //!
-//! # Work estimates
+//! # Work and time estimates
 //!
 //! Each numerical family exposes `estimate_work::<T>(shape args) -> f64` and
 //! `estimate_payback_work::<T>(shape args) -> f64`. These describe one batch item,
@@ -65,10 +65,20 @@
 //! count four. Existing formulas are evaluated in `f64`, so integers beyond
 //! `2^53` cannot all be represented exactly.
 //!
-//! No duration is returned. The caller measures a rate in weighted multiply adds
-//! per second on its machine and divides work by that rate to obtain seconds.
-//! A shared rate belongs to the caller or a crate above both tlinalg and
-//! tcontract, not to either provider.
+//! Work is the crate's own weighted multiply-add model for one item: the number every lane and
+//! width decision in this crate consumes, and no machine measurement changes it. A time needs one
+//! more number, the rate this host runs that kind of work at, and that number is a guess about a
+//! machine:
+//! [`estimate::Rates::calibrate`] measures it once per host in a short, explicitly opt-in probe (a
+//! 1024-cube product and a 128-cube `svd` and `qr`), and `svd::estimate`, `qr::estimate` and
+//! `eigh::estimate` publish both numbers as an [`Estimate`](estimate::Estimate): the same work a
+//! caller could price itself, and `work / rate` as a [`Duration`](core::time::Duration).
+//!
+//! Without a calibration the duration is `None`, never a made-up number, and nothing else in the
+//! crate behaves differently: an `Exec` that never calibrates pays nothing. Durations are
+//! **advisory** — the output of a model, not a measurement — and no lane, width or strategy
+//! decision may be made from them; callers that want seconds from their own measurement should use
+//! the work count and their own rate.
 //!
 //! # Parallelism
 //!
@@ -93,6 +103,7 @@ pub mod cholesky;
 pub mod eig;
 pub mod eigh;
 pub mod error;
+pub mod estimate;
 pub mod full_piv_lu;
 pub mod householder;
 pub mod lu;
