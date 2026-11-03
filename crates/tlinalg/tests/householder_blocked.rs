@@ -273,3 +273,81 @@ for_each_scalar!(
     householder_blocked_zero_columns,
     zero_columns_match_the_reference
 );
+
+/// The initialised-coefficient entry writes exactly what the `MaybeUninit` one does, and rejects a
+/// short coefficient slice before either output is touched.
+fn into_init_matches_into<T: TestScalar + tlinalg::FaerScalar>() {
+    use core::mem::MaybeUninit;
+    use tlinalg::householder::{compact_factor_into_init, compact_factor_workspace};
+    let (batch, par) = (3, &mut Exec::serial());
+    for (rows, cols) in SHAPES {
+        let k = rows.min(cols);
+        let a: Vec<T> = (0..batch)
+            .flat_map(|seed| matrix::<T>(rows, cols, seed))
+            .collect();
+        let bytes = compact_factor_workspace::<T>(rows, cols, batch, par).unwrap();
+        let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
+        let (mut want_data, mut want_coeff) = (a.clone(), Vec::new());
+        compact_factor(
+            Op::HouseholderQr,
+            rows,
+            cols,
+            batch,
+            &mut want_data,
+            &mut want_coeff,
+            par,
+        )
+        .unwrap();
+        let sentinel = a[0];
+        let mut got_data = a.clone();
+        let mut got_coeff = vec![sentinel; batch * k];
+        compact_factor_into_init(
+            Op::HouseholderQr,
+            rows,
+            cols,
+            batch,
+            &mut got_data,
+            &mut got_coeff,
+            &mut workspace,
+            par,
+        )
+        .unwrap();
+        assert_close(
+            &widen(&got_data),
+            &widen(&want_data),
+            T::TOL,
+            "packed state",
+        );
+        assert_close(
+            &widen(&got_coeff),
+            &widen(&want_coeff),
+            T::TOL,
+            "coefficients",
+        );
+        let sentinels = vec![sentinel; batch * k - 1];
+        let mut short_data = a.clone();
+        let mut short = sentinels.clone();
+        assert!(
+            compact_factor_into_init(
+                Op::HouseholderQr,
+                rows,
+                cols,
+                batch,
+                &mut short_data,
+                &mut short,
+                &mut workspace,
+                par,
+            )
+            .is_err(),
+            "short coefficients"
+        );
+        assert_close(&widen(&short_data), &widen(&a), T::TOL, "state untouched");
+        assert_close(
+            &widen(&short),
+            &widen(&sentinels),
+            T::TOL,
+            "coefficients untouched",
+        );
+    }
+}
+for_each_scalar!(householder_blocked_into_init, into_init_matches_into);

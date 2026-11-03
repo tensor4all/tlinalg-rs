@@ -26,7 +26,7 @@ use faer::dyn_stack::{MemStack, StackReq};
 use faer::prelude::{IntoConst, ReborrowMut};
 use faer::{Conj, MatMut, MatRef};
 
-use crate::batch::{self, fixed_out, in_place, Push, VecOut};
+use crate::batch::{self, in_place, FixedOut, Push, Slot, VecOut};
 use crate::scalar::ScalarEntity;
 use crate::util::{checked_product, invalid, weighted_muladds};
 use crate::workspace::{bytes, faer_req, lane_requirement, total_of, zeros};
@@ -329,6 +329,70 @@ pub fn compact_factor_into<T: FaerScalar>(
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
 ) -> Result<()> {
+    compact_factor_slots::<T, _>(op, rows, cols, batch, data, coeff, workspace, exec)
+}
+
+/// Factor every compact column-major `rows x cols` matrix of a batch in place into the compact
+/// Householder state, into caller-owned, initialised coefficient storage.
+///
+/// The same call as [`compact_factor_into`] with `coeff` as `&mut [T]`: same lengths, workspace,
+/// token, checks and error order. The coefficients are overwritten, and every element is written on
+/// success, so a caller can keep a coefficient buffer across calls without an `assume_init` step.
+///
+/// # Errors
+///
+/// As [`compact_factor_into`]: [`Error::Inconsistent`] when `data` does not hold
+/// `batch * rows * cols` elements, [`Error::InvalidArgument`] when a size overflows or `coeff` does
+/// not hold the queried length, and [`crate::Error::InsufficientWorkspace`] for a short workspace.
+/// Every error is reported before anything is written, so `data` and `coeff` are untouched on error.
+///
+/// # Examples
+///
+/// ```
+/// use core::mem::MaybeUninit;
+/// use tcontract_exec::Exec;
+/// use tlinalg::{householder::{compact_factor_into_init, compact_factor_workspace}, Op};
+///
+/// let mut a = [3.0_f64, 4.0];
+/// let mut exec = Exec::serial();
+/// let mut workspace = vec![
+///     MaybeUninit::uninit(); compact_factor_workspace::<f64>(2, 1, 1, &exec).unwrap()
+/// ];
+/// let mut coeff = [f64::NAN; 1];
+/// compact_factor_into_init(
+///     Op::HouseholderQr, 2, 1, 1, &mut a, &mut coeff, &mut workspace, &mut exec,
+/// ).unwrap();
+/// assert!((a[0].abs() - 5.0).abs() < 1e-12);
+/// assert!(coeff[0].is_finite());
+/// ```
+// INVARIANT: shape, batch, state buffer, coefficients, workspace, token are distinct operands.
+#[allow(clippy::too_many_arguments)]
+pub fn compact_factor_into_init<T: FaerScalar>(
+    op: Op,
+    rows: usize,
+    cols: usize,
+    batch: usize,
+    data: &mut [T],
+    coeff: &mut [T],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
+    compact_factor_slots::<T, _>(op, rows, cols, batch, data, coeff, workspace, exec)
+}
+
+/// The body of [`compact_factor_into`] and [`compact_factor_into_init`], generic over the
+/// coefficient slot type.
+#[allow(clippy::too_many_arguments)]
+fn compact_factor_slots<T: FaerScalar, S: Slot<T>>(
+    op: Op,
+    rows: usize,
+    cols: usize,
+    batch: usize,
+    data: &mut [T],
+    coeff: &mut [S],
+    workspace: &mut [MaybeUninit<u8>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
     let matrix_len = checked_product(op, "matrix", &[rows, cols])?;
     let item_muladds = work::<T>(rows, cols);
     let requirement = lane_requirement(
@@ -348,7 +412,7 @@ pub fn compact_factor_into<T: FaerScalar>(
         item_muladds,
         &mut (
             in_place(data, matrix_len, "matrix"),
-            fixed_out(coeff, rows.min(cols), "coefficients"),
+            FixedOut::<T, S>::new(coeff, rows.min(cols), "coefficients"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
         |_par, stack| CompactFactorScratch::<T::Entity>::new(rows, cols, MemStack::new(stack)),
