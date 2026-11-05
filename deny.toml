@@ -17,7 +17,7 @@ deny = [
         "threadteam",
         "t4a-faer",
         "spindle",
-        "gemm-common",
+        "t4a-gemm-common",
         "t4a-private-gemm-x86",
     ] },
     { crate = "rayon-core", wrappers = ["rayon"] },
