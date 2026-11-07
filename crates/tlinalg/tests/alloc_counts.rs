@@ -1390,9 +1390,14 @@ fn compact_factor_allocs(n: usize, batch: usize) -> usize {
 ///   **not** demand batch independence from it.
 ///
 /// The measured backend is printed.
+///
+/// It takes the binary's lock like every other test here: its own counts are thread-local, but its
+/// allocations land in the process-wide counter that `the_pool_route_adds_a_constant` reads, and
+/// running beside it made that exact gate fail on x86_64 only (tlinalg-rs#104 CI).
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn gemm_path_allocations_are_a_pinned_upper_bound() {
+    let _guard = serialised();
     for n in [64usize, 256] {
         let one = compact_factor_allocs(n, 1);
         let many = compact_factor_allocs(n, 64);
