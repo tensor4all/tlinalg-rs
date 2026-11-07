@@ -4,7 +4,9 @@
 //! [`tlinalg::svd::svd`]. `full` selects the square unitary factors (`u` is `rows x rows`, `vt` is
 //! `cols x cols`); otherwise both thin factors use `min(rows, cols)`. The `s` output of `svd` is in
 //! the scalar type (a complex scalar with a zero imaginary part for the complex dtypes), while
-//! `svd_values` returns the real scalar, exactly as the provider's two entry points differ.
+//! `svd_values` returns the real scalar. The provider returns real singular values from both entry
+//! points; this C ABI keeps the scalar-type `svd` output it published, so the values are widened
+//! here.
 
 use std::ffi::c_void;
 
@@ -67,7 +69,10 @@ fn svd_into_typed<T: FaerScalar>(
     let op = if full { Op::SvdFull } else { Op::Svd };
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut uu, mut ss, mut vv) = (Vec::new(), Vec::new(), Vec::new());
-        svd::svd(op, input, full, &mut uu, &mut ss, &mut vv, parallel).map_err(map_error)?;
+        let mut real = Vec::new();
+        svd::svd(op, input, full, &mut uu, &mut real, &mut vv, parallel).map_err(map_error)?;
+        // The published C ABI writes the singular values in the scalar type.
+        ss.extend(real.into_iter().map(T::from_real));
         let (u_total, s_total, vt_total) = sizes.totals()?;
         check_output(&uu, u, u_total, "u")?;
         check_output(&ss, s, s_total, "s")?;

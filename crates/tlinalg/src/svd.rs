@@ -13,10 +13,8 @@
 //! # Conventions
 //!
 //! Per item, `u` is `m x u_cols` column-major, `vt` is `v_cols x n` column-major and holds `Vᴴ`
-//! (not `V`), and `s` holds `min(m, n)` singular values in non-increasing order **in the scalar type
-//! itself**. For the complex scalars that means complex values with a zero imaginary part, which is
-//! what the pre-extraction code produced and what its callers' plumbing expects; [`svd_values`]
-//! returns the real values instead, matching the values-only path. `full` selects the square
+//! (not `V`), and `s` holds `min(m, n)` singular values in non-increasing order in the **real** type
+//! (`<T as ScalarEntity>::Real`), as [`svd_values`] does. `full` selects the square
 //! unitary factors `u_cols = m`, `v_cols = n`; otherwise `u_cols = v_cols = min(m, n)`. A full SVD
 //! of an empty matrix returns identity `U` and `Vᴴ`.
 //!
@@ -272,7 +270,11 @@ fn svd_item<T: FaerScalar>(
     op: Op,
     mat: MatRef<'_, T::Entity>,
     full: bool,
-    (u, s, vt): (&mut Sink<'_, T>, &mut impl Push<T>, &mut impl Push<T>),
+    (u, s, vt): (
+        &mut Sink<'_, T>,
+        &mut impl Push<<T as ScalarEntity>::Real>,
+        &mut impl Push<T>,
+    ),
     scratch: &mut SvdScratch<'_, T::Entity>,
     mut par: faer::Par<'_>,
 ) -> Result<()> {
@@ -354,9 +356,9 @@ fn svd_item<T: FaerScalar>(
     }
 
     for index in 0..k {
-        // A real singular value carried in the scalar type: zero imaginary part for the complex
-        // scalars, which is the shape the pre-extraction callers consumed.
-        s.push(T::from_entity(scratch.s[index]));
+        // faer returns the singular values in the entity type with a zero imaginary part; the
+        // real part is the value, exactly as in `svd_values_item`.
+        s.push(<T as ScalarEntity>::real_from_entity(scratch.s[index]));
     }
     for col in 0..n {
         for row in 0..v_cols {
@@ -660,8 +662,8 @@ pub fn svd_values<T: FaerScalar>(
 
 /// SVD of every matrix of a batch into caller-owned storage.
 ///
-/// The output lengths follow the module conventions (`u`: `m * u_cols`, `s`: `min(m, n)`, `vt`:
-/// `v_cols * n` per item), all uninitialised. Workspace contract as [`crate::qr::qr_into`].
+/// The output lengths follow the module conventions (`u`: `m * u_cols`, `s`: `min(m, n)` real
+/// values, `vt`: `v_cols * n` per item), all uninitialised. Workspace contract as [`crate::qr::qr_into`].
 ///
 /// # Errors
 ///
@@ -676,7 +678,7 @@ pub fn svd_into<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     full: bool,
     u: &mut [MaybeUninit<T>],
-    s: &mut [MaybeUninit<T>],
+    s: &mut [MaybeUninit<<T as ScalarEntity>::Real>],
     vt: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -686,7 +688,8 @@ pub fn svd_into<T: FaerScalar>(
 
 /// SVD of every matrix of a batch into caller-owned, initialised storage.
 ///
-/// The same call as [`svd_into`] with the outputs as `&mut [T]`: same lengths, workspace, token,
+/// The same call as [`svd_into`] with the outputs initialised (`u` and `vt` as `&mut [T]`, `s` as
+/// `&mut [<T as ScalarEntity>::Real]`): same lengths, workspace, token,
 /// checks and error order. The outputs are overwritten — their contents on entry are never read —
 /// and every element is written on success.
 ///
@@ -724,7 +727,7 @@ pub fn svd_into_init<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     full: bool,
     u: &mut [T],
-    s: &mut [T],
+    s: &mut [<T as ScalarEntity>::Real],
     vt: &mut [T],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -732,14 +735,15 @@ pub fn svd_into_init<T: FaerScalar>(
     svd_slots(op, input, full, u, s, vt, workspace, exec)
 }
 
-/// The body of [`svd_into`] and [`svd_into_init`], generic over the output slot type.
+/// The body of [`svd_into`] and [`svd_into_init`], generic over the output slot types (`S` for the
+/// factors, `R` for the real singular values).
 #[allow(clippy::too_many_arguments)]
-fn svd_slots<T: FaerScalar, S: Slot<T>>(
+fn svd_slots<T: FaerScalar, S: Slot<T>, R: Slot<<T as ScalarEntity>::Real>>(
     op: Op,
     input: RawStridedRef<'_, T>,
     full: bool,
     u: &mut [S],
-    s: &mut [S],
+    s: &mut [R],
     vt: &mut [S],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -765,7 +769,7 @@ fn svd_slots<T: FaerScalar, S: Slot<T>>(
         item_work,
         &mut (
             FixedOut::<T, S>::new(u, u_len, "U"),
-            FixedOut::<T, S>::new(s, k, "singular values"),
+            FixedOut::<<T as ScalarEntity>::Real, R>::new(s, k, "singular values"),
             FixedOut::<T, S>::new(vt, vt_len, "VH"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
@@ -778,8 +782,8 @@ fn svd_slots<T: FaerScalar, S: Slot<T>>(
 
 /// Singular value decomposition of every matrix of a batch.
 ///
-/// `input` is `[m, n, b_1, ..., b_B]`. Per item, `u` receives `m x u_cols`, `s` `min(m, n)` and
-/// `vt` `v_cols x n` elements (see the module conventions).
+/// `input` is `[m, n, b_1, ..., b_B]`. Per item, `u` receives `m x u_cols`, `s` `min(m, n)` real
+/// and `vt` `v_cols x n` elements (see the module conventions).
 ///
 /// This is the `Vec` wrapper of [`svd_into`].
 ///
@@ -812,7 +816,7 @@ pub fn svd<T: FaerScalar>(
     input: RawStridedRef<'_, T>,
     full: bool,
     u: &mut Vec<T>,
-    s: &mut Vec<T>,
+    s: &mut Vec<<T as ScalarEntity>::Real>,
     vt: &mut Vec<T>,
     exec: &mut Exec<'_>,
 ) -> Result<()> {

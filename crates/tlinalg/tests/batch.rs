@@ -198,9 +198,9 @@ fn sorted(mut values: Vec<Complex64>) -> Vec<Complex64> {
 }
 
 /// `U diag(S) Vᴴ` per item (compact `m x n` each).
-fn reconstruct_svd<T: TestScalar>(
+fn reconstruct_svd<T: TestScalar, R: TestScalar>(
     u: &[T],
-    s: &[T],
+    s: &[R],
     vt: &[T],
     m: usize,
     n: usize,
@@ -228,7 +228,7 @@ fn reconstruct_svd<T: TestScalar>(
 }
 
 /// `V diag(w) Vᴴ` per item.
-fn reconstruct_eigh<T: TestScalar>(w: &[T], v: &[T], n: usize) -> Vec<Complex64> {
+fn reconstruct_eigh<T: TestScalar, R: TestScalar>(w: &[R], v: &[T], n: usize) -> Vec<Complex64> {
     let (w, v) = (widen(w), widen(v));
     let mut out = Vec::new();
     for item in 0..w.len() / n {

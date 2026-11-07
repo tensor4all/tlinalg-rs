@@ -804,7 +804,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
-            Ok(Output::Three(u, s, vt))
+            Ok(Output::ThreeReal(u, faer_real_to_f64::<T, _>(s), vt))
         }
         "svd_values" => {
             let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
@@ -818,13 +818,13 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                 &mut Exec::serial(),
             )
             .map_err(|e| e.to_string())?;
-            Ok(Output::One(s))
+            Ok(Output::One(s.into_iter().map(T::from_real).collect()))
         }
         "eigh" => {
             let (mut w, mut v) = (Vec::new(), Vec::new());
             tlinalg::eigh::eigh(Op::Eigh, op.view(), &mut w, &mut v, &mut Exec::serial())
                 .map_err(|e| e.to_string())?;
-            Ok(Output::Two(w, v))
+            Ok(Output::TwoReal(faer_real_to_f64::<T, _>(w), v))
         }
         "eigvalsh" => Ok(Output::TwoReal(
             <T as RealValues>::faer_values(&op)?,
@@ -919,6 +919,18 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
         }
         _ => Err(format!("unknown family {family}")),
     }
+}
+
+/// faer's real spectrum widened to `f64` for the checks. The faer side cannot name its real type,
+/// so it is taken as `R` and widened through `T`.
+fn faer_real_to_f64<T, R>(values: Vec<R>) -> Vec<f64>
+where
+    T: BenchScalar + tlinalg::FaerScalar<Real = R>,
+{
+    values
+        .into_iter()
+        .map(|x| T::from_real(x).to_c64().re)
+        .collect()
 }
 
 /// Reusable fixture and output storage for one provider row.
@@ -1376,7 +1388,7 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 self.a.view(),
                 family == "svd_full",
                 &mut self.out,
-                &mut self.out2,
+                &mut Vec::new(),
                 &mut self.out3,
                 par,
             ),
@@ -1389,9 +1401,13 @@ impl<T: BenchScalar + LapackEigh> Prepared<T> {
                 let mut s = Vec::new();
                 tlinalg::svd::svd_values(Op::SvdValues, self.op.view(), &mut s, par)
             }
-            "eigh" => {
-                tlinalg::eigh::eigh(Op::Eigh, self.op.view(), &mut self.out2, &mut self.out, par)
-            }
+            "eigh" => tlinalg::eigh::eigh(
+                Op::Eigh,
+                self.op.view(),
+                &mut Vec::new(),
+                &mut self.out,
+                par,
+            ),
             "eigvalsh" => {
                 let mut w = Vec::new();
                 tlinalg::eigh::eigh_values(Op::EighValues, self.op.view(), &mut w, par)

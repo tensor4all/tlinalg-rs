@@ -519,8 +519,8 @@ fn svd_c64_full_and_economy_batched() {
             &mut Exec::serial(),
         )
         .unwrap();
-        // `svd` writes the singular values in the scalar type, zero imaginary part.
-        assert!(es.iter().all(|z| z.im == 0.0));
+        // The provider writes real singular values; the C ABI widens them to the scalar type.
+        let es: Vec<Complex64> = es.iter().map(|&x| Complex64::new(x, 0.0)).collect();
 
         let (mut u, mut s, mut vt) = (
             vec![Complex64::new(0.0, 0.0); eu.len()],
@@ -547,6 +547,7 @@ fn svd_c64_full_and_economy_batched() {
         };
         assert_eq!(status, TLINALG_OK, "{}", last_error());
         assert_close_c64(&u, &eu, TOL);
+        assert!(s.iter().all(|z| z.im == 0.0));
         assert_close_c64(&s, &es, TOL);
         assert_close_c64(&vt, &evt, TOL);
     }
@@ -633,7 +634,8 @@ fn eigh_c64_matches_tlinalg() {
         &mut Exec::serial(),
     )
     .unwrap();
-    assert!(ev.iter().all(|z| z.im == 0.0));
+    // The provider writes real eigenvalues; the C ABI widens them to the scalar type.
+    let ev: Vec<Complex64> = ev.iter().map(|&x| Complex64::new(x, 0.0)).collect();
 
     let (mut v, mut w) = (
         vec![Complex64::new(0.0, 0.0); ev.len()],
@@ -659,6 +661,7 @@ fn eigh_c64_matches_tlinalg() {
         "{}",
         last_error()
     );
+    assert!(v.iter().all(|z| z.im == 0.0));
     assert_close_c64(&v, &ev, TOL);
     assert_close_c64(&w, &ew, TOL);
 }

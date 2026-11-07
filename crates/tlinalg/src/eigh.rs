@@ -2,11 +2,9 @@
 //!
 //! Moved from `tenferro-linalg`'s faer backend (same project, MIT OR Apache-2.0).
 //!
-//! The decomposition reads the **lower** triangle and returns non-decreasing eigenvalues. As with
-//! [`crate::svd`], [`eigh`] carries the (real) eigenvalues **in the scalar type itself** — complex
-//! values with a zero imaginary part for the complex scalars — because that is what the
-//! pre-extraction code produced; [`eigh_values`] returns them in the real type, matching the
-//! values-only path.
+//! The decomposition reads the **lower** triangle and returns non-decreasing eigenvalues. Every
+//! route, [`eigh`] and [`eigh_values`] alike, returns them in the **real** type
+//! (`<T as ScalarEntity>::Real`), as [`crate::svd`] does for the singular values.
 //!
 //! # Borrowed workspace
 //!
@@ -357,7 +355,8 @@ pub fn eigh_values<T: FaerScalar>(
 /// Eigendecomposition of every `n x n` Hermitian matrix of a batch into caller-owned storage,
 /// `A = V diag(w) Vᴴ`.
 ///
-/// `values` holds `n` and `vectors` `n * n` uninitialised elements per batch item. Workspace
+/// `values` holds `n` uninitialised real elements and `vectors` `n * n` uninitialised elements per
+/// batch item. Workspace
 /// contract as [`crate::qr::qr_into`].
 ///
 /// # Errors
@@ -366,7 +365,7 @@ pub fn eigh_values<T: FaerScalar>(
 pub fn eigh_into<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
-    values: &mut [MaybeUninit<T>],
+    values: &mut [MaybeUninit<<T as ScalarEntity>::Real>],
     vectors: &mut [MaybeUninit<T>],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -377,7 +376,8 @@ pub fn eigh_into<T: FaerScalar>(
 /// Eigendecomposition of every `n x n` Hermitian matrix of a batch into caller-owned, initialised
 /// storage, `A = V diag(w) Vᴴ`.
 ///
-/// The same call as [`eigh_into`] with the outputs as `&mut [T]`: same lengths, workspace, token,
+/// The same call as [`eigh_into`] with the outputs initialised (`values` as
+/// `&mut [<T as ScalarEntity>::Real]`, `vectors` as `&mut [T]`): same lengths, workspace, token,
 /// checks and error order. The outputs are overwritten — their contents on entry are never read —
 /// and every element is written on success.
 ///
@@ -411,7 +411,7 @@ pub fn eigh_into<T: FaerScalar>(
 pub fn eigh_into_init<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
-    values: &mut [T],
+    values: &mut [<T as ScalarEntity>::Real],
     vectors: &mut [T],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -419,11 +419,12 @@ pub fn eigh_into_init<T: FaerScalar>(
     eigh_slots(op, input, values, vectors, workspace, exec)
 }
 
-/// The body of [`eigh_into`] and [`eigh_into_init`], generic over the output slot type.
-fn eigh_slots<T: FaerScalar, S: Slot<T>>(
+/// The body of [`eigh_into`] and [`eigh_into_init`], generic over the output slot types (`R` for
+/// the real eigenvalues, `S` for the vectors).
+fn eigh_slots<T: FaerScalar, R: Slot<<T as ScalarEntity>::Real>, S: Slot<T>>(
     op: Op,
     input: RawStridedRef<'_, T>,
-    values: &mut [S],
+    values: &mut [R],
     vectors: &mut [S],
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
@@ -448,7 +449,7 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
         exec,
         item_work,
         &mut (
-            FixedOut::<T, S>::new(values, n, "eigenvalues"),
+            FixedOut::<<T as ScalarEntity>::Real, R>::new(values, n, "eigenvalues"),
             FixedOut::<T, S>::new(vectors, v_len, "eigenvectors"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
@@ -466,7 +467,7 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
             decompose(op, input.item(index), Some(target), scratch, par)?;
             let diagonal = scratch.values.as_ref();
             for i in 0..n {
-                values.push(T::from_real(T::real_from_entity(diagonal[i])));
+                values.push(T::real_from_entity(diagonal[i]));
             }
             Ok(())
         },
@@ -475,8 +476,8 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
 
 /// Eigendecomposition of every `n x n` Hermitian matrix of a batch, `A = V diag(w) Vᴴ`.
 ///
-/// `input` is `[n, n, b...]`. Per item, `values` receives the `n` non-decreasing eigenvalues in the
-/// scalar type (zero imaginary part for the complex scalars) and `vectors` the column-major `n x n`
+/// `input` is `[n, n, b...]`. Per item, `values` receives the `n` non-decreasing real eigenvalues
+/// and `vectors` the column-major `n x n`
 /// eigenvectors.
 ///
 /// This is the `Vec` wrapper of [`eigh_into`].
@@ -506,7 +507,7 @@ fn eigh_slots<T: FaerScalar, S: Slot<T>>(
 pub fn eigh<T: FaerScalar>(
     op: Op,
     input: RawStridedRef<'_, T>,
-    values: &mut Vec<T>,
+    values: &mut Vec<<T as ScalarEntity>::Real>,
     vectors: &mut Vec<T>,
     exec: &mut Exec<'_>,
 ) -> Result<()> {

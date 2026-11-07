@@ -34,7 +34,34 @@ fn run_twice<T: FaerScalar + PartialEq + core::fmt::Debug>(
     assert_eq!(fresh, reused);
 }
 
-fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
+/// [`run_twice`] for a decomposition whose outputs are `T` factors plus one real spectrum.
+fn run_twice_with_spectrum<T: FaerScalar + PartialEq + core::fmt::Debug>(
+    dims: [usize; 3],
+    data: &[T],
+    stale: T,
+    call: impl Fn(RawStridedRef<'_, T>, &mut [Vec<T>], &mut Vec<T::Real>),
+    outputs: usize,
+) where
+    T::Real: core::fmt::Debug,
+{
+    let [m, n, batch] = dims;
+    let (dims, strides) = ([m, n, batch], [1, m as isize, (m * n) as isize]);
+    let view = RawStridedRef::new(data, &dims, &strides, 0).unwrap();
+    let mut fresh = vec![Vec::new(); outputs];
+    let mut fresh_spectrum = Vec::new();
+    call(view, &mut fresh, &mut fresh_spectrum);
+    let mut reused: Vec<Vec<T>> = fresh.iter().map(|v| vec![stale; 2 * v.len() + 3]).collect();
+    let stale_real = stale.real_part();
+    let mut reused_spectrum = vec![stale_real; 2 * fresh_spectrum.len() + 3];
+    call(view, &mut reused, &mut reused_spectrum);
+    assert_eq!(fresh, reused);
+    assert_eq!(fresh_spectrum, reused_spectrum);
+}
+
+fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T)
+where
+    T::Real: core::fmt::Debug,
+{
     let stale = entry(f64::NAN);
     for (m, n) in [(5, 5), (7, 4), (4, 7)] {
         for batch in [1, 3] {
@@ -49,40 +76,40 @@ fn check<T: FaerScalar + PartialEq + core::fmt::Debug>(entry: fn(f64) -> T) {
                 },
                 2,
             );
-            run_twice(
+            run_twice_with_spectrum(
                 [m, n, batch],
                 &a,
                 stale,
-                |view, o| {
-                    let [u, s, vt] = o else { unreachable!() };
+                |view, o, s| {
+                    let [u, vt] = o else { unreachable!() };
                     svd(Op::Svd, view, false, u, s, vt, &mut Exec::serial()).unwrap();
                 },
-                3,
+                2,
             );
-            run_twice(
+            run_twice_with_spectrum(
                 [m, n, batch],
                 &a,
                 stale,
-                |view, o| {
-                    let [u, s, vt] = o else { unreachable!() };
+                |view, o, s| {
+                    let [u, vt] = o else { unreachable!() };
                     svd(Op::Svd, view, true, u, s, vt, &mut Exec::serial()).unwrap();
                 },
-                3,
+                2,
             );
         }
     }
     for n in [1, 5] {
         for batch in [1, 3] {
             let a = input(n, n, batch, entry);
-            run_twice(
+            run_twice_with_spectrum(
                 [n, n, batch],
                 &a,
                 stale,
-                |view, o| {
-                    let [w, v] = o else { unreachable!() };
+                |view, o, w| {
+                    let [v] = o else { unreachable!() };
                     eigh(Op::Eigh, view, w, v, &mut Exec::serial()).unwrap();
                 },
-                2,
+                1,
             );
         }
     }

@@ -11,6 +11,7 @@ use num_complex::Complex64;
 use strided_view::RawStridedRef;
 use tlinalg_testkit::{clustered_spectrum, with_singular_values, TestScalar};
 
+use crate::scalar::ScalarEntity;
 use crate::svd::{divides, reproduces, residual_bound, svd, svd_req, Check, SvdScratch};
 use crate::{FaerScalar, Op};
 use tcontract_exec::Exec;
@@ -27,7 +28,12 @@ pub(in crate::svd) fn record_repeat() {
 
 /// Decompose one `m x n` matrix on this thread and return how often the kernel repeated the
 /// decomposition, with the singular values.
-fn repeats<T: FaerScalar + TestScalar>(a: &[T], m: usize, n: usize, full: bool) -> (usize, Vec<T>) {
+fn repeats<T: FaerScalar + TestScalar>(
+    a: &[T],
+    m: usize,
+    n: usize,
+    full: bool,
+) -> (usize, Vec<<T as ScalarEntity>::Real>) {
     REPEATS.set(0);
     let (mut u, mut s, mut vt) = (Vec::new(), Vec::new(), Vec::new());
     svd(
@@ -52,10 +58,7 @@ fn clustered_decompositions_do_not_need_a_qr_retry() {
         let (count, s) = repeats::<Complex64>(&with_singular_values(&spectrum, 1), n, n, full);
         assert_eq!(count, 0, "Complex64, full={full}");
         for (index, want) in spectrum.iter().enumerate() {
-            assert!(
-                (s[index].re - want).abs() < 1e-12,
-                "Complex64 value {index}"
-            );
+            assert!((s[index] - want).abs() < 1e-12, "Complex64 value {index}");
         }
         let (count, s) = repeats::<f64>(&with_singular_values(&spectrum, 1), n, n, full);
         assert_eq!(count, 0, "f64, full={full}");

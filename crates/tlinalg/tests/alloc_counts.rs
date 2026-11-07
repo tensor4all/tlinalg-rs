@@ -435,7 +435,7 @@ macro_rules! dtype_battery {
                 let ws = svd::svd_workspace::<$t>(n, n, false, batch, seq).unwrap();
                 let mut workspace = scratch(ws);
                 let mut u = vec![MaybeUninit::<$t>::uninit(); square * batch];
-                let mut s = vec![MaybeUninit::<$t>::uninit(); n * batch];
+                let mut s = vec![MaybeUninit::<$real>::uninit(); n * batch];
                 let mut vt = vec![MaybeUninit::<$t>::uninit(); square * batch];
                 zero_gate!("svd", {
                     svd::svd_into(
@@ -454,7 +454,7 @@ macro_rules! dtype_battery {
                 out.push(("svd.s", unsafe { bytes_uninit(&s) }));
                 out.push(("svd.vt", unsafe { bytes_uninit(&vt) }));
                 let mut iu = vec![value(f64::NAN); u.len()];
-                let mut is = vec![value(f64::NAN); s.len()];
+                let mut is = vec![<$real>::NAN; s.len()];
                 let mut ivt = vec![value(f64::NAN); vt.len()];
                 zero_gate!("svd_into_init", {
                     svd::svd_into_init(
@@ -524,7 +524,7 @@ macro_rules! dtype_battery {
             {
                 let ws = eigh::eigh_workspace::<$t>(n, true, batch, seq).unwrap();
                 let mut workspace = scratch(ws);
-                let mut values = vec![MaybeUninit::<$t>::uninit(); n * batch];
+                let mut values = vec![MaybeUninit::<$real>::uninit(); n * batch];
                 let mut vectors = vec![MaybeUninit::<$t>::uninit(); square * batch];
                 zero_gate!("eigh", {
                     eigh::eigh_into(
@@ -539,7 +539,7 @@ macro_rules! dtype_battery {
                 });
                 out.push(("eigh.values", unsafe { bytes_uninit(&values) }));
                 out.push(("eigh.vectors", unsafe { bytes_uninit(&vectors) }));
-                let mut ivalues = vec![value(f64::NAN); values.len()];
+                let mut ivalues = vec![<$real>::NAN; values.len()];
                 let mut ivectors = vec![value(f64::NAN); vectors.len()];
                 zero_gate!("eigh_into_init", {
                     eigh::eigh_into_init(

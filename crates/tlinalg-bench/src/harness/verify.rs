@@ -550,10 +550,10 @@ fn check_one<T: BenchScalar + super::rows::EigBuffers + super::rows::RealValues>
             let thin = output_call_checked::<T>("svd_thin", c, false)
                 .map_err(|e| format!("reference SVD: {e}"))?;
             let vals = match thin {
-                Output::Three(u, s, vt) => {
-                    let _ = (u, vt);
-                    tlinalg_testkit::widen(&s)
-                }
+                Output::ThreeReal(_, s, _) => s
+                    .into_iter()
+                    .map(|x| Complex64::new(x, 0.))
+                    .collect::<Vec<_>>(),
                 _ => return Err("SVD output unavailable".into()),
             };
             let got = tlinalg_testkit::widen(&s);

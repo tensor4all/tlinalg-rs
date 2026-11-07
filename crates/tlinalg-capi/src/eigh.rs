@@ -3,7 +3,8 @@
 //! `eigh` reads the **lower triangle** of each Hermitian input and returns non-decreasing **real**
 //! eigenvalues. `eigh` writes the eigenvalues in the scalar type (a zero imaginary part for the
 //! complex dtypes) and the column-major eigenvectors; `eigh_values` writes only the real
-//! eigenvalues, matching the provider's two entry points.
+//! eigenvalues. The provider returns real eigenvalues from both entry points; this C ABI keeps the
+//! scalar-type `eigh` output it published, so the values are widened here.
 
 use std::ffi::c_void;
 
@@ -52,7 +53,10 @@ fn eigh_into_typed<T: FaerScalar>(
 ) -> Result<(), FfiError> {
     with_view::<T, _>(desc, data, data_len, |input| {
         let (mut vv, mut ww) = (Vec::new(), Vec::new());
-        eigh::eigh(Op::Eigh, input, &mut vv, &mut ww, parallel).map_err(map_error)?;
+        let mut real = Vec::new();
+        eigh::eigh(Op::Eigh, input, &mut real, &mut ww, parallel).map_err(map_error)?;
+        // The published C ABI writes the eigenvalues in the scalar type.
+        vv.extend(real.into_iter().map(T::from_real));
         let (values_total, vectors_total) = sizes.totals()?;
         check_output(&vv, values, values_total, "values")?;
         check_output(&ww, vectors, vectors_total, "vectors")?;

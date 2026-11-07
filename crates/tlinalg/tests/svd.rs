@@ -143,10 +143,9 @@ fn complex_and_f32_reconstruct() {
         &mut Exec::serial(),
     )
     .unwrap();
-    // `s` is carried in the complex scalar type with a zero imaginary part.
-    for value in &s {
-        assert_eq!(value.im, 0.0);
-        assert!(value.re > 0.0);
+    // `s` is real for a complex input.
+    for &value in &s {
+        assert!(value > 0.0);
     }
     let mut rebuilt = vec![Complex64::new(0.0, 0.0); m * n];
     for row in 0..m {
@@ -257,9 +256,9 @@ fn clustered_singular_values_of_a_rank_deficient_matrix() {
 
         for (index, want) in spectrum.iter().enumerate() {
             assert!(
-                (s[index].re - want).abs() < 1e-12,
+                (s[index] - want).abs() < 1e-12,
                 "full={full}: singular value {index}: {} != {want}",
-                s[index].re
+                s[index]
             );
             assert!(
                 (values[index] - want).abs() < 1e-12,

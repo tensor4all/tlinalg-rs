@@ -180,7 +180,7 @@ pub fn eigh<T: FaerScalar>(
     op: Op,
     _n: usize,
     input: RawStridedRef<'_, T>,
-    values: &mut Vec<T>,
+    values: &mut Vec<T::Real>,
     vectors: &mut Vec<T>,
     par: &mut Exec<'_>,
 ) -> Result<()> {

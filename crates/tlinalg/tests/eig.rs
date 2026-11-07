@@ -10,7 +10,10 @@ use tcontract_exec::Exec;
 use tlinalg::FaerScalar;
 use tlinalg::Op;
 
-fn eigh_decomposes<T: TestScalar + FaerScalar>() {
+fn eigh_decomposes<T: TestScalar + FaerScalar>()
+where
+    T::Real: TestScalar,
+{
     let n = 5;
     let a = hermitian::<T>(n);
     let (storage, strides, offset) = padded(&a, n, n);
@@ -20,7 +23,7 @@ fn eigh_decomposes<T: TestScalar + FaerScalar>() {
     eigh(Op::Eigh, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
     let (w, v) = (widen(&w), widen(&v));
     for value in &w {
-        assert_eq!(value.im, 0.0, "real eigenvalues in the scalar type");
+        assert_eq!(value.im, 0.0, "real eigenvalues");
     }
     for pair in w.windows(2) {
         assert!(pair[0].re <= pair[1].re, "non-decreasing");
@@ -49,7 +52,7 @@ fn eigh_values_match_the_decomposition() {
     eigh(Op::Eigh, n, input, &mut w, &mut v, &mut Exec::serial()).unwrap();
     eigh_values(Op::EighValues, n, input, &mut values, &mut Exec::serial()).unwrap();
     for (full, only) in w.iter().zip(&values) {
-        assert!((full.re - only).abs() < 1e-10);
+        assert!((full - only).abs() < 1e-10);
     }
 }
 

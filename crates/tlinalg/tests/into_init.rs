@@ -108,8 +108,12 @@ const SHAPES: [(usize, usize); 6] = [(1, 1), (4, 4), (6, 3), (3, 6), (0, 3), (3,
 const BATCHES: [usize; 3] = [0, 1, 3];
 
 /// Purpose: every sentinel element is overwritten, bit for bit, with the `*_into` route's output.
-fn overwrites_like_into<T: Bits>() {
+fn overwrites_like_into<T: Bits>()
+where
+    T::Real: Bits,
+{
     let sentinel = T::make(f64::NAN, f64::NAN);
+    let real_sentinel = <T::Real as Bits>::make(f64::NAN, f64::NAN);
     for (m, n) in SHAPES {
         for batch in BATCHES {
             let a = general::<T>(m, n, batch);
@@ -135,7 +139,7 @@ fn overwrites_like_into<T: Bits>() {
                 let (u, s, vt) = (&mut Vec::new(), &mut Vec::new(), &mut Vec::new());
                 svd(Op::Svd, input, full, u, s, vt, &mut Exec::serial()).unwrap();
                 let mut u2 = vec![sentinel; u.len()];
-                let mut s2 = vec![sentinel; s.len()];
+                let mut s2 = vec![real_sentinel; s.len()];
                 let mut vt2 = vec![sentinel; vt.len()];
                 let bytes = svd_workspace::<T>(m, n, full, batch, &Exec::serial()).unwrap();
                 svd_into_init(
@@ -162,7 +166,7 @@ fn overwrites_like_into<T: Bits>() {
             let input = RawStridedRef::new(&a, &dims, &strides, 0).unwrap();
             let (w, v) = (&mut Vec::new(), &mut Vec::new());
             eigh(Op::Eigh, input, w, v, &mut Exec::serial()).unwrap();
-            let (mut w2, mut v2) = (vec![sentinel; w.len()], vec![sentinel; v.len()]);
+            let (mut w2, mut v2) = (vec![real_sentinel; w.len()], vec![sentinel; v.len()]);
             let mut ws = workspace(eigh_workspace::<T>(n, true, batch, &Exec::serial()).unwrap());
             eigh_into_init(
                 Op::Eigh,
