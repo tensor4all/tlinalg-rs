@@ -1241,9 +1241,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56cb66d2a11287259ed62ab6cbef98e907ef0b67d78b45c32d8d33709693fde7"
+checksum = "fbb418322be3bde5413613ec9dfcaa8c7e764ac8e17fd513ceba6942e9bfcbc7"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1427,9 +1427,9 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7684c35bfc6004ad2e6b97a0da15e7930bd431c5403aed2aa412cc200cadeb60"
+checksum = "bd98479083b7f58b4df9cb13d829e4f50fb93e67364de2cc5169a191332a63d1"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1446,7 +1446,7 @@ dependencies = [
 [[package]]
 name = "tcontract-capi"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=c1ad85f69dc633ba1aaf6a3e4c7720ad80eb9d64#c1ad85f69dc633ba1aaf6a3e4c7720ad80eb9d64"
+source = "git+https://github.com/tensor4all/tcontract-rs.git?rev=abf8c723b3768bd2471fe18d60086f4ac3f90648#abf8c723b3768bd2471fe18d60086f4ac3f90648"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1457,9 +1457,9 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a779eaef6aaada6eda42bb72f6e96bfcebb8a5fa063beacbd6615af4c020bd3f"
+checksum = "13dfb5292bdf73d40f1fe5c65d3d921cedcb922347bfaa09f34217b8598403c9"
 dependencies = [
  "t4a-faer",
  "thiserror 1.0.69",
