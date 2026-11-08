@@ -23,9 +23,22 @@ against, so tlinalg on 0.33 against tcontract-exec 0.11 does not compile.
 ### t4a-faer 0.33's LU rank truncation is not exposed here
 
 t4a-faer 0.33.0 adds `max_rank`, `abs_tol` and `rel_tol` to both LU parameter types and `rank`
-to their info types (tensor4all/faer#294). Tlinalg constructs none of those types and does not
-re-export `faer`, so no tlinalg signature changes; with the new options at their defaults both
-factorizations run to `min(m, n)` exactly as before. Exposing rank truncation is separate work.
+to their info types (tensor4all/faer#294). Tlinalg constructs none of those types, so no tlinalg
+entry point gains an option or an output, and at their defaults the factorizations keep the
+stopping rule they had in 0.32: full-pivot LU already stopped early on a zero or subnormal Schur
+complement, so neither runs to `min(m, n)` in every case today. Exposing rank truncation is
+separate work.
+
+### Breaking for generic callers: the inherited faer-facing surface moves to 0.33
+
+Tlinalg does not re-export `faer`, but it does publish `FaerScalar` (`src/lib.rs`), and that
+trait's supertraits are faer-facing. `ScalarEntity` ties `Entity` and `Real` to
+`faer::traits::{ComplexField, RealField}`; `EigScalar` has `eig_req`, `eig_scratch` and
+`eig_into`, which take `faer::ParShape`, `faer::dyn_stack::{StackReq, MemStack}`,
+`faer::MatRef` and `faer::Par`. The supertraits are defined in a private module, so their paths
+cannot be named, but a generic caller bounded by `tlinalg::FaerScalar` still reaches their items.
+Such a caller has to move its own `t4a-faer` to 0.33 too: 0.32 and 0.33 are distinct types even
+where the definition is unchanged.
 
 ### Dependencies
 
