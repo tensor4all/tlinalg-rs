@@ -11,7 +11,7 @@ use common::*;
 use num_complex::{Complex32, Complex64};
 use strided_view::RawStridedRef;
 use tlinalg_blas::svd::{svd, SvdMode, SvdOutputs};
-use tlinalg_blas::Op;
+use tlinalg_blas::{Error, Op};
 
 fn check<T: TestScalar>(m: usize, n: usize, mode: SvdMode)
 where
@@ -135,4 +135,43 @@ fn an_empty_batch_leaves_every_output_empty() {
     .unwrap();
     assert!(s.is_empty() && u.is_empty() && vt.is_empty());
     assert_eq!(ws.acquired, 0);
+}
+
+/// A zero-stride descriptor whose logical element count overflows `usize` reports the `shape` role.
+///
+/// `RawStridedRef::new` bounds-checks the *reachable* offsets, not the logical element count, so a
+/// zero-stride layout passes it and the kernel's own product check is what rejects the input. `svd`
+/// used to carry its own `checked_product` that said `configuration` instead (tlinalg-rs#79). The
+/// check runs before any LAPACK call, so no workspace is acquired either.
+#[test]
+fn an_overflowing_svd_matrix_reports_the_shape_role() {
+    let data = [0.0_f64];
+    let dims = [usize::MAX / 2 + 1, 2];
+    let strides = [0_isize, 0];
+    let a = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+    let (mut s, mut u, mut vt) = (Vec::new(), Vec::new(), Vec::new());
+    let mut ws = TestWorkspace::default();
+    let error = svd(
+        Op::Svd,
+        SvdMode::Thin,
+        a,
+        SvdOutputs {
+            s: &mut s,
+            u: &mut u,
+            vt: &mut vt,
+        },
+        &mut ws,
+    )
+    .expect_err("a logical element count that overflows usize must be rejected");
+    match error {
+        Error::InvalidArgument { role, detail, .. } => {
+            assert_eq!(role, "shape", "role");
+            assert_eq!(detail, "matrix element count overflow", "detail");
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+    assert_eq!(
+        ws.acquired, 0,
+        "the argument check runs before any workspace"
+    );
 }
