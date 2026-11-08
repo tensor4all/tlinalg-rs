@@ -13,21 +13,10 @@
 //!
 //! The packed family takes no pooled buffers; the explicit [`lu`] takes a [`Workspace`].
 
+use crate::common::checked_product;
 use crate::{Error, IndexWorkspace, Op, Result, Workspace};
 
 use crate::LapackScalar;
-
-/// A shape product overflowed `usize`.
-fn checked_product(op: Op, role: &'static str, shape: &[usize]) -> Result<usize> {
-    shape
-        .iter()
-        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
-        .ok_or_else(|| Error::InvalidArgument {
-            op,
-            role: "configuration",
-            detail: format!("{role} element count overflows usize"),
-        })
-}
 
 /// A dimension LAPACK cannot express in its `i32` interface.
 fn dim_i32(op: Op, value: usize) -> Result<i32> {

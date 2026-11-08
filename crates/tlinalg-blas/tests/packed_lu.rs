@@ -334,3 +334,22 @@ fn empty_batches_are_accepted() {
     let mut parity: Vec<f64> = Vec::new();
     lu_factor(Op::LuFactor, n, n, &mut lu, &mut pivots, &mut parity).unwrap();
 }
+
+/// A matrix whose element count overflows `usize` reports the `shape` role and the host's text.
+///
+/// One helper builds that error (`common::checked_product`); `svd` and `lu` used to carry private
+/// copies that said `configuration` instead (tlinalg-rs#79). The product is checked before the
+/// buffers are, so the empty slices below are never indexed.
+#[test]
+fn an_overflowing_matrix_reports_the_shape_role() {
+    let huge = usize::MAX / 2 + 1;
+    let error = lu_factor::<f64>(Op::Lu, huge, 2, &mut [], &mut [], &mut [])
+        .expect_err("a matrix whose element count overflows usize must be rejected");
+    match error {
+        Error::InvalidArgument { role, detail, .. } => {
+            assert_eq!(role, "shape", "role");
+            assert_eq!(detail, "matrix shape element count overflow", "detail");
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+}

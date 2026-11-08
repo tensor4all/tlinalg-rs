@@ -13,6 +13,7 @@
 //! `vt` holding `Vᴴ`. The input is a rank `2 + B` strided operand `[m, n, batch...]`; outputs are
 //! compact and batch-contiguous.
 
+use crate::common::checked_product;
 use crate::{Error, IndexWorkspace, Op, Result, Workspace};
 
 use crate::LapackScalar;
@@ -47,17 +48,6 @@ impl SvdMode {
             Self::Values => (0, 0),
         }
     }
-}
-
-fn checked_product(op: Op, role: &'static str, shape: &[usize]) -> Result<usize> {
-    shape
-        .iter()
-        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
-        .ok_or_else(|| Error::InvalidArgument {
-            op,
-            role: "configuration",
-            detail: format!("{role} element count overflows usize"),
-        })
 }
 
 fn dim_i32(op: Op, value: usize) -> Result<i32> {
