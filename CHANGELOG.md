@@ -3,6 +3,44 @@
 Changes to the published `tlinalg` crate. `tlinalg-blas` is versioned separately; a release here
 names it only when its version moves.
 
+## tlinalg 0.11.0
+
+This release is **breaking** only through a dependency identity. No `.rs` file changed and no
+tlinalg signature changed.
+
+### Breaking: `Exec` comes from tcontract-exec 0.12.0, built on t4a-faer 0.33
+
+Every entry point takes `&mut tcontract_exec::Exec<'_>`. That type now comes from
+tcontract-exec 0.12.0, whose source is unchanged from 0.11.0 but which is built against
+t4a-faer 0.33.0, where the 0.11.0 one is built against 0.32.0. The `tcontract_exec::Exec` API
+itself did not change, but the type is distinct from the 0.11.0 one, so a host has to build its
+pool, token and `Exec` from threadteam 0.5.1 and tcontract-exec 0.12.0. With one version of each
+crate in the dependency graph the token passes through to tlinalg and to faer's `Par::Team` as
+before. The two `t4a-faer` copies are not interchangeable:
+`tcontract_exec::with_faer_par` hands its closure a `Par` from the copy its own crate was built
+against, so tlinalg on 0.33 against tcontract-exec 0.11 does not compile.
+
+### t4a-faer 0.33's LU rank truncation is not exposed here
+
+t4a-faer 0.33.0 adds `max_rank`, `abs_tol` and `rel_tol` to both LU parameter types and `rank`
+to their info types (tensor4all/faer#294). Tlinalg constructs none of those types and does not
+re-export `faer`, so no tlinalg signature changes; with the new options at their defaults both
+factorizations run to `min(m, n)` exactly as before. Exposing rank truncation is separate work.
+
+### Dependencies
+
+| Crate | 0.10.0 | 0.11.0 |
+| --- | --- | --- |
+| `t4a-faer` (`faer`) | 0.32.0 | 0.33.0 |
+| `tcontract-exec` | 0.11.0 | 0.12.0 |
+| `threadteam` | 0.5.1 | 0.5.1 |
+| `strided-view` | 0.7.1 | 0.7.1 |
+
+The workspace's own development pins moved with them: the `tcontract` / `tcontract-exec`
+patch to 0.12.0, and the private `tcontract-capi` git revision to the tcontract-rs commit
+`abf8c723` that 0.12.0 was published from (#184). `tlinalg-blas` stays at 0.5.1: none of its
+requirements changed.
+
 ## tlinalg 0.10.0
 
 This release is **breaking**. It has two independent breaking changes.
