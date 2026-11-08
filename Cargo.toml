@@ -42,9 +42,10 @@ threadteam = { version = "0.5.1" }
 # `Exec` is the same type the C API takes.
 tcontract-exec = { version = "0.12.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
-# `tlinalg-capi`). One revision for exec and capi, or the forwarded `Exec` is a different type
-# than the one `tlinalg` takes. The revision is the commit on tcontract-rs `main` that
-# tcontract/tcontract-exec 0.12.0 were published from (release PR #184).
+# `tlinalg-capi`). The revision is the commit on tcontract-rs `main` that
+# tcontract/tcontract-exec 0.12.0 were published from (release PR #184); the `[patch]` below
+# points its tcontract dependencies at those published releases, so the forwarded `Exec` is the
+# type `tlinalg` takes.
 tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "abf8c723b3768bd2471fe18d60086f4ac3f90648" }
 num-complex = "0.4"
 thiserror = "2"
