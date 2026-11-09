@@ -19,6 +19,10 @@ advisory `Duration`: `None` unless the caller measured this host with
 - [README](README.md): scope, the batch API, and the parallel model.
 - [API reference](https://docs.rs/tlinalg): public types, batch entry points, and error types.
 - [Batched API](docs/design/batched-api.md): why the batch is the unit, and what a call owns.
+- [t4a-faer usage skill](https://github.com/tensor4all/faer/blob/main/skills/faer-usage/SKILL.md): the
+  dense matrix library this provider calls (package `t4a-faer`, imported as `faer`) — decomposition
+  choice, scratch sizing, and the caller owned `Par`; read it when the unit is one matrix instead of
+  a batch.
 - [Borrowed workspaces](docs/design/borrowed-workspace.md): the scratch contract and its sizing.
 - [Team payback](docs/design/team-payback.md): when a batch is worth attaching a team to.
 - [Estimate rates](docs/design/estimate-rates.md): work counts, the calibrated rate table, and why a
