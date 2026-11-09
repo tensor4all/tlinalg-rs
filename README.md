@@ -69,7 +69,8 @@ crate adds the batch loop, the lane fan-out and the borrowed workspace around it
 unit is a batch of matrices and the host wants one call; call `t4a-faer` directly when the unit is a
 single matrix and you want the factor object itself. Its
 [usage skill](https://github.com/tensor4all/faer/blob/main/skills/faer-usage/SKILL.md) covers
-factorization choice, scratch sizing, and the caller-owned `Par` that this crate receives as a token.
+factorization choice, scratch sizing, and the execution token: a caller hands this crate a `tcontract_exec::Exec`
+(`crates/tlinalg/src/cholesky.rs:151`), and the faer `Par` for each lane is derived inside (`crates/tlinalg/src/batch.rs:1102`).
 
 ## Status
 
