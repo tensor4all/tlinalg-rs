@@ -130,6 +130,19 @@ jobs:
       - run: cargo build --profile ci -p tlinalg-capi
       - run: cargo test --workspace --profile ci
 
+  # Accelerate's legacy `zgesdd` returns wrong factors for some complex matrices (#110); the SVD
+  # suite checks the driver `link-accelerate` selects against the vendor's own LAPACK.
+  test-accelerate:
+    name: cargo test (macos-latest, Accelerate)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+      - run: cargo test -p tlinalg-blas --profile ci --features link-accelerate --test svd --lib
+
   doc:
     name: cargo doc
     runs-on: ubuntu-latest

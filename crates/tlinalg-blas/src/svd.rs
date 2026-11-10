@@ -88,12 +88,12 @@ fn work_len(op: Op, routine: &'static str, query: f64) -> Result<i32> {
 /// The integer workspace length the selected driver needs.
 ///
 /// `?gesdd` needs `8 * max(k, 1)`; `?gesvd` has no integer workspace at all.
-#[cfg(not(feature = "provider-inject"))]
+#[cfg(not(svd_gesvd))]
 fn iwork_len(op: Op, k: usize) -> Result<usize> {
     checked_product(op, "integer workspace", &[8, k.max(1)])
 }
 
-#[cfg(feature = "provider-inject")]
+#[cfg(svd_gesvd)]
 fn iwork_len(_op: Op, _k: usize) -> Result<usize> {
     Ok(0)
 }
@@ -102,12 +102,12 @@ fn iwork_len(_op: Op, _k: usize) -> Result<usize> {
 ///
 /// `?gesvd` takes a fixed `5 * max(k, 1)`; `?gesdd` needs the length LAPACK documents, which grows
 /// with the shape unless the larger dimension exceeds a crossover.
-#[cfg(feature = "provider-inject")]
+#[cfg(svd_gesvd)]
 fn complex_rwork_len(op: Op, _jobz: u8, m: usize, n: usize) -> Result<usize> {
     checked_product(op, "real workspace", &[5, m.min(n).max(1)])
 }
 
-#[cfg(not(feature = "provider-inject"))]
+#[cfg(not(svd_gesvd))]
 fn complex_rwork_len(op: Op, jobz: u8, m: usize, n: usize) -> Result<usize> {
     let mn = m.min(n);
     let mx = m.max(n);

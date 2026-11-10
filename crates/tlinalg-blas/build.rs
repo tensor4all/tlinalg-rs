@@ -1,4 +1,5 @@
-//! Link the *installed* Intel oneAPI MKL when `link-mkl` is on.
+//! Select the SVD driver, and link Accelerate (`link-accelerate`) or the *installed* Intel oneAPI
+//! MKL (`link-mkl`) for this crate's own checks.
 //!
 //! `link-mkl` deliberately does not go through `blas-src`/`lapack-src`. Their `intel-mkl-*`
 //! features route through `intel-mkl-src`, which downloads its own MKL tree, and this crate
@@ -15,20 +16,40 @@
 //! a build that silently followed it could record a version it never read back.
 use std::path::PathBuf;
 
+fn feature(name: &str) -> bool {
+    std::env::var_os(format!("CARGO_FEATURE_{name}")).is_some()
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=MKLROOT");
     println!("cargo:rerun-if-env-changed=MKL_THREADING_LIB");
-    let mkl = std::env::var_os("CARGO_FEATURE_LINK_MKL").is_some();
-    let openblas = std::env::var_os("CARGO_FEATURE_LINK_OPENBLAS").is_some()
-        || std::env::var_os("CARGO_FEATURE_LINK_OPENBLAS_STATIC").is_some();
-    // Cargo features are additive, so the two vendors can be asked for at once through different
+
+    // `svd_gesvd` selects the `?gesvd` driver. The injected symbol set exports no `?gesdd`, and
+    // Accelerate's `zgesdd` returns wrong factors (#110); every other LAPACK uses `?gesdd`.
+    println!("cargo:rustc-check-cfg=cfg(svd_gesvd)");
+    if feature("PROVIDER_INJECT") || feature("ACCELERATE") {
+        println!("cargo:rustc-cfg=svd_gesvd");
+    }
+
+    let mkl = feature("LINK_MKL");
+    let openblas = feature("LINK_OPENBLAS") || feature("LINK_OPENBLAS_STATIC");
+    let accelerate = feature("LINK_ACCELERATE");
+    // Cargo features are additive, so two vendors can be asked for at once through different
     // packages -- the harness's own feature is not the only way in. The refusal belongs here,
-    // where both features are declared.
+    // where the features are declared.
     assert!(
-        !(mkl && openblas),
-        "link-mkl and link-openblas are mutually exclusive: one binary links one vendor library. \
-         Build the harness once per vendor arm and record one run per arm."
+        [mkl, openblas, accelerate].iter().filter(|&&on| on).count() <= 1,
+        "link-mkl, link-openblas and link-accelerate are mutually exclusive: one binary links one \
+         vendor library. Build the harness once per vendor arm and record one run per arm."
     );
+    if accelerate {
+        assert!(
+            std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos"),
+            "link-accelerate links Apple's Accelerate framework and needs a macOS target"
+        );
+        println!("cargo:rustc-link-lib=framework=Accelerate");
+        return;
+    }
     if !mkl {
         return;
     }
