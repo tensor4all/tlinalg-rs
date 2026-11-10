@@ -72,6 +72,30 @@ fn check_family<T: TestScalar + FaerScalar>(
     }
 }
 
+/// One batched `full_piv_lu` call, every output widened to the reference scalar.
+fn full_piv_call<T: TestScalar + FaerScalar>(
+    a: RawStridedRef<'_, T>,
+    par: &mut Exec<'_>,
+) -> Result<Vec<Vec<Complex64>>> {
+    let (mut p, mut l, mut u, mut q, mut parity) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let factors = tlinalg::full_piv_lu::FullPivLuFactors {
+        p: &mut p,
+        l: &mut l,
+        u: &mut u,
+        q: &mut q,
+        parity: &mut parity,
+    };
+    tlinalg::full_piv_lu::full_piv_lu(Op::FullPivLu, a, factors, par)?;
+    Ok(vec![
+        widen(&p),
+        widen(&l),
+        widen(&u),
+        widen(&q),
+        widen(&parity),
+    ])
+}
+
 fn families<T: TestScalar + FaerScalar>()
 where
     T::Real: TestScalar,
@@ -119,25 +143,15 @@ where
         tlinalg::lu::lu(Op::Lu, a, factors, par)?;
         Ok(vec![widen(&p), widen(&l), widen(&u), widen(&parity)])
     });
-    check_family::<T>("full_piv_lu", (4, 4), square(3), &|a, par| {
-        let (mut p, mut l, mut u, mut q, mut parity) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let factors = tlinalg::full_piv_lu::FullPivLuFactors {
-            p: &mut p,
-            l: &mut l,
-            u: &mut u,
-            q: &mut q,
-            parity: &mut parity,
-        };
-        tlinalg::full_piv_lu::full_piv_lu(Op::FullPivLu, a, factors, par)?;
-        Ok(vec![
-            widen(&p),
-            widen(&l),
-            widen(&u),
-            widen(&q),
-            widen(&parity),
-        ])
-    });
+    // The four permutation slices have different lengths once the core is rectangular.
+    check_family::<T>("full_piv_lu square", (4, 4), square(3), &full_piv_call::<T>);
+    check_family::<T>("full_piv_lu tall", (4, 3), general(3), &full_piv_call::<T>);
+    check_family::<T>(
+        "full_piv_lu wide",
+        (3, 4),
+        |i| matrix::<T>(3, 4, 3 + i),
+        &full_piv_call::<T>,
+    );
     check_family::<T>("qr", (4, 3), general(4), &|a, par| {
         let (mut q, mut r) = (Vec::new(), Vec::new());
         tlinalg::qr::qr(Op::Qr, a, &mut q, &mut r, par)?;

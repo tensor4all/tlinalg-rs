@@ -1,9 +1,10 @@
 //! `tlinalg_full_piv_lu_sizes` / `tlinalg_full_piv_lu_into`.
 //!
-//! `full_piv_lu` is full-pivot LU of every square matrix, `P A Qᵀ = L U`. Per item the outputs are
-//! the `n x n` row permutation `P`, the unit-lower-triangular `L`, the upper-triangular `U`, the
-//! `n x n` column permutation `Q`, and the parity `+1`/`-1` in the scalar type. The factorization
-//! never fails on an exactly singular input, matching [`tlinalg::full_piv_lu::full_piv_lu`].
+//! `full_piv_lu` is full-pivot LU of every `m x n` matrix, `P A Qᵀ = L U` with `k = min(m, n)`.
+//! Per item the outputs are the `m x m` row permutation `P`, the unit-lower-triangular `m x k`
+//! `L`, the upper-triangular `k x n` `U`, the `n x n` column permutation `Q`, and the parity
+//! `+1`/`-1` in the scalar type. The factorization never fails on an exactly singular input,
+//! matching [`tlinalg::full_piv_lu::full_piv_lu`].
 
 use std::ffi::c_void;
 
@@ -14,20 +15,20 @@ use tlinalg::{full_piv_lu, FaerScalar, Op};
 use crate::descriptor::{parse_layout, tlinalg_strided, with_view, TlinalgDtype};
 use crate::executor::with_executor;
 use crate::output::{check_output, copy_output, validate_capacity};
-use crate::sizes::{batch_of, product, require_square, tlinalg_full_piv_lu_out};
+use crate::sizes::{batch_of, product, tlinalg_full_piv_lu_out};
 use crate::status::{ffi, invalid, map_error, tlinalg_status, FfiError};
 
 /// The `full_piv_lu` output sizes for a validated descriptor.
 fn full_piv_lu_sizes(desc: *const tlinalg_strided) -> Result<tlinalg_full_piv_lu_out, FfiError> {
     let (dims, _, _) = parse_layout(desc)?;
-    let n = require_square(&dims)?;
-    let nn = product(&[n, n])?;
+    let (m, n) = (dims[0], dims[1]);
+    let k = m.min(n);
     Ok(tlinalg_full_piv_lu_out {
         batch: batch_of(&dims)?,
-        p: nn,
-        l: nn,
-        u: nn,
-        q: nn,
+        p: product(&[m, m])?,
+        l: product(&[m, k])?,
+        u: product(&[k, n])?,
+        q: product(&[n, n])?,
         parity: 1,
         workspace: 0,
     })

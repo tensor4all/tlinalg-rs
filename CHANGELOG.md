@@ -3,6 +3,19 @@
 Changes to the published `tlinalg` crate. `tlinalg-blas` is versioned separately; a release here
 names it only when its version moves.
 
+## Unreleased
+
+### Breaking: `full_piv_lu` takes `m x n`, and its work query takes `(m, n)`
+
+`full_piv_lu`, `full_piv_lu_into` and `full_piv_lu_workspace` accept a rectangular `m x n` core
+with a batch. Per item and with `k = min(m, n)`, the outputs are the `m x m` row permutation `P`,
+the unit-lower `m x k` factor `L`, the upper `k x n` factor `U`, the `n x n` column permutation
+`Q` and the parity, with `P A Qᵀ = L U` as before. `estimate_work` and `estimate_payback_work`
+take `(m, n)`; the estimate is the same `m n k - (m+n) k²/2 + k³/3` the partial-pivot `lu`
+reports, which is the previous `n³/3` at `m = n`. Square input produces the same factors
+bitwise. The C API's `tlinalg_full_piv_lu_sizes` reports one element count per factor, so the
+struct does not change. `full_piv_lu_solve` stays square-only. Rank truncation stays unexposed.
+
 ## tlinalg 0.11.0
 
 This release is **breaking** only through a dependency identity. No `.rs` file changed and no

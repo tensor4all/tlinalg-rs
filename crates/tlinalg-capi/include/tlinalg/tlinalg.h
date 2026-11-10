@@ -131,10 +131,10 @@ typedef struct {
 
 typedef struct {
     size_t batch;
-    size_t p;      /* n * n, the row permutation */
-    size_t l;      /* n * n */
-    size_t u;      /* n * n */
-    size_t q;      /* n * n, the column permutation */
+    size_t p;      /* rows * rows, the row permutation */
+    size_t l;      /* rows * min(rows, cols) */
+    size_t u;      /* min(rows, cols) * cols */
+    size_t q;      /* cols * cols, the column permutation */
     size_t parity; /* always 1 */
     size_t workspace;
 } tlinalg_full_piv_lu_out;

@@ -176,14 +176,14 @@ fn solve_singular_leaves_destination<T: TestScalar + FaerScalar>() {
 for_each_scalar!(solve_singular, solve_singular_leaves_destination);
 
 fn full_piv_reconstructs<T: TestScalar + FaerScalar>() {
-    for n in [1, 4] {
-        let a = pivoting::<T>(n, n, 19);
-        let (storage, strides, offset) = padded(&a, n, n);
-        let dims = [n, n];
+    for (m, n) in [(4, 4), (5, 3), (3, 5), (1, 1)] {
+        let a = pivoting::<T>(m, n, 19);
+        let (storage, strides, offset) = padded(&a, m, n);
+        let dims = [m, n];
         let (mut p, mut l, mut u, mut q) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let parity = full_piv_lu(
             Op::FullPivLu,
-            n,
+            m,
             RawStridedRef::new(&storage, &dims, &strides, offset).unwrap(),
             FullPivLuFactors {
                 p: &mut p,
@@ -194,21 +194,133 @@ fn full_piv_reconstructs<T: TestScalar + FaerScalar>() {
             &mut Exec::serial(),
         )
         .unwrap();
+        let k = m.min(n);
+        assert_eq!(
+            (p.len(), l.len(), u.len(), q.len()),
+            (m * m, m * k, k * n, n * n)
+        );
         let (p, l, u, q) = (widen(&p), widen(&l), widen(&u), widen(&q));
+        for i in 0..k {
+            assert_eq!(l[i + i * m], Complex64::new(1.0, 0.0), "unit diagonal");
+        }
+        for col in 0..k {
+            for row in 0..m {
+                if row < col {
+                    assert_eq!(l[row + col * m], Complex64::new(0.0, 0.0), "L upper");
+                }
+            }
+        }
+        for col in 0..n {
+            for row in 0..k {
+                if row > col {
+                    assert_eq!(u[row + col * k], Complex64::new(0.0, 0.0), "U lower");
+                }
+            }
+        }
         // `P A Qᵀ = L U`.
         let rebuilt = matmul(
-            &matmul(&p, &widen(&a), n, n, n),
+            &matmul(&p, &widen(&a), m, m, n),
             &transpose(&q, n, n),
-            n,
+            m,
             n,
             n,
         );
-        assert_close(&rebuilt, &matmul(&l, &u, n, n, n), T::TOL, "P A Qᵀ = L U");
-        let sign = permutation_sign(&p, n) * permutation_sign(&q, n);
+        assert_close(&rebuilt, &matmul(&l, &u, m, k, n), T::TOL, "P A Qᵀ = L U");
+        let sign = permutation_sign(&p, m) * permutation_sign(&q, n);
         assert_eq!(parity.to_c64().re, sign, "parity");
     }
 }
 for_each_scalar!(full_piv_reconstruction, full_piv_reconstructs);
+
+fn full_piv_reveals_rectangular_rank<T: TestScalar + FaerScalar>() {
+    // Rank one `3 x 2`: the second column is twice the first. The factorization is not truncated,
+    // so it runs its `k = 2` steps and the second pivot is numerically zero; a singular input is
+    // not an error here.
+    let a = narrow::<T>(&[
+        Complex64::new(1.0, 0.0),
+        Complex64::new(2.0, 0.0),
+        Complex64::new(4.0, 0.0),
+        Complex64::new(2.0, 0.0),
+        Complex64::new(4.0, 0.0),
+        Complex64::new(8.0, 0.0),
+    ]);
+    let (m, n) = (3, 2);
+    let k = m.min(n);
+    let (mut p, mut l, mut u, mut q) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    full_piv_lu(
+        Op::FullPivLu,
+        m,
+        RawStridedRef::new(&a, &[m, n], &[1, m as isize], 0).unwrap(),
+        FullPivLuFactors {
+            p: &mut p,
+            l: &mut l,
+            u: &mut u,
+            q: &mut q,
+        },
+        &mut Exec::serial(),
+    )
+    .unwrap();
+    assert_eq!(
+        (p.len(), l.len(), u.len(), q.len()),
+        (m * m, m * k, k * n, n * n)
+    );
+    let u = widen(&u);
+    let diagonal: Vec<f64> = (0..k).map(|i| u[i + i * k].norm()).collect();
+    let largest = diagonal.iter().copied().fold(0.0_f64, f64::max);
+    let rank = diagonal.iter().filter(|&&d| d > 1e-10 * largest).count();
+    assert_eq!(rank, 1, "diagonal {diagonal:?}");
+    // The reconstruction still holds, with the zero pivot on `U`'s diagonal.
+    let (p, l, q) = (widen(&p), widen(&l), widen(&q));
+    let rebuilt = matmul(
+        &matmul(&p, &widen(&a), m, m, n),
+        &transpose(&q, n, n),
+        m,
+        n,
+        n,
+    );
+    assert_close(&rebuilt, &matmul(&l, &u, m, k, n), T::TOL, "P A Qᵀ = L U");
+}
+for_each_scalar!(full_piv_rectangular_rank, full_piv_reveals_rectangular_rank);
+
+fn full_piv_accepts_empty_core_dimensions<T: TestScalar + FaerScalar>() {
+    // A zero core extent keeps the permutation factors that still have a side: `P` is `m x m`,
+    // `Q` is `n x n`, and the factors with a zero side are empty.
+    for (m, n) in [(0, 3), (3, 0)] {
+        let k = m.min(n);
+        let (mut p, mut l, mut u, mut q, mut parity) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        tlinalg::full_piv_lu::full_piv_lu(
+            Op::FullPivLu,
+            RawStridedRef::new(&[] as &[T], &[m, n], &[1, m as isize], 0).unwrap(),
+            tlinalg::full_piv_lu::FullPivLuFactors {
+                p: &mut p,
+                l: &mut l,
+                u: &mut u,
+                q: &mut q,
+                parity: &mut parity,
+            },
+            &mut Exec::serial(),
+        )
+        .unwrap();
+        assert_eq!(
+            (p.len(), l.len(), u.len(), q.len()),
+            (m * m, m * k, k * n, n * n)
+        );
+        let (p, q, parity) = (widen(&p), widen(&q), widen(&parity));
+        assert_eq!(parity.len(), 1);
+        assert_eq!(parity[0], Complex64::new(1.0, 0.0));
+        for i in 0..m {
+            assert_eq!(p[i + i * m], Complex64::new(1.0, 0.0), "identity P");
+        }
+        for j in 0..n {
+            assert_eq!(q[j + j * n], Complex64::new(1.0, 0.0), "identity Q");
+        }
+    }
+}
+for_each_scalar!(
+    full_piv_empty_dimensions,
+    full_piv_accepts_empty_core_dimensions
+);
 
 fn full_piv_solves<T: TestScalar + FaerScalar>() {
     let n = 4;
@@ -280,6 +392,55 @@ fn full_piv_solves<T: TestScalar + FaerScalar>() {
     assert!(matches!(err, Error::InvalidArgument { .. }));
 }
 for_each_scalar!(full_piv_solve, full_piv_solves);
+
+#[test]
+fn full_piv_lu_refuses_an_overflowing_output_total_without_panicking() {
+    // A broadcast batch axis: two stored elements, `2^62` items. `P`'s item is `1 x 1` so its
+    // total fits while `Q`'s (`2 x 2` per item) does not; the refusal has to come from the checked
+    // total, not from a reservation that panics first.
+    let a = [1.0_f64, 2.0];
+    let (mut p, mut l, mut u, mut q, mut parity) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let err = tlinalg::full_piv_lu::full_piv_lu(
+        Op::FullPivLu,
+        RawStridedRef::new(&a, &[1, 2, 1usize << 62], &[1, 1, 0], 0).unwrap(),
+        tlinalg::full_piv_lu::FullPivLuFactors {
+            p: &mut p,
+            l: &mut l,
+            u: &mut u,
+            q: &mut q,
+            parity: &mut parity,
+        },
+        &mut Exec::serial(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::InvalidArgument { .. }), "{err:?}");
+    assert!(p.is_empty() && l.is_empty() && u.is_empty() && q.is_empty());
+}
+
+#[test]
+fn full_piv_lu_solve_rejects_a_rectangular_coefficient() {
+    // The rectangular widening covers the factorization only; the solve stays square-only and
+    // says so instead of factoring a non-square `A`.
+    let mut x = vec![0.0_f64; 6];
+    let err = full_piv_lu_solve(
+        Op::FullPivLuSolve,
+        3,
+        2,
+        RawStridedRef::new(&[1.0_f64, 0.0, 0.0, 2.0, 0.0, 0.0], &[3, 2], &[1, 3], 0).unwrap(),
+        &mut x,
+        false,
+        &mut Exec::serial(),
+    )
+    .unwrap_err();
+    match err {
+        Error::InvalidArgument { op, detail, .. } => {
+            assert_eq!(op, Op::FullPivLuSolve);
+            assert!(detail.contains("square"), "{detail}");
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+}
 
 #[test]
 fn solve_on_a_supplied_pool_matches_sequential() {

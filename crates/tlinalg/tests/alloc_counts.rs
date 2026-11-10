@@ -743,7 +743,7 @@ macro_rules! dtype_battery {
             }
             // full_piv_lu
             {
-                let ws = full_piv_lu_workspace::<$t>(n, batch, seq).unwrap();
+                let ws = full_piv_lu_workspace::<$t>(n, n, batch, seq).unwrap();
                 let mut workspace = scratch(ws);
                 let mut p = vec![MaybeUninit::<$t>::uninit(); square * batch];
                 let mut l = vec![MaybeUninit::<$t>::uninit(); square * batch];
@@ -1503,7 +1503,10 @@ fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
             "lu save",
             lu_solve_workspace::<Complex64>(HUGE, HUGE, false, one, seq),
         ),
-        ("full_piv_lu", full_piv_lu_workspace::<f64>(HUGE, one, seq)),
+        (
+            "full_piv_lu",
+            full_piv_lu_workspace::<f64>(HUGE, HUGE, one, seq),
+        ),
         (
             "full_piv_lu_solve",
             full_piv_lu_solve_workspace::<f64>(HUGE, HUGE, one, seq),
@@ -1545,7 +1548,7 @@ fn huge_shapes_are_refused_and_an_empty_batch_needs_nothing() {
     assert_eq!(eigh::eigh_workspace::<f64>(HUGE, true, 0, seq).unwrap(), 0);
     assert_eq!(eig::eig_workspace::<f64>(HUGE, true, 0, seq).unwrap(), 0);
     assert_eq!(lu_workspace::<f64>(HUGE, HUGE, 0, seq).unwrap(), 0);
-    assert_eq!(full_piv_lu_workspace::<f64>(HUGE, 0, seq).unwrap(), 0);
+    assert_eq!(full_piv_lu_workspace::<f64>(HUGE, HUGE, 0, seq).unwrap(), 0);
     assert_eq!(
         cholesky::cholesky_workspace::<f64>(HUGE, 0, seq).unwrap(),
         0

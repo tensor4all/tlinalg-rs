@@ -86,9 +86,9 @@ fn workspace_models<T: FaerScalar>(exec: &Exec<'_>) -> Vec<(u64, u64)> {
         eigh::eigh_values_workspace::<T>(n, batch, exec)
     );
     check!(
-        full_piv_lu::estimate_work::<T>(n),
-        full_piv_lu::estimate_payback_work::<T>(n),
-        full_piv_lu::full_piv_lu_workspace::<T>(n, batch, exec)
+        full_piv_lu::estimate_work::<T>(m, n),
+        full_piv_lu::estimate_payback_work::<T>(m, n),
+        full_piv_lu::full_piv_lu_workspace::<T>(m, n, batch, exec)
     );
     check!(
         full_piv_lu::estimate_solve_work::<T>(n, nrhs),

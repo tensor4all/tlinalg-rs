@@ -97,11 +97,11 @@ pub struct tlinalg_lu_out {
 pub struct tlinalg_full_piv_lu_out {
     /// Number of batch items.
     pub batch: usize,
-    /// Elements per item of `p` (`n * n`).
+    /// Elements per item of `p` (`m * m`).
     pub p: usize,
-    /// Elements per item of `l` (`n * n`).
+    /// Elements per item of `l` (`m * k`, `k = min(m, n)`).
     pub l: usize,
-    /// Elements per item of `u` (`n * n`).
+    /// Elements per item of `u` (`k * n`).
     pub u: usize,
     /// Elements per item of `q` (`n * n`).
     pub q: usize,
