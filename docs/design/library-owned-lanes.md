@@ -52,7 +52,7 @@ are expressed as work rather than as a size. The estimates distinguish the actua
 |---|---|
 | cholesky | `n^3/6` |
 | lu (factor) | `m n k - (m+n) k^2/2 + k^3/3`, `k = min(m,n)` |
-| full_piv_lu (factor) | `n^3/3` |
+| full_piv_lu (factor) | `m n k - (m+n) k^2/2 + k^3/3`, `k = min(m,n)` |
 | lu::solve | factor + `n^2 nrhs` (it factors then solves) |
 | full_piv_lu_solve | factor + `n^2 nrhs` |
 | triangular_solve | `n^2 k/2`, `k` the solved RHS count |

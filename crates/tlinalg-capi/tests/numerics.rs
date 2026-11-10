@@ -472,6 +472,99 @@ fn full_piv_lu_f64_matches_tlinalg() {
     assert_close_f64(&par, &epar, TOL);
 }
 
+#[test]
+fn full_piv_lu_f64_rectangular_matches_tlinalg() {
+    // 3 x 2 items: `P` is 3 x 3, `L` is 3 x 2, `U` is 2 x 2 and `Q` is 2 x 2.
+    let a = [
+        1.0f64, 2.0, 3.0, 4.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 2.0, 0.0,
+    ];
+    let dims = compact_dims(3, 2, 2);
+    let layout = Layout::compact(&dims);
+    let desc = layout.as_c();
+    let dims_u = layout.dims_usize();
+    let strides_i = layout.strides_isize();
+
+    let mut sizes = tlinalg_full_piv_lu_out {
+        batch: 0,
+        p: 0,
+        l: 0,
+        u: 0,
+        q: 0,
+        parity: 0,
+        workspace: 0,
+    };
+    assert_eq!(
+        unsafe { tlinalg_full_piv_lu_sizes(&desc, &mut sizes) },
+        TLINALG_OK
+    );
+    assert_eq!(
+        (
+            sizes.batch,
+            sizes.p,
+            sizes.l,
+            sizes.u,
+            sizes.q,
+            sizes.parity
+        ),
+        (2, 9, 6, 4, 4, 1)
+    );
+
+    let (mut ep, mut el, mut eu, mut eq, mut epar) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    full_piv_lu::full_piv_lu(
+        Op::FullPivLu,
+        RawStridedRef::new(&a, &dims_u, &strides_i, 0).unwrap(),
+        full_piv_lu::FullPivLuFactors {
+            p: &mut ep,
+            l: &mut el,
+            u: &mut eu,
+            q: &mut eq,
+            parity: &mut epar,
+        },
+        &mut Exec::serial(),
+    )
+    .unwrap();
+
+    let (mut p, mut l, mut u, mut q, mut par) = (
+        vec![0.0f64; ep.len()],
+        vec![0.0f64; el.len()],
+        vec![0.0f64; eu.len()],
+        vec![0.0f64; eq.len()],
+        vec![0.0f64; epar.len()],
+    );
+    assert_eq!(
+        unsafe {
+            tlinalg_full_piv_lu_into(
+                &desc,
+                TLINALG_F64,
+                0,
+                a.as_ptr().cast::<c_void>(),
+                a.len(),
+                p.as_mut_ptr().cast::<c_void>(),
+                p.len(),
+                l.as_mut_ptr().cast::<c_void>(),
+                l.len(),
+                u.as_mut_ptr().cast::<c_void>(),
+                u.len(),
+                q.as_mut_ptr().cast::<c_void>(),
+                q.len(),
+                par.as_mut_ptr().cast::<c_void>(),
+                par.len(),
+                std::ptr::null_mut(),
+                0,
+            )
+        },
+        TLINALG_OK,
+        "{}",
+        last_error()
+    );
+    assert_close_f64(&p, &ep, TOL);
+    assert_close_f64(&l, &el, TOL);
+    assert_close_f64(&u, &eu, TOL);
+    assert_close_f64(&q, &eq, TOL);
+    assert_close_f64(&par, &epar, TOL);
+}
+
 // ---------------------------------------------------------------- c64
 
 fn c64_matrix() -> Vec<Complex64> {

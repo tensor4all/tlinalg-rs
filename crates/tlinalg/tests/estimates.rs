@@ -43,8 +43,8 @@ fn estimates<T: FaerScalar>(m: usize, n: usize, nrhs: usize) -> [(&'static str, 
         ),
         (
             "full pivot LU",
-            full_piv_lu::estimate_work::<T>(n),
-            full_piv_lu::estimate_payback_work::<T>(n),
+            full_piv_lu::estimate_work::<T>(m, n),
+            full_piv_lu::estimate_payback_work::<T>(m, n),
         ),
         (
             "full pivot solve",

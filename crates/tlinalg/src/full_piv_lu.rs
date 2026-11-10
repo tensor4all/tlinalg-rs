@@ -2,6 +2,10 @@
 //!
 //! Moved from `tenferro-linalg`'s faer backend (same project, MIT OR Apache-2.0).
 //!
+//! The factorization takes `m x n` matrices: with `k = min(m, n)` it returns the `m x m` row
+//! permutation `P`, the unit-lower `m x k` factor `L`, the upper `k x n` factor `U`, the `n x n`
+//! column permutation `Q` and the parity, with `P A Qᵀ = L U`. The solve stays square-only.
+//!
 //! The factorization never fails on an exactly singular input; the solve rejects an effectively
 //! singular factor (a pivot at or below `ε · max|pivot|`), exactly as before. Faer's work matrix,
 //! permutation vectors and scratch are per-lane scratch carved from the caller's borrowed
@@ -31,11 +35,11 @@ use tcontract_exec::Exec;
 /// Each vector is cleared and then filled with compact column-major items in batch order.
 #[derive(Debug)]
 pub struct FullPivLuFactors<'a, T> {
-    /// The `n x n` row permutation `P` per item, with `P A Qᵀ = L U` (equivalently `A = Pᵀ L U Q`).
+    /// The `m x m` row permutation `P` per item, with `P A Qᵀ = L U` (equivalently `A = Pᵀ L U Q`).
     pub p: &'a mut Vec<T>,
-    /// The unit-lower-triangular factor `L` per item.
+    /// The unit-lower-triangular `m x min(m, n)` factor `L` per item.
     pub l: &'a mut Vec<T>,
-    /// The upper-triangular factor `U` per item.
+    /// The upper-triangular `min(m, n) x n` factor `U` per item.
     pub u: &'a mut Vec<T>,
     /// The `n x n` column permutation `Q` per item.
     pub q: &'a mut Vec<T>,
@@ -43,7 +47,7 @@ pub struct FullPivLuFactors<'a, T> {
     pub parity: &'a mut Vec<T>,
 }
 
-/// Lane scratch for `n x n` full-pivot factorizations.
+/// Lane scratch for `m x n` full-pivot factorizations.
 struct FullPivScratch<'w, E: faer::traits::ComplexField> {
     lu: MatMut<'w, E>,
     row_perm: &'w mut [usize],
@@ -53,10 +57,10 @@ struct FullPivScratch<'w, E: faer::traits::ComplexField> {
     mem: &'w mut [MaybeUninit<u8>],
 }
 
-/// faer's own factor scratch for `n x n`.
-fn factor_req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> StackReq {
+/// faer's own factor scratch for `m x n`.
+fn factor_req<E: faer::traits::ComplexField>(m: usize, n: usize, par: faer::ParShape) -> StackReq {
     faer::linalg::lu::full_pivoting::factor::lu_in_place_scratch::<usize, E>(
-        n,
+        m,
         n,
         par,
         Default::default(),
@@ -64,28 +68,37 @@ fn factor_req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> S
 }
 
 /// One lane's complete requirement for a factorization: the work matrix, four permutations and
-/// faer's scratch.
-fn full_piv_req<E: faer::traits::ComplexField>(n: usize, par: faer::ParShape) -> StackReq {
-    StackReq::new::<E>(n * n)
+/// faer's scratch. The row permutations are `m` long and the column permutations `n`.
+fn full_piv_req<E: faer::traits::ComplexField>(
+    m: usize,
+    n: usize,
+    par: faer::ParShape,
+) -> StackReq {
+    StackReq::new::<E>(m * n)
+        .and(StackReq::new::<usize>(m))
+        .and(StackReq::new::<usize>(m))
         .and(StackReq::new::<usize>(n))
         .and(StackReq::new::<usize>(n))
-        .and(StackReq::new::<usize>(n))
-        .and(StackReq::new::<usize>(n))
-        .and(faer_req(factor_req::<E>(n, par)))
+        .and(faer_req(factor_req::<E>(m, n, par)))
 }
 
 impl<'w, E: faer::traits::ComplexField> FullPivScratch<'w, E> {
-    fn new(n: usize, par: faer::ParShape, stack: &'w mut MemStack) -> (Self, &'w mut MemStack) {
+    fn new(
+        m: usize,
+        n: usize,
+        par: faer::ParShape,
+        stack: &'w mut MemStack,
+    ) -> (Self, &'w mut MemStack) {
         let zero = <E as faer::traits::ComplexField>::zero_impl();
-        let (lu, stack) = zeros::<E>(stack, n * n, &zero);
-        let (row_perm, stack) = zeros::<usize>(stack, n, &0);
-        let (row_perm_inv, stack) = zeros::<usize>(stack, n, &0);
+        let (lu, stack) = zeros::<E>(stack, m * n, &zero);
+        let (row_perm, stack) = zeros::<usize>(stack, m, &0);
+        let (row_perm_inv, stack) = zeros::<usize>(stack, m, &0);
         let (col_perm, stack) = zeros::<usize>(stack, n, &0);
         let (col_perm_inv, stack) = zeros::<usize>(stack, n, &0);
-        let (mem, stack) = bytes(stack, factor_req::<E>(n, par).unaligned_bytes_required());
+        let (mem, stack) = bytes(stack, factor_req::<E>(m, n, par).unaligned_bytes_required());
         (
             Self {
-                lu: MatMut::from_column_major_slice_mut(lu, n, n),
+                lu: MatMut::from_column_major_slice_mut(lu, m, n),
                 row_perm,
                 row_perm_inv,
                 col_perm,
@@ -126,12 +139,13 @@ fn full_piv_lu_item<T: FaerScalar>(
     scratch: &mut FullPivScratch<'_, T::Entity>,
     par: faer::Par<'_>,
 ) {
-    let n = mat.nrows();
+    let (m, n) = (mat.nrows(), mat.ncols());
+    let k = m.min(n);
     let transpositions = scratch.factor(mat, par);
     push_permutation(p, scratch.row_perm_inv);
     let lu = scratch.lu.as_ref();
-    for col in 0..n {
-        for row in 0..n {
+    for col in 0..k {
+        for row in 0..m {
             l.push(if row == col {
                 T::parity(false)
             } else if row > col {
@@ -141,14 +155,16 @@ fn full_piv_lu_item<T: FaerScalar>(
             });
         }
     }
-    push_masked(u, lu, n, n, |row, col| row <= col);
+    push_masked(u, lu, k, n, |row, col| row <= col);
     push_permutation(q, scratch.col_perm_inv);
     parity.push(T::parity(transpositions % 2 != 0));
 }
 
 /// The work estimate a full-pivot factorization reports to the batch policy.
-fn work<T: ScalarEntity>(n: usize) -> f64 {
-    weighted_muladds::<T>((n as f64).powi(3) / 3.0)
+fn work<T: ScalarEntity>(m: usize, n: usize) -> f64 {
+    let k = m.min(n);
+    let (mf, nf, kf) = (m as f64, n as f64, k as f64);
+    weighted_muladds::<T>(mf * nf * kf - (mf + nf) * kf * kf / 2.0 + kf.powi(3) / 3.0)
 }
 
 /// The work estimate of a full-pivot factor-then-solve.
@@ -157,7 +173,7 @@ fn solve_work<T: ScalarEntity>(n: usize, nrhs: usize) -> f64 {
     weighted_muladds::<T>(nf.powi(3) / 3.0 + nf * nf * krhs)
 }
 
-/// Cost of one full pivot LU factorization item, in weighted multiply adds.
+/// Cost of one full pivot LU factorization item of shape `m x n`, in weighted multiply adds.
 ///
 /// One unit is one real scalar multiply add; a complex scalar counts four.
 /// This returns the planner's existing estimate. Existing formulas are evaluated
@@ -171,10 +187,10 @@ fn solve_work<T: ScalarEntity>(n: usize, nrhs: usize) -> f64 {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(tlinalg::full_piv_lu::estimate_work::<f64>(6), 72.0);
+/// assert_eq!(tlinalg::full_piv_lu::estimate_work::<f64>(6, 6), 72.0);
 /// ```
-pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
-    work::<T>(n)
+pub fn estimate_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
+    work::<T>(m, n)
 }
 
 /// The work a team inside one full pivot LU factorization item can pay back.
@@ -186,10 +202,10 @@ pub fn estimate_work<T: FaerScalar>(n: usize) -> f64 {
 ///
 /// ```
 /// use tlinalg::full_piv_lu::{estimate_payback_work, estimate_work};
-/// assert_eq!(estimate_payback_work::<f64>(6), estimate_work::<f64>(6));
+/// assert_eq!(estimate_payback_work::<f64>(6, 6), estimate_work::<f64>(6, 6));
 /// ```
-pub fn estimate_payback_work<T: FaerScalar>(n: usize) -> f64 {
-    estimate_work::<T>(n)
+pub fn estimate_payback_work<T: FaerScalar>(m: usize, n: usize) -> f64 {
+    estimate_work::<T>(m, n)
 }
 
 /// Cost of one full pivot LU factor then solve item with `nrhs` right hand sides.
@@ -221,9 +237,26 @@ pub fn estimate_solve_payback_work<T: FaerScalar>(n: usize, nrhs: usize) -> f64 
 }
 
 /// Reject shapes whose products the lane requirement multiplies.
-fn check_shape(op: Op, n: usize) -> Result<()> {
-    checked_product(op, "matrix", &[n, n])?;
+fn check_shape(op: Op, m: usize, n: usize) -> Result<()> {
+    checked_product(op, "matrix", &[m, n])?;
+    checked_product(op, "workspace", &[m, m])?;
     Ok(())
+}
+
+/// The checked per-item output lengths of an `m x n` batch: `P (m x m)`, `L (m x k)`,
+/// `U (k x n)`, `Q (n x n)`, `k = min(m, n)`.
+fn full_piv_lu_shapes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+) -> Result<(usize, usize, usize, usize, f64)> {
+    check_shape(op, m, n)?;
+    let k = m.min(n);
+    let p_len = checked_product(op, "permutation matrix", &[m, m])?;
+    let l_len = checked_product(op, "L", &[m, k])?;
+    let u_len = checked_product(op, "U", &[k, n])?;
+    let q_len = checked_product(op, "permutation matrix", &[n, n])?;
+    Ok((p_len, l_len, u_len, q_len, work::<T>(m, n)))
 }
 
 /// Reject shapes whose products the solve requirement multiplies.
@@ -233,14 +266,20 @@ fn check_solve_shape(op: Op, n: usize, nrhs: usize) -> Result<()> {
     Ok(())
 }
 
-fn full_piv_bytes<T: FaerScalar>(op: Op, n: usize, batch: usize, exec: &Exec<'_>) -> Result<usize> {
+fn full_piv_bytes<T: FaerScalar>(
+    op: Op,
+    m: usize,
+    n: usize,
+    batch: usize,
+    exec: &Exec<'_>,
+) -> Result<usize> {
     let requirement = lane_requirement(
         op,
         exec,
         batch,
-        work::<T>(n),
-        || check_shape(op, n),
-        |par| full_piv_req::<T::Entity>(n, par),
+        work::<T>(m, n),
+        || check_shape(op, m, n),
+        |par| full_piv_req::<T::Entity>(m, n, par),
     )?;
     match requirement {
         None => Ok(0),
@@ -276,23 +315,25 @@ fn full_piv_solve_bytes<T: FaerScalar>(
 /// [`Error::InvalidArgument`] when a size overflows (canonical `Op`
 /// is `Op::FullPivLu`).
 pub fn full_piv_lu_workspace<T: FaerScalar>(
+    m: usize,
     n: usize,
     batch: usize,
     exec: &Exec<'_>,
 ) -> Result<usize> {
-    full_piv_bytes::<T>(Op::FullPivLu, n, batch, exec)
+    full_piv_bytes::<T>(Op::FullPivLu, m, n, batch, exec)
 }
 
-/// Full-pivot LU of every `n x n` matrix of a batch into caller-owned storage, `P A Qᵀ = L U`.
+/// Full-pivot LU of every `m x n` matrix of a batch into caller-owned storage, `P A Qᵀ = L U`.
 ///
-/// The five buffers hold `n * n`, `n * n`, `n * n`, `n * n` and `1` uninitialised elements per batch
-/// item. Workspace contract as [`crate::qr::qr_into`].
+/// With `k = min(m, n)` the five buffers hold `m * m`, `m * k`, `k * n`, `n * n` and `1`
+/// uninitialised elements per batch item: the `m x m` row permutation `P`, the unit-lower
+/// `m x k` factor `L`, the upper `k x n` factor `U`, the `n x n` column permutation `Q` and the
+/// parity. Workspace contract as [`crate::qr::qr_into`].
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when `input` is not a batch of square matrices, an output length does
-/// not match, or a size overflows, and [`crate::Error::InsufficientWorkspace`] for a short
-/// workspace.
+/// [`Error::InvalidArgument`] when `input` is not a batch of matrices, an output length does not
+/// match, or a size overflows, and [`crate::Error::InsufficientWorkspace`] for a short workspace.
 // INVARIANT: descriptor, five output buffers, workspace, token are distinct operands.
 #[allow(clippy::too_many_arguments)]
 pub fn full_piv_lu_into<T: FaerScalar>(
@@ -306,17 +347,16 @@ pub fn full_piv_lu_into<T: FaerScalar>(
     workspace: &mut [MaybeUninit<u8>],
     exec: &mut Exec<'_>,
 ) -> Result<()> {
-    let input = BatchedRef::square(op, "input", input)?;
-    let n = input.rows();
-    let len = checked_product(op, "matrix", &[n, n])?;
-    let item_muladds = work::<T>(n);
+    let input = BatchedRef::new(op, "input", input)?;
+    let (m, n) = (input.rows(), input.cols());
+    let (p_len, l_len, u_len, q_len, item_muladds) = full_piv_lu_shapes::<T>(op, m, n)?;
     let requirement = lane_requirement(
         op,
         exec,
         input.batch(),
         item_muladds,
-        || check_shape(op, n),
-        |par| full_piv_req::<T::Entity>(n, par),
+        || check_shape(op, m, n),
+        |par| full_piv_req::<T::Entity>(m, n, par),
     )?;
     let (lanes, per_lane) = requirement.unwrap_or((1, 0));
     batch::check_workspace(op, workspace, per_lane, lanes)?;
@@ -326,14 +366,14 @@ pub fn full_piv_lu_into<T: FaerScalar>(
         exec,
         item_muladds,
         &mut (
-            fixed_out(p, len, "P"),
-            fixed_out(l, len, "L"),
-            fixed_out(u, len, "U"),
-            fixed_out(q, len, "Q"),
+            fixed_out(p, p_len, "P"),
+            fixed_out(l, l_len, "L"),
+            fixed_out(u, u_len, "U"),
+            fixed_out(q, q_len, "Q"),
             fixed_out(parity, 1, "parity"),
         ),
         batch::ScratchArena::new(workspace, per_lane),
-        |par, stack| FullPivScratch::<T::Entity>::new(n, par, MemStack::new(stack)).0,
+        |par, stack| FullPivScratch::<T::Entity>::new(m, n, par, MemStack::new(stack)).0,
         |index, (p, l, u, q, parity), scratch, par| {
             full_piv_lu_item::<T>(input.item(index), (p, l, u, q, parity), scratch, par);
             Ok(())
@@ -341,15 +381,17 @@ pub fn full_piv_lu_into<T: FaerScalar>(
     )
 }
 
-/// Full-pivot LU of every `n x n` matrix of a batch, `P A Qᵀ = L U`.
+/// Full-pivot LU of every `m x n` matrix of a batch, `P A Qᵀ = L U`.
 ///
-/// `input` is `[n, n, b...]`.
+/// `input` is `[m, n, b...]`. With `k = min(m, n)` the outputs are the `m x m` row permutation
+/// `P`, the unit-lower `m x k` factor `L`, the upper `k x n` factor `U`, the `n x n` column
+/// permutation `Q` and the parity, all `Vec` outputs being compact column-major in batch order.
 ///
 /// This is the `Vec` wrapper of [`full_piv_lu_into`].
 ///
 /// # Errors
 ///
-/// [`Error::InvalidArgument`] when `input` is not a batch of square matrices or an output size
+/// [`Error::InvalidArgument`] when `input` has rank below 2 or an output size
 /// overflows. The outputs are empty on error.
 ///
 /// # Examples
@@ -382,18 +424,24 @@ pub fn full_piv_lu<T: FaerScalar>(
     u.clear();
     q.clear();
     parity.clear();
-    let input = BatchedRef::square(op, "input", input)?;
-    let n = input.rows();
-    let len = checked_product(op, "matrix", &[n, n])?;
     // The published order: operand validation before any workspace query or allocation.
-    check_shape(op, n)?;
+    let input = BatchedRef::new(op, "input", input)?;
+    let (m, n) = (input.rows(), input.cols());
+    let (p_len, l_len, u_len, q_len, _) = full_piv_lu_shapes::<T>(op, m, n)?;
     let batch = input.batch();
-    let bytes = full_piv_bytes::<T>(op, n, batch, exec)?;
+    // Every output total is checked before the first reservation: a broadcast batch view can carry
+    // a batch count whose product with one factor's item length overflows while an earlier
+    // factor's does not, and a reservation would panic where the contract promises an error.
+    let p_total = checked_product(op, "P", &[p_len, batch])?;
+    let l_total = checked_product(op, "L", &[l_len, batch])?;
+    let u_total = checked_product(op, "U", &[u_len, batch])?;
+    let q_total = checked_product(op, "Q", &[q_len, batch])?;
+    let bytes = full_piv_bytes::<T>(op, m, n, batch, exec)?;
     let mut workspace = vec![MaybeUninit::<u8>::uninit(); bytes];
-    let mut p_out = VecOut::new(p, checked_product(op, "P", &[len, batch])?);
-    let mut l_out = VecOut::new(l, checked_product(op, "L", &[len, batch])?);
-    let mut u_out = VecOut::new(u, checked_product(op, "U", &[len, batch])?);
-    let mut q_out = VecOut::new(q, checked_product(op, "Q", &[len, batch])?);
+    let mut p_out = VecOut::new(p, p_total);
+    let mut l_out = VecOut::new(l, l_total);
+    let mut u_out = VecOut::new(u, u_total);
+    let mut q_out = VecOut::new(q, q_total);
     let mut parity_out = VecOut::new(parity, batch);
     full_piv_lu_into(
         op,
@@ -435,12 +483,12 @@ fn full_piv_solve_req<E: faer::traits::ComplexField>(
     nrhs: usize,
     par: faer::ParShape,
 ) -> StackReq {
-    full_piv_req::<E>(n, par).and(faer_req(solve_req::<E>(n, nrhs, par)))
+    full_piv_req::<E>(n, n, par).and(faer_req(solve_req::<E>(n, nrhs, par)))
 }
 
 impl<'w, E: faer::traits::ComplexField> FullPivSolveScratch<'w, E> {
     fn new(n: usize, nrhs: usize, par: faer::ParShape, stack: &'w mut MemStack) -> Self {
-        let (factor, stack) = FullPivScratch::<E>::new(n, par, stack);
+        let (factor, stack) = FullPivScratch::<E>::new(n, n, par, stack);
         let (solve_mem, _) = bytes(
             stack,
             solve_req::<E>(n, nrhs, par).unaligned_bytes_required(),
