@@ -19,7 +19,16 @@ This file only records what is specific to `tlinalg-rs`:
   package is needed; `--all-features` is not a lane here.
 - **Platforms claimed**: `ubuntu-latest` for the linked tests (fmt, `deny`, clippy and `doc` also run there) and
   `macos-latest` for the unlinked run, where the LAPACK tests are skipped.
-- **Local gate**: `cargo test --workspace`.
+- **Local gate**:
+
+  ```sh
+  cargo build --profile ci -p tlinalg-capi && cargo test --workspace --profile ci
+  ```
+
+  The `cargo build` is the step people forget: `crates/tlinalg-capi/tests/c_abi.rs` links the built shared library, and
+  `cargo test` alone builds only the rlib, so the C ABI test fails with `libtlinalg_capi is not built`. Add the
+  `tlinalg-blas/link-openblas,tlinalg-parity/link-openblas` run from CI when the change touches the LAPACK or provider
+  path, and a C++ compiler because the header test compiles as C and C++.
 
 ## Anything here that departs from the shared rules
 
