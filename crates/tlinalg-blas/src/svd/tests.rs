@@ -42,3 +42,18 @@ fn gesvd_takes_a_fixed_real_workspace() {
         assert_eq!(len, 5 * m.min(n).max(1), "{m}x{n}");
     }
 }
+
+/// The feature alone must select the driver: `accelerate` exists to make the wrapper call `?gesvd`,
+/// and a build that keeps `?gesdd` silently is the regression #110 was about. The numeric fixtures
+/// cannot carry this on their own -- on macOS 26.7.2 the legacy driver returns good values for all
+/// three fixtures, including the 28x64 one that fails on 27.0.1 -- so assert the selection directly,
+/// from the crate that receives the build script's cfg.
+#[test]
+fn the_accelerate_feature_selects_gesvd() {
+    assert_eq!(
+        cfg!(svd_gesvd),
+        cfg!(any(feature = "accelerate", feature = "provider-inject")),
+        "`accelerate` and `provider-inject` exist to select ?gesvd; the selected driver and the \
+         feature must not drift apart"
+    );
+}
