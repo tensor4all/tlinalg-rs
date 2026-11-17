@@ -10,9 +10,10 @@ providers — it was three things in `crates/tlinalg-bench/src/harness/verify.rs
 
 1. `eigvals` called `check_eigen` **inside** its per-batch loop while `check_eigen` loops over every
    batch itself: `O(batch²·n³)`. Measured, `--threads 8 --batch 1024 --dtype f64`, one family:
-   n=16 52.09 s, n=32 342.80 s, n=64 1328.42 s. Every other family took 0.1–1.5 s at n=16 and
-   0.2–5.2 s at n=64. That single line was 95 % of an n=64 pass (2687 s of 2825 s over both
-   dtypes).
+   n=16 52.09 s, n=32 342.80 s, n=64 1328.42 s (first session; see the host-state caveat under
+   "What it bought" — the same figures on the second session were 2× lower at n=32 and within 6 %
+   at n=64). Every other family took 0.1–1.5 s at n=16 and 0.2–5.2 s at n=64. That single line was
+   95 % of an n=64 pass.
 2. The reference matrix was generated four times per case: each arm's `output_call_checked` built
    its own `a`/`b`/`op`, and `check_one` rebuilt the same matrix twice more. For
    `cholesky`/`eigh`/`eigvalsh` each generation is `batch` × `hpd_seeded`, a batched `n³` product.
@@ -32,18 +33,27 @@ byte-identical to the pre-change binary, not merely within tolerance.
 ## What it bought
 
 One pass over the declared grid, per-family sum of `verify` wall time (`--threads 8 --batch 1024`,
-all 20 families, host `EVO-X2`, OpenBLAS 0.3.32 Cooperlake):
+all 20 families, host `EVO-X2`, OpenBLAS 0.3.32 Cooperlake). Both binaries were measured back to
+back in one session: **before** = `main` at `3ed7017` (whose `tlinalg-bench` is identical to the
+branch point), **after** = this change.
 
 | grid | before | after | factor |
 | --- | --- | --- | --- |
-| n=32 f64 | 354.29 s | 5.63 s | 63× |
-| n=32 c64 | 310.36 s | 7.57 s | 41× |
-| n=64 f64 | 1380.32 s (23.0 min) | 37.72 s | 37× |
-| n=64 c64 | 1444.81 s (24.1 min) | 48.90 s | 30× |
+| n=32 f64 | 176.59 s | 5.74 s | 31× |
+| n=32 c64 | 178.82 s | 7.54 s | 24× |
+| n=64 f64 | 1299.43 s (21.7 min) | 37.67 s | 35× |
+| n=64 c64 | 1377.51 s (23.0 min) | 48.26 s | 29× |
 
-A whole n=64 pass over both dtypes is 2825 s (47.1 min) before and 86.6 s after — the recorded
-">45 minutes" is the 47.1 minutes, and `eigvals` is 2686.84 s of it. After the change `eigvals` at
-n=64 is 1.69 s (f64) and 2.12 s (c64).
+A whole n=64 pass over both dtypes is 2677 s (44.6 min) before and 86 s after — the recorded
+">45 minutes" is the 44.6 minutes, and `eigvals` is ~2570 s of it. After the change `eigvals` at
+n=64 is 1.7 s (f64) and 2.1 s (c64).
+
+Absolute verify times move with host state, and the first version of this table was measured across
+sessions: the same unmodified `tlinalg-bench` read 2× slower at n=32 in the earlier session
+(354.29 s / 342.80 s for `eigvals`) while agreeing at n=64 within 6 %. The factors above — not the
+absolute seconds — are the transferable number, and the dominant family was re-run interleaved
+(`eigvals`, n=32 f64: before 171.9 s → after 0.38 s → before 171.3 s) so the factor is not an
+ordering artefact.
 
 The remaining cost is the providers' own work plus the one residual product each check needs; there
 is no longer a superlinear term in the pass. Sampling the residuals would therefore buy little and
