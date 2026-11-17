@@ -10,12 +10,24 @@ repository.workspace = true
 # The workspace default stays `false` so the unpublished crates (testkit, parity,
 # bench) cannot be published by accident; these two opt in.
 publish = true
+# The SVD regression matrices are read at run time from the repository checkout; they are not
+# part of the published library.
+exclude = ["tests/data"]
 
 [features]
 default = []
 # Select the `?gesvd` driver instead of `?gesdd`, matching tenferro's `provider-inject` symbol set:
 # the injected LAPACK exports `?gesvd` but not `?gesdd`.
 provider-inject = []
+# The host links Apple Accelerate's LAPACK; select the `?gesvd` driver instead of `?gesdd`. The
+# plain symbol names bind Accelerate's LAPACK 3.2.1 interface, whose `zgesdd` returns negative
+# singular values and factors that do not reproduce the input for some complex matrices while
+# reporting `info = 0` (see #110). The host enables this whenever it selects the Accelerate source;
+# the target OS alone does not say which LAPACK is linked.
+accelerate = []
+# Link Apple Accelerate for this crate's own tests on macOS, through `build.rs`. Implies
+# `accelerate`. Mutually exclusive with `link-openblas*` and `link-mkl`.
+link-accelerate = ["accelerate"]
 # Link OpenBLAS for this crate's own tests. Tenferro selects the source and the injected-symbol
 # path itself; this feature only exists so the crate has an executable check of its own.
 link-openblas = ["dep:blas-src", "dep:lapack-src"]

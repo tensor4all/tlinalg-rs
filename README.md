@@ -84,6 +84,8 @@ cargo fmt --all -- --check
 cargo clippy -j 16 --workspace --all-targets --features tlinalg-blas/link-openblas,tlinalg-parity/link-openblas,tlinalg-bench/link-openblas -- -D warnings
 cargo test -j 16 --workspace --features tlinalg-blas/link-openblas,tlinalg-parity/link-openblas
 cargo test -j 16 --workspace --features tlinalg-blas/link-openblas,tlinalg-blas/provider-inject,tlinalg-parity/link-openblas
+# macOS only: the SVD suite against Apple Accelerate.
+cargo test -p tlinalg-blas --features link-accelerate --test svd
 ```
 
 `link-openblas` exists only so `tlinalg-blas` has an executable check of its own; it builds OpenBLAS
@@ -91,6 +93,13 @@ from source through `openblas-src`. Tenferro selects the vendor and the injected
 itself, so the feature is not part of the implementation contract. Without it the workspace still
 builds and lints; the LAPACK tests are skipped. `tlinalg-parity/link-openblas` turns on the
 cross-provider parity suite, which needs both providers to run.
+
+`tlinalg-blas` calls `?gesdd` for every SVD unless one of two features selects `?gesvd`:
+`provider-inject`, because the injected symbol set exports no `?gesdd`, and `accelerate`, because
+the plain symbol names bind Accelerate's LAPACK 3.2.1 interface, whose `zgesdd` can return negative
+singular values and wrong factors with `info = 0` (#110). The host enables `accelerate` whenever it
+links Accelerate; a macOS target alone does not determine the LAPACK. `link-accelerate` links the
+framework for this crate's own SVD tests and implies `accelerate`.
 
 ## Parity
 

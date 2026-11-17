@@ -183,9 +183,9 @@ pub trait Symbols: crate::Scalar + Default + PartialEq {
     /// The SVD driver for one column-major `m x n` matrix, in place.
     ///
     /// `jobu` and `jobvt` are the two job letters `?gesvd` takes; `?gesdd` shares one letter, so
-    /// it is given `jobu`. Which routine is called is a compiled-in choice: without
-    /// `provider-inject` this is `?gesdd`, and with it `?gesvd`, because the injected LAPACK
-    /// symbol set exports `?gesvd` only.
+    /// it is given `jobu`. Which routine is called is a compiled-in choice: `?gesvd` with
+    /// `provider-inject` (the injected LAPACK symbol set exports `?gesvd` only) or `accelerate`
+    /// (Accelerate's `zgesdd` returns wrong factors, #110), and `?gesdd` otherwise.
     ///
     /// `rwork` is empty for the real routines and required by the complex ones; `iwork` is
     /// required by `?gesdd` and ignored by `?gesvd`.
@@ -677,12 +677,12 @@ macro_rules! impl_real_symbols {
                 }
             }
 
-            #[cfg(not(feature = "provider-inject"))]
+            #[cfg(not(svd_gesvd))]
             fn routine_name() -> &'static str {
                 $gesdd_routine
             }
 
-            #[cfg(feature = "provider-inject")]
+            #[cfg(svd_gesvd)]
             fn routine_name() -> &'static str {
                 $gesvd_routine
             }
@@ -707,22 +707,21 @@ macro_rules! impl_real_symbols {
                 iwork: &mut [i32],
                 info: &mut i32,
             ) {
-                // The driver is a compiled-in choice: the injected LAPACK symbol set exports
-                // `?gesvd` but not `?gesdd`.
-                #[cfg(feature = "provider-inject")]
+                // The driver is a compiled-in choice; see `Symbols::svd_driver`.
+                #[cfg(svd_gesvd)]
                 let _ = iwork;
-                #[cfg(not(feature = "provider-inject"))]
+                #[cfg(not(svd_gesvd))]
                 let _ = jobvt;
                 // SAFETY: callers validate the dimensions and layouts and supply buffers of the
                 // lengths LAPACK documents; `lwork = -1` with a one-element `work` is the
                 // workspace query.
-                #[cfg(not(feature = "provider-inject"))]
+                #[cfg(not(svd_gesvd))]
                 unsafe {
                     $gesdd(
                         jobu, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, iwork, info,
                     );
                 }
-                #[cfg(feature = "provider-inject")]
+                #[cfg(svd_gesvd)]
                 unsafe {
                     $gesvd(
                         jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, info,
@@ -906,12 +905,12 @@ macro_rules! impl_complex_symbols {
                 }
             }
 
-            #[cfg(not(feature = "provider-inject"))]
+            #[cfg(not(svd_gesvd))]
             fn routine_name() -> &'static str {
                 $gesdd_routine
             }
 
-            #[cfg(feature = "provider-inject")]
+            #[cfg(svd_gesvd)]
             fn routine_name() -> &'static str {
                 $gesvd_routine
             }
@@ -937,19 +936,19 @@ macro_rules! impl_complex_symbols {
                 info: &mut i32,
             ) {
                 // The driver is a compiled-in choice, as in the real case.
-                #[cfg(feature = "provider-inject")]
+                #[cfg(svd_gesvd)]
                 let _ = iwork;
-                #[cfg(not(feature = "provider-inject"))]
+                #[cfg(not(svd_gesvd))]
                 let _ = jobvt;
                 // SAFETY: as in the real case; the complex routines additionally require `rwork`
                 // of the length LAPACK documents.
-                #[cfg(not(feature = "provider-inject"))]
+                #[cfg(not(svd_gesvd))]
                 unsafe {
                     $gesdd(
                         jobu, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, iwork, info,
                     );
                 }
-                #[cfg(feature = "provider-inject")]
+                #[cfg(svd_gesvd)]
                 unsafe {
                     $gesvd(
                         jobu, jobvt, m, n, a, lda, s, u, ldu, vt, ldvt, work, lwork, rwork, info,

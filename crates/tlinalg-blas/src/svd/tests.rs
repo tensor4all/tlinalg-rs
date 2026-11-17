@@ -9,7 +9,7 @@ use crate::Op;
 /// Accelerate ships that earlier interface, and its `?gesdd` wrote past a `5*mn` buffer on shapes
 /// from just wider than square up to roughly `1.6*mn` (`DBDSQR`), corrupting the heap of a
 /// downstream crate. Wide complex values-only shapes are the regression.
-#[cfg(not(feature = "provider-inject"))]
+#[cfg(not(svd_gesvd))]
 #[test]
 fn values_only_complex_takes_the_pre_3_7_length() {
     for (m, n) in [
@@ -31,12 +31,12 @@ fn values_only_complex_takes_the_pre_3_7_length() {
     }
 }
 
-/// The injected symbol set drives `?gesvd`, whose real workspace is a fixed `5 * max(k, 1)` for
-/// every `jobu`/`jobvt` combination: it does not grow with the shape, and asking for the factors
-/// does not enlarge it.
-#[cfg(feature = "provider-inject")]
+/// `?gesvd`, the driver under `provider-inject` and `accelerate`, takes a fixed real workspace of
+/// `5 * max(k, 1)` for every `jobu`/`jobvt` combination: it does not grow with the shape, and
+/// asking for the factors does not enlarge it.
+#[cfg(svd_gesvd)]
 #[test]
-fn injected_gesvd_takes_a_fixed_real_workspace() {
+fn gesvd_takes_a_fixed_real_workspace() {
     for (m, n) in [(0usize, 5usize), (1, 1), (3, 4), (7, 10), (24, 24)] {
         let len = complex_rwork_len(Op::Svd, b'S', m, n).expect("sizing cannot overflow");
         assert_eq!(len, 5 * m.min(n).max(1), "{m}x{n}");
