@@ -312,17 +312,14 @@ macro_rules! impl_real_values {
 impl_real_values!(f64);
 impl_real_values!(Complex64);
 
-/// Execute one provider and retain every buffer needed by the correctness gate.
+/// The reference matrix a family is called on.
 ///
-/// This path is deliberately separate from the timed path: verification may allocate and inspect
-/// outputs, while the measured rows only call the provider on prepared buffers.
-pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
-    family: &str,
-    c: Case,
-    lapack: bool,
-) -> Result<Output<T>, String> {
-    let a = if matches!(family, "eig" | "eigvals") {
-        Batch::new(c.m, c.n, c.batch, |item| {
+/// This is the input the provider sees *and* the matrix a residual is measured against, so it is
+/// generated in one place: `tlbench verify` builds it once per case and calls both arms on it,
+/// instead of every call building its own copy.
+pub(crate) fn reference_a<T: BenchScalar>(family: &str, c: Case) -> Batch<T> {
+    if matches!(family, "eig" | "eigvals") {
+        return Batch::new(c.m, c.n, c.batch, |item| {
             (0..c.m * c.n)
                 .map(|i| {
                     let row = i % c.m;
@@ -334,16 +331,31 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     }
                 })
                 .collect()
-        })
-    } else {
-        Batch::<T>::general(c.m, c.n, c.batch)
-    };
-    let b = Batch::<T>::general(c.m, 4, c.batch);
-    let op = if matches!(family, "cholesky" | "eigh" | "eigvalsh") {
-        Batch::<T>::hpd(c.m, c.batch)
-    } else {
-        Batch::<T>::general(c.m, c.n, c.batch)
-    };
+        });
+    }
+    if matches!(family, "cholesky" | "eigh" | "eigvalsh") {
+        return Batch::<T>::hpd(c.m, c.batch);
+    }
+    Batch::<T>::general(c.m, c.n, c.batch)
+}
+
+/// Execute one provider on one case's reference batches, retaining every buffer the correctness
+/// gate needs.
+///
+/// This path is deliberately separate from the timed path: verification may allocate and inspect
+/// outputs, while the measured rows only call the provider on prepared buffers.
+///
+/// `a` is `reference_a` for the family, which is the batch the provider is called on for every
+/// family: the Hermitian positive-definite one for `cholesky`/`eigh`/`eigvalsh`, the diagonal one
+/// for `eig`/`eigvals`, a general one otherwise. The gate passes the same batches it checks
+/// against, so a case generates them once instead of once per call.
+pub(crate) fn output_call_with<T: BenchScalar + EigBuffers + RealValues>(
+    family: &str,
+    c: Case,
+    lapack: bool,
+    a: &Batch<T>,
+    b: &Batch<T>,
+) -> Result<Output<T>, String> {
     if lapack {
         #[cfg(any(
             feature = "link-openblas",
@@ -464,7 +476,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     let mut l = Vec::new();
                     tlinalg_blas::cholesky::cholesky(
                         tlinalg_blas::Op::Cholesky,
-                        op.view(),
+                        a.view(),
                         &mut l,
                         &mut ws,
                     )
@@ -540,7 +552,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     let (mut w, mut v) = (Vec::new(), Vec::new());
                     tlinalg_blas::eigh::eigh(
                         tlinalg_blas::Op::Eigh,
-                        op.view(),
+                        a.view(),
                         &mut w,
                         Some(&mut v),
                         &mut ws,
@@ -552,16 +564,16 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
                     ))
                 }
                 "eigvalsh" => Ok(Output::TwoReal(
-                    <T as RealValues>::lapack_values(&op)?,
+                    <T as RealValues>::lapack_values(a)?,
                     Vec::new(),
                 )),
                 "eig" | "eigvals" => {
                     let mut w = Vec::new();
                     let mut v = Vec::new();
                     if family == "eig" {
-                        <T as EigBuffers>::lapack_eig(&a, &mut w, Some(&mut v))?;
+                        <T as EigBuffers>::lapack_eig(a, &mut w, Some(&mut v))?;
                     } else {
-                        <T as EigBuffers>::lapack_eig_values(&a, &mut w)?;
+                        <T as EigBuffers>::lapack_eig_values(a, &mut w)?;
                     }
                     Ok(Output::Eig(w, v))
                 }
@@ -769,7 +781,7 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
         }
         "cholesky" => {
             let mut l = Vec::new();
-            tlinalg::cholesky::cholesky(Op::Cholesky, op.view(), &mut l, &mut Exec::serial())
+            tlinalg::cholesky::cholesky(Op::Cholesky, a.view(), &mut l, &mut Exec::serial())
                 .map_err(|e| e.to_string())?;
             Ok(Output::One(l))
         }
@@ -822,21 +834,21 @@ pub(crate) fn output_call_checked<T: BenchScalar + EigBuffers + RealValues>(
         }
         "eigh" => {
             let (mut w, mut v) = (Vec::new(), Vec::new());
-            tlinalg::eigh::eigh(Op::Eigh, op.view(), &mut w, &mut v, &mut Exec::serial())
+            tlinalg::eigh::eigh(Op::Eigh, a.view(), &mut w, &mut v, &mut Exec::serial())
                 .map_err(|e| e.to_string())?;
             Ok(Output::TwoReal(faer_real_to_f64::<T, _>(w), v))
         }
         "eigvalsh" => Ok(Output::TwoReal(
-            <T as RealValues>::faer_values(&op)?,
+            <T as RealValues>::faer_values(a)?,
             Vec::new(),
         )),
         "eig" | "eigvals" => {
             let mut w = Vec::new();
             let mut v = Vec::new();
             if family == "eig" {
-                <T as EigBuffers>::faer_eig(&a, &mut w, Some(&mut v))?;
+                <T as EigBuffers>::faer_eig(a, &mut w, Some(&mut v))?;
             } else {
-                <T as EigBuffers>::faer_eig_values(&a, &mut w)?;
+                <T as EigBuffers>::faer_eig_values(a, &mut w)?;
             }
             Ok(Output::Eig(w, v))
         }

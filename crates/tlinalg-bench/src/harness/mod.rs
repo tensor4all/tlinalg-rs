@@ -294,6 +294,14 @@ pub fn main() -> ExitCode {
             crate::vendor::LAPACK_ROW
         );
     }
+    if a.command == "verify" {
+        // The residual products are the harness's own GEMM, not faer and not the vendor BLAS, so
+        // a recorded pass says which reference it was measured against.
+        eprintln!(
+            "reference product: harness gemm (complex, column-major; independent of faer and of {})",
+            crate::vendor::LAPACK_ROW
+        );
+    }
     let cases: Vec<Case> = a
         .shapes
         .iter()
