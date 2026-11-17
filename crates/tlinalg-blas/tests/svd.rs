@@ -1,9 +1,10 @@
 //! Behavioural tests for the batched LAPACK SVD.
 //!
 //! Requires a linked LAPACK: run with `--features link-openblas` (with and without
-//! `provider-inject`, which selects `?gesvd` instead of `?gesdd`).
+//! `provider-inject`, which selects `?gesvd` instead of `?gesdd`), or on macOS with
+//! `--features link-accelerate`.
 
-#![cfg(feature = "link-openblas")]
+#![cfg(any(feature = "link-openblas", feature = "link-accelerate"))]
 
 mod common;
 
@@ -113,6 +114,103 @@ fn svd_reconstructs_c64() {
     every_mode_and_shape::<Complex64>();
 }
 
+/// A column-major `Complex64` matrix stored as two little-endian `u64` dimensions `m, n` followed by
+/// `m * n` pairs of little-endian `f64` (real, imaginary).
+///
+/// Returns `None` when `tests/data` is absent, as in the packaged crate, which excludes it.
+fn read_fixture(name: &str) -> Option<(usize, usize, Vec<Complex64>)> {
+    let dir = format!("{}/tests/data", env!("CARGO_MANIFEST_DIR"));
+    if !std::path::Path::new(&dir).is_dir() {
+        eprintln!("skipping: {dir} is absent");
+        return None;
+    }
+    let path = format!("{dir}/{name}");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let word = |i: usize| -> [u8; 8] { bytes[8 * i..8 * i + 8].try_into().unwrap() };
+    let (m, n) = (
+        u64::from_le_bytes(word(0)) as usize,
+        u64::from_le_bytes(word(1)) as usize,
+    );
+    assert_eq!(
+        bytes.len(),
+        16 + 16 * m * n,
+        "{path}: length does not match {m}x{n}"
+    );
+    let data = (0..m * n)
+        .map(|j| {
+            Complex64::new(
+                f64::from_le_bytes(word(2 + 2 * j)),
+                f64::from_le_bytes(word(3 + 2 * j)),
+            )
+        })
+        .collect();
+    Some((m, n, data))
+}
+
+/// Two rank-79 `158 x 158` matrices on which Accelerate's legacy `zgesdd` reports `info = 0` but
+/// returns negative singular values and factors with a relative reconstruction error of 0.36 and
+/// 0.43 (#110). Both go through one batched call, so the selected driver is the one that runs on
+/// the vendor this test is linked against.
+#[test]
+fn svd_reconstructs_matrices_that_break_accelerate_zgesdd() {
+    let (Some((m, n, first)), Some((m1, n1, second))) = (
+        read_fixture("accelerate_zgesdd_0.bin"),
+        read_fixture("accelerate_zgesdd_1.bin"),
+    ) else {
+        return;
+    };
+    assert_eq!((m, n), (m1, n1));
+    let k = m.min(n);
+    let data: Vec<Complex64> = first.into_iter().chain(second).collect();
+    let dims = [m, n, 2];
+    let strides = [1, m as isize, (m * n) as isize];
+    let a = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+    let (mut s, mut u, mut vt) = (Vec::new(), Vec::new(), Vec::new());
+    let mut ws = TestWorkspace::default();
+    svd(
+        Op::Svd,
+        SvdMode::Thin,
+        a,
+        SvdOutputs {
+            s: &mut s,
+            u: &mut u,
+            vt: &mut vt,
+        },
+        &mut ws,
+    )
+    .unwrap();
+
+    for index in 0..2 {
+        let s_i = &s[index * k..(index + 1) * k];
+        assert!(
+            s_i.windows(2).all(|pair| pair[0] >= pair[1]),
+            "matrix {index}: singular values not sorted"
+        );
+        assert!(
+            s_i[k - 1] >= 0.0,
+            "matrix {index}: smallest singular value {:e} is negative",
+            s_i[k - 1]
+        );
+        let u_i = &u[index * m * k..(index + 1) * m * k];
+        let vt_i = &vt[index * k * n..(index + 1) * k * n];
+        let mut us = vec![Complex64::new(0.0, 0.0); m * k];
+        for col in 0..k {
+            for row in 0..m {
+                us[row + col * m] = u_i[row + col * m] * s_i[col];
+            }
+        }
+        let a_i = &data[index * m * n..(index + 1) * m * n];
+        let usvt = matmul(&us, vt_i, m, k, n);
+        let error: f64 = usvt.iter().zip(a_i).map(|(x, y)| (x - y).norm_sqr()).sum();
+        let norm: f64 = a_i.iter().map(|x| x.norm_sqr()).sum();
+        let relative = (error / norm).sqrt();
+        assert!(
+            relative <= 1e-12,
+            "matrix {index}: |A - U S Vᴴ| / |A| = {relative:e}"
+        );
+    }
+}
+
 #[test]
 fn an_empty_batch_leaves_every_output_empty() {
     let data: Vec<f64> = Vec::new();
@@ -174,4 +272,52 @@ fn an_overflowing_svd_matrix_reports_the_shape_role() {
         ws.acquired, 0,
         "the argument check runs before any workspace"
     );
+}
+
+/// A `28 x 64` matrix on which Accelerate's legacy `zgesdd` with `JOBZ = 'S'` reports `info = 1`
+/// (no convergence), while its `zgesvd`, its `zgesdd` on the adjoint and OpenBLAS's `zgesdd`
+/// succeed. Its largest and smallest singular values are 1.16e3 and 5.2e-10.
+#[test]
+fn svd_succeeds_where_accelerate_zgesdd_does_not_converge() {
+    let Some((m, n, data)) = read_fixture("zgesdd_noconvergence_28x64.bin") else {
+        return;
+    };
+    let k = m.min(n);
+    let dims = [m, n];
+    let strides = [1, m as isize];
+    let a = RawStridedRef::new(&data, &dims, &strides, 0).unwrap();
+    let (mut s, mut u, mut vt) = (Vec::new(), Vec::new(), Vec::new());
+    let mut ws = TestWorkspace::default();
+    svd(
+        Op::Svd,
+        SvdMode::Thin,
+        a,
+        SvdOutputs {
+            s: &mut s,
+            u: &mut u,
+            vt: &mut vt,
+        },
+        &mut ws,
+    )
+    .unwrap();
+
+    assert!(
+        s.windows(2).all(|pair| pair[0] >= pair[1]) && s[k - 1] >= 0.0,
+        "singular values not sorted and non-negative: {s:?}"
+    );
+    let mut us = vec![Complex64::new(0.0, 0.0); m * k];
+    for col in 0..k {
+        for row in 0..m {
+            us[row + col * m] = u[row + col * m] * s[col];
+        }
+    }
+    let usvt = matmul(&us, &vt, m, k, n);
+    let error: f64 = usvt
+        .iter()
+        .zip(&data)
+        .map(|(x, y)| (x - y).norm_sqr())
+        .sum();
+    let norm: f64 = data.iter().map(|x| x.norm_sqr()).sum();
+    let relative = (error / norm).sqrt();
+    assert!(relative <= 1e-12, "|A - U S Vᴴ| / |A| = {relative:e}");
 }
