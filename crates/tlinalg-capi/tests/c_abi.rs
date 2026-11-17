@@ -6,13 +6,30 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn target_dir() -> PathBuf {
-    // .../target/<profile>/deps/c_abi-<hash>
+/// The directory that holds this crate's shared library.
+///
+/// Cargo 1.99 puts the test executable in `target/<profile>/deps/` and the
+/// shared library directly in `target/<profile>/`. Cargo 1.100 puts the test
+/// executable in `target/<profile>/build/<pkg>/<hash>/out/` and the library in
+/// a *different* `<hash>/out/` of the same package. Search upward for either
+/// layout instead of encoding one Cargo version's directory choice.
+fn library_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().expect("exe");
-    exe.parent()
-        .and_then(|p| p.parent())
-        .expect("target dir")
-        .to_path_buf()
+    let mut dir = exe.parent()?.to_path_buf();
+    loop {
+        if has_shared_library(&dir) {
+            return Some(dir);
+        }
+        if let Ok(entries) = dir.join("build").join("tlinalg-capi").read_dir() {
+            for entry in entries.flatten() {
+                let out = entry.path().join("out");
+                if has_shared_library(&out) {
+                    return Some(out);
+                }
+            }
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
 }
 
 fn compiler() -> Option<String> {
@@ -40,12 +57,12 @@ fn c_program_links_and_runs() {
     };
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let include = root.join("include");
-    let target = target_dir();
-    assert!(
-        has_shared_library(&target),
-        "libtlinalg_capi is not built in {}: run `cargo build -p tlinalg-capi` first",
-        target.display()
-    );
+    let target = library_dir().unwrap_or_else(|| {
+        panic!(
+            "libtlinalg_capi is not built under {}: run `cargo build -p tlinalg-capi` first",
+            std::env::current_exe().expect("exe").display()
+        )
+    });
 
     let out = std::env::temp_dir().join(format!("tlinalg_abi_test_{}", std::process::id()));
     let status = Command::new(&cc)
