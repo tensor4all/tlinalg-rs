@@ -3,7 +3,9 @@
 Changes to the published `tlinalg` crate. `tlinalg-blas` is versioned separately; a release here
 names it only when its version moves.
 
-## Unreleased
+## tlinalg 0.12.0
+
+This release is **breaking**. It has two independent breaking changes.
 
 ### Breaking: `full_piv_lu` takes `m x n`, and its work query takes `(m, n)`
 
@@ -15,6 +17,73 @@ take `(m, n)`; the estimate is the same `m n k - (m+n) k²/2 + k³/3` the partia
 reports, which is the previous `n³/3` at `m = n`. Square input produces the same factors
 bitwise. The C API's `tlinalg_full_piv_lu_sizes` reports one element count per factor, so the
 struct does not change. `full_piv_lu_solve` stays square-only. Rank truncation stays unexposed.
+
+### Breaking: the dense-matrix dependency is `colmat` 0.34, on threadteam 0.6 and tcontract-exec 0.13
+
+The dependency moved from `t4a-faer` 0.33.0 to the renamed crate `colmat` 0.34.0
+(tensor4all/faer → tensor4all/colmat-rs). The dependency key stays `faer` and the source keeps
+`use faer::...`; the upstream library target is `colmat`, which the key alias hides. Every tlinalg
+signature is unchanged for this part of the release. What changes is the identity: `colmat` and
+`t4a-faer` are two different crates providing the same library, so a graph that still has
+`t4a-faer` 0.33 alongside has two of every type they exchange.
+
+Only a caller that names those types has to move. Anyone handing this crate arrays, `Vec`s,
+`Op`/`Error`/`Exec` and the workspace queries (`svd_workspace`, `cholesky_workspace` and the rest
+take shape arguments and an `Exec`, no view) is unaffected and gains no dependency. A generic
+caller bounded by `tlinalg::FaerScalar` reaches faer's own items through its supertraits
+(`ScalarEntity`, `EigScalar`, as in 0.11.0), and every entry point takes a
+`strided_view::RawStridedRef`, which moved 0.7 → 0.8. Such a caller moves to `colmat` 0.34,
+`strided-view` 0.8 and `tcontract-exec` 0.13 together with this release; moving tlinalg alone does
+not compile.
+
+`Exec` still comes from `tcontract_exec`, now 0.13.0, whose `threadteam` token is 0.6.0 and which
+is itself built on `colmat` 0.34.0. A host builds its pool, token and `Exec` from threadteam 0.6.0
+and tcontract-exec 0.13.0; with one version of each crate in the graph the token passes through to
+tlinalg and to faer's `Par::Team` as before.
+
+The C API's pool entry points follow tcontract-rs#149 / #185 and are now `tcontract_pool_create`
+and `tcontract_tapp_executor_create_pool`; they were `*_create_rayon`, their options type is now
+`tcontract_pool_opts` (was `tcontract_rayon_opts`), and tcontract-capi's own ABI version moved to
+101. The `tlinalg_*` prototypes are unchanged, so a C caller of these two functions renames the
+call and nothing else. That is about names, not about mixing builds: a nonzero `exec` handle is a
+Rust `TAPP_executor` of the tcontract-capi build this library was linked against, not an opaque
+handle any build can read, so the host uses one tcontract-capi version on both sides.
+
+`strided-view` moves 0.7.1 → 0.8.1, the view crate of the strided 0.15 line.
+
+### Behavior: the SVD accuracy check's size gate moved from 128 to 40
+
+`svd_into` checks a decomposition with vectors against its input and repeats it with the QR
+algorithm when the result is inaccurate. It only does so where faer's *default* parameters can
+take the divide-and-conquer path, which it reads from `SvdParams::recursion_threshold` and applies
+to `k = min(m, n)`. `colmat` 0.34 lowered that default from 128 to 40, so decompositions with a
+smaller dimension of at least 40 run with the default parameters first instead of straight to QR.
+The retry policy is unchanged: a first attempt that returns an error, or whose factors do not
+reproduce the input to `24 √max(m, n) ε`, is repeated with QR, and that repeat is not checked
+again (it is allowed to fail with `NonConvergence`). What the move costs is the reconstruction
+product for an item in the 40 to 127 band whose first attempt does not error, and the check
+buffers in `svd_workspace` from 40 on, so a caller that kept a byte count from 0.11.0 has to query
+again. The values-only route is unchanged: it still passes the QR parameters, and faer's own dqds
+first pass for values is the same as in 0.33. `40 x 40` and `96 x 64` (`k = 40` and `k = 64`) are
+examples of the newly covered band in `accurate_decompositions_are_not_repeated`, and
+`only_decompositions_that_can_divide_are_checked` pins the gate at 40.
+
+### Dependencies
+
+| Crate | 0.11.0 | 0.12.0 |
+| --- | --- | --- |
+| `colmat` (`faer`; `t4a-faer` up to 0.33) | 0.33.0 | 0.34.0 |
+| `tcontract-exec` | 0.12.0 | 0.13.0 |
+| `threadteam` | 0.5.1 | 0.6.0 |
+| `strided-view` | 0.7.1 | 0.8.1 |
+
+The workspace's own development pins moved with them: the `tcontract` / `tcontract-exec`
+patch to 0.13.0, and the private `tcontract-capi` git revision to the tcontract-rs commit
+`ca44b476`, which is the commit tagged `v0.13.0` and the one the published tcontract and
+tcontract-exec 0.13.0 name in their `.cargo_vcs_info.json`. `tlinalg-blas` moves 0.5.1 → 0.6.0:
+its entry points take `strided_view::RawStridedRef` and `RawStridedMut`, so the strided-view 0.8
+requirement is a public-dependency change, as strided 0.7 was for 0.5.0. Nothing in its own
+signatures changed.
 
 ## tlinalg 0.11.0
 

@@ -25,7 +25,7 @@ the shared rules were unavailable.
 * Only `threadteam` starts tasks: parallelism reaches this crate as the `threadteam::Exec` token inside
   `tcontract_exec::Exec` (`fork` for lanes; a team `Par::Team` for faer when the token carries a team, `Par::Seq` otherwise; never `Par::rayon`). There is no direct
   `rayon` dependency (`cargo deny check bans`), and this crate neither depends on spindle nor opens a
-  spindle region (`with_lock`); that belongs to t4a-faer (tensor4all/faer#59).
+  spindle region (`with_lock`); that belongs to `colmat` (tensor4all/faer#59).
 * The public types are published behaviour: changing `Error`, the `tcontract_exec::Exec` token, or
   the batched contract in `docs/design/batched-api.md` is a contract change and needs the design
   reviewed first.

@@ -5,7 +5,7 @@ use std::cell::Cell;
 use core::mem::MaybeUninit;
 
 use faer::dyn_stack::MemStack;
-use faer::linalg::svd::ComputeSvdVectors;
+use faer::linalg::svd::{ComputeSvdVectors, SvdParams};
 use faer::{c64, Mat, MatMut};
 use num_complex::Complex64;
 use strided_view::RawStridedRef;
@@ -21,6 +21,11 @@ thread_local! {
     // test's own thread, so tests on other threads do not interfere.
     static REPEATS: Cell<usize> = const { Cell::new(0) };
 }
+
+/// faer's divide-and-conquer entry gate as tlinalg 0.12.0 ships against (`colmat` 0.34). A move
+/// is a behavior change: the accuracy check, and so the scratch query, covers those sizes from
+/// then on.
+const CHECK_THRESHOLD: usize = 40;
 
 pub(in crate::svd) fn record_repeat() {
     REPEATS.set(REPEATS.get() + 1);
@@ -70,8 +75,17 @@ fn clustered_decompositions_do_not_need_a_qr_retry() {
 
 #[test]
 fn accurate_decompositions_are_not_repeated() {
-    // Sizes at and past faer's switch to divide and conquer, square, tall and wide.
-    for (m, n) in [(128usize, 128usize), (160, 160), (300, 140), (140, 300)] {
+    // Sizes at and past faer's switch to divide and conquer, square, tall and wide. At or past the
+    // switch the first attempt is the default driver and `check` is `Some`, so a zero count says
+    // that driver was accurate and no repeat was needed.
+    for (m, n) in [
+        (40usize, 40usize),
+        (96, 64),
+        (128usize, 128usize),
+        (160, 160),
+        (300, 140),
+        (140, 300),
+    ] {
         for full in [false, true] {
             let (count, _) = repeats(&tlinalg_testkit::matrix::<f64>(m, n, 3), m, n, full);
             assert_eq!(count, 0, "f64 {m}x{n} full={full}");
@@ -97,7 +111,11 @@ fn accurate_decompositions_are_not_repeated() {
 
 #[test]
 fn only_decompositions_that_can_divide_are_checked() {
-    let threshold = 128usize;
+    // The gate `divides` reads faer's own default; `CHECK_THRESHOLD` is what tlinalg 0.12.0 ships
+    // against, so a dependency that moves the default fails here, and moving it is a behavior
+    // change the changelog has to carry.
+    let threshold = <SvdParams as faer::Auto<c64>>::auto().recursion_threshold;
+    assert_eq!(threshold, CHECK_THRESHOLD);
     assert!(!divides::<c64>(threshold - 1));
     assert!(divides::<c64>(threshold));
     let checked = |m: usize, n: usize, vectors| {
@@ -116,9 +134,9 @@ fn only_decompositions_that_can_divide_are_checked() {
         .check
         .is_some()
     };
-    assert!(!checked(127, 400, ComputeSvdVectors::Thin));
-    assert!(checked(128, 128, ComputeSvdVectors::Thin));
-    assert!(checked(400, 128, ComputeSvdVectors::Full));
+    assert!(!checked(threshold - 1, 400, ComputeSvdVectors::Thin));
+    assert!(checked(threshold, threshold, ComputeSvdVectors::Thin));
+    assert!(checked(400, threshold, ComputeSvdVectors::Full));
     // Without vectors there is nothing to check.
     assert!(!checked(400, 400, ComputeSvdVectors::No));
 }

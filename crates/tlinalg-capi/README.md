@@ -17,8 +17,8 @@ to write into them. The ABI is therefore two-phase:
 Inputs keep the provider's convention: a borrowed, dtype-erased `tlinalg_strided` descriptor of
 rank `2 + B` with extents and strides in elements, `[rows, cols, b_1, ..., b_B]`, the first batch
 axis fastest, plus an offset. The element pointer, its element count and the dtype tag are separate
-parameters. v1 is sequential; borrowing a host executor is out of scope (tensor4all/tcontract-rs#112)
-and this crate does not depend on tcontract-rs.
+parameters. Every `_into` also takes an `intptr_t exec`, a TAPP executor handle from
+tcontract-capi: zero runs sequentially, and a host-owned pool runs the batch on that pool.
 
 ## Coverage (v1)
 

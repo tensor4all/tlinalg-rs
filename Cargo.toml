@@ -19,34 +19,37 @@ repository = "https://github.com/tensor4all/tlinalg-rs"
 publish = false
 
 [workspace.dependencies]
-tlinalg = { version = "0.11.0", path = "crates/tlinalg" }
-tlinalg-blas = { version = "0.5.1", path = "crates/tlinalg-blas" }
+tlinalg = { version = "0.12.0", path = "crates/tlinalg" }
+tlinalg-blas = { version = "0.6.0", path = "crates/tlinalg-blas" }
 tlinalg-capi = { version = "0.3.1", path = "crates/tlinalg-capi" }
 tlinalg-testkit = { path = "crates/tlinalg-testkit" }
-# tensor4all's faer fork; the dependency key and `[lib] name` remain `faer`.
-# 0.33 takes threadteam 0.5 (0.32 took 0.5, 0.30 took 0.4, 0.28 took 0.3, 0.27 took 0.2, 0.26 was the threadteam-only release, 0.25 took `par`
-# in the high-level methods; 0.24.8 added the SVD secular-root fix, tensor4all/faer#28). A
-# compatible range admits later patch fixes without republishing tlinalg; tenferro shares this
-# faer identity.
-faer = { package = "t4a-faer", version = "0.33.0", default-features = false, features = ["std", "rayon", "threadteam"] }
+# tensor4all's dense-matrix library, published as `colmat` from 0.34 on (it was `t4a-faer` up to
+# 0.33). The dependency key stays `faer`, so this crate's source and public paths keep `use
+# faer::...`; the upstream library target is `colmat`.
+# 0.34 takes threadteam 0.6 (0.33 and 0.32 took 0.5, 0.30 0.4, 0.28 0.3, 0.27 0.2, 0.26 was the
+# threadteam-only release, 0.25 took `par` in the high-level methods; 0.24.8 added the SVD
+# secular-root fix, tensor4all/faer#28). A compatible range admits later patch fixes without
+# republishing tlinalg; tenferro takes the same identity when it moves.
+faer = { package = "colmat", version = "0.34.0", default-features = false, features = ["std", "rayon", "threadteam"] }
 # `strided-view` is the stride/metadata and `RawStridedRef` surface tlinalg consumes. A registry
-# source resolves to one 0.7.x version, so a compatible requirement keeps `RawStridedRef` one type
-# without forcing a tlinalg release for every strided patch.
-strided-view = { version = "0.7.1" }
+# source resolves to one 0.8.x version, so a compatible requirement keeps `RawStridedRef` one type
+# without forcing a tlinalg release for every strided patch. 0.8.1 is the view crate of the strided
+# 0.15 release line, which tcontract 0.13 also takes.
+strided-view = { version = "0.8.1" }
 # The placement token (formerly `strided-exec`): `threadteam::Exec` / `Pool`.
-# 0.5 is the release t4a-faer 0.33 and tcontract-exec 0.12.0 take; one version in the graph or the
+# 0.6 is the release colmat 0.34 and tcontract-exec 0.13.0 take; one version in the graph or the
 # `Par`/`Exec` types the three crates exchange are distinct types.
-threadteam = { version = "0.5.1" }
+threadteam = { version = "0.6.0" }
 # The `Exec` bundle every entry point takes (a threadteam token, workspace, batch policy) and the
 # batch-lane vocabulary. One source with the git-only `tcontract-capi` below, so the forwarded
 # `Exec` is the same type the C API takes.
-tcontract-exec = { version = "0.12.0" }
+tcontract-exec = { version = "0.13.0" }
 # The C-API glue only (publish = false, so a git-only dependency used by the unpublished
-# `tlinalg-capi`). The revision is the commit on tcontract-rs `main` that
-# tcontract/tcontract-exec 0.12.0 were published from (release PR #184); the `[patch]` below
-# points its tcontract dependencies at those published releases, so the forwarded `Exec` is the
-# type `tlinalg` takes.
-tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "abf8c723b3768bd2471fe18d60086f4ac3f90648" }
+# `tlinalg-capi`). The revision is the commit tagged `v0.13.0` on tcontract-rs, the one the
+# published tcontract/tcontract-exec 0.13.0 name in their `.cargo_vcs_info.json`; the `[patch]`
+# below points its tcontract dependencies at those published releases, so the forwarded `Exec` is
+# the type `tlinalg` takes.
+tcontract-capi = { git = "https://github.com/tensor4all/tcontract-rs.git", rev = "ca44b476aaa7f017f59afb2807fa1fe0d4939a27" }
 num-complex = "0.4"
 thiserror = "2"
 # LAPACK/BLAS provider only.
@@ -64,8 +67,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # it are pointed at the published releases: each crate exists once in the graph and the forwarded
 # `Exec` is one type.
 [patch."https://github.com/tensor4all/tcontract-rs.git"]
-tcontract = { version = "0.12.0" }
-tcontract-exec = { version = "0.12.0" }
+tcontract = { version = "0.13.0" }
+tcontract-exec = { version = "0.13.0" }
 tcontract-kernel = { version = "0.3.1" }
 
 [workspace.lints.rust]
