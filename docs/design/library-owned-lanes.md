@@ -101,7 +101,7 @@ serial and pooled calls.
 The count handed to faer is a width, not a strict active-thread bound. With faer 0.24.4,
 triangular-solve RHS recursion ignores split tokens and `join_raw` gives both children a rounded-up
 half, so even a pool-clamped width can expose more active numerical tasks than requested; how
-t4a-faer schedules a width (and whether it opens a spindle region for it) is decided there
+colmat schedules a width (and whether it opens a spindle region for it) is decided there
 (tensor4all/faer#59), not here. The token bounds the lanes it starts, not faer's internal tasks.
 Admission across concurrent calls belongs to the resource owner. Vendor BLAS/LAPACK threading stays
 vendor-owned.

@@ -21,10 +21,12 @@
 //! # Accuracy
 //!
 //! faer's default parameters use a divide-and-conquer bidiagonal SVD once the smaller dimension
-//! reaches 128, and in faer 0.24.4 that path can return inaccurate factors without an error. A
+//! reaches `SvdParams::recursion_threshold` (40 in colmat 0.34, 128 up to t4a-faer 0.33), and in
+//! faer 0.24.4 that path can return inaccurate factors without an error. A
 //! decomposition with vectors of that size is therefore checked against its input, by the
 //! Frobenius norm of `A - U diag(S) Vᴴ`, and repeated with the QR algorithm when the check fails
-//! or faer reports an error; [`svd_values`] always uses the QR algorithm. `docs/worklogs/svd-recursion-threshold.md` records the cost.
+//! or faer reports an error; [`svd_values`] passes the QR parameters and is not checked.
+//! `docs/worklogs/svd-recursion-threshold.md` records the cost.
 
 use core::mem::MaybeUninit;
 
@@ -46,7 +48,7 @@ use tcontract_exec::Exec;
 /// faer's parameters with the QR algorithm at every size.
 ///
 /// faer's defaults switch from the QR algorithm to a divide-and-conquer bidiagonal SVD once the
-/// smaller dimension reaches `recursion_threshold` (128). In faer 0.24.4 that path returns a
+/// smaller dimension reaches `recursion_threshold`. In faer 0.24.4 that path returns a
 /// spurious singular value and inaccurate factors for some rank-deficient matrices with clustered
 /// singular values, without reporting an error (see the test
 /// `clustered_singular_values_of_a_rank_deficient_matrix`). These parameters never take it.

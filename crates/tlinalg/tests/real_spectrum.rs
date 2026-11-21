@@ -3,10 +3,10 @@
 //!
 //! The agreement is to rounding, not bit for bit: faer computes the values with and without
 //! vectors along different paths (the bidiagonal or tridiagonal QR iteration with and without
-//! rotation accumulation, and for SVDs of 128 or more divide and conquer), so the two routes
-//! differ by a few `epsilon * max |value|` on most matrices. That difference predates the real
-//! output type; the bit-exact checks are that `*_into`, `*_into_init` and the `Vec` wrappers agree
-//! (`into_init.rs`, `alloc_counts.rs`).
+//! rotation accumulation, and for SVD sizes at or past faer's divide-and-conquer threshold), so the
+//! two routes differ by a few `epsilon * max |value|` on most matrices. That difference predates
+//! the real output type; the bit-exact checks are that `*_into`, `*_into_init` and the `Vec`
+//! wrappers agree (`into_init.rs`, `alloc_counts.rs`).
 
 use core::mem::MaybeUninit;
 

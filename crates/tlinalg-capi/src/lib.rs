@@ -35,13 +35,20 @@
 //!
 //! # Threads
 //!
-//! `exec` is a TAPP executor handle from tcontract-capi (`<tapp.h>`), the same
-//! vocabulary the contraction side of this stack uses: a host that owns one pool
-//! creates it with `tcontract_pool_create_rayon`, lends it with
-//! `tcontract_tapp_executor_borrow_pool`, and every call here runs on it with the
-//! executor's budget. Zero means a sequential call. This crate never creates a
-//! pool and never infers a width from the environment; only this C-API glue
-//! depends on tcontract-rs, never `tlinalg` itself.
+//! `exec` is a TAPP executor handle from tcontract-capi, the same vocabulary the
+//! contraction side of this stack uses. `<tapp.h>` declares the serial
+//! `TAPP_create_executor`; `<tcontract/tapp_ext.h>` declares the pool entry
+//! points: a host that owns one pool creates it with `tcontract_pool_create`
+//! (or its own executor with `tcontract_tapp_executor_create_pool`), lends it
+//! with `tcontract_tapp_executor_borrow_pool`, and every call here runs on it
+//! with the executor's budget. Zero means a sequential call. This crate never
+//! creates a pool and never infers a width from the environment; only this C-API
+//! glue depends on tcontract-rs, never `tlinalg` itself.
+//!
+//! A nonzero handle is a Rust `TAPP_executor` from the tcontract-capi build this
+//! library was linked against, not an opaque handle any tcontract-capi build can
+//! read, so a host passes handles from the same tcontract-capi version (0.1.1,
+//! ABI 101) and not one from another.
 //!
 //! # Example
 //!

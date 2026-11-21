@@ -11,12 +11,17 @@
  *      rejected before anything is written.
  *
  * Threads: every `_into` takes an `intptr_t exec`, a TAPP executor handle from
- * tcontract-capi (<tapp.h>) - the same vocabulary the contraction side of this
- * stack uses - and runs on that executor's pool with its budget. Zero means a
- * sequential call. A host that owns one pool creates it once with
- * tcontract_pool_create_rayon, lends it with tcontract_tapp_executor_borrow_pool,
- * and passes that executor here; this library creates no pool and never infers a
- * width from the environment.
+ * tcontract-capi - the same vocabulary the contraction side of this stack uses -
+ * and runs on that executor's pool with its budget. <tapp.h> declares the serial
+ * TAPP_create_executor; <tcontract/tapp_ext.h> declares the pool entry points.
+ * Zero means a sequential call. A host that owns one pool creates it once with
+ * tcontract_pool_create (or its own executor with
+ * tcontract_tapp_executor_create_pool), lends it with
+ * tcontract_tapp_executor_borrow_pool, and passes that executor here; this
+ * library creates no pool and never infers a width from the environment. A
+ * nonzero handle is a TAPP_executor of the tcontract-capi build this library was
+ * linked against, not an opaque handle another build can read, so a host uses one
+ * build (0.1.1, ABI 101) on both sides.
  *
  * Conventions the operations carry:
  *   - SVD returns U, non-increasing singular values and V^H (not V); the `full`
