@@ -796,6 +796,7 @@ impl_outputs_tuple!(A 0, B 1);
 impl_outputs_tuple!(A 0, B 1, C 2);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3);
 impl_outputs_tuple!(A 0, B 1, C 2, D 3, E 4);
+impl_outputs_tuple!(A 0, B 1, C 2, D 3, E 4, F 5);
 
 /// The per-lane chunks of a caller-owned workspace, handed to the lane tasks.
 ///
