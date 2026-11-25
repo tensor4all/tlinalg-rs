@@ -3,6 +3,27 @@
 Changes to the published `tlinalg` crate. `tlinalg-blas` is versioned separately; a release here
 names it only when its version moves.
 
+## Unreleased
+
+### Added: rank-truncated full-pivot LU (`full_piv_lu_truncated[_into]`)
+
+`full_piv_lu_truncated` and `full_piv_lu_truncated_into` take a `FullPivLuTruncation`
+(`max_rank`, `abs_tol`, `rel_tol`) and add a per-item `rank` output (tensor4all/tenferro-rs#2488
+step 2). The kernel is faer's: `faer::linalg::lu::full_pivoting::factor::lu_in_place` with the
+truncation fields of `FullPivLuParams` and `FullPivLuInfo::rank` (tensor4all/faer#294, `colmat`
+0.34.0); the stopping rule is forwarded unchanged (`|pivot_j| > max(abs_tol, rel_tol * |pivot_0|)`,
+`rel_tol` relative to the first pivot; faer ignores a threshold that is not finite, which for a
+validated tolerance needs `rel_tol * |pivot_0|` to overflow, so `rel_tol > 1`). With the capacity `c = min(m, n, max_rank)` the outputs are
+`P (m x m)`, `L (m x c)`, `U (c x n)`, `Q (n x n)`, parity and rank; an item that stops at `r < c`
+is zero in `L[:, r..]` and `U[r.., :]` (the Schur complement faer leaves in the work matrix is never
+copied out), and its permutations stay full. Items of one batch may stop at different ranks. The
+workspace is `full_piv_lu_workspace`'s. A negative tolerance, or one that is not finite in the scalar's real type (`1e300` for `f32`), is
+`InvalidArgument`.
+
+This is additive: `full_piv_lu`, `full_piv_lu_into` and the C API are unchanged, and with
+`FullPivLuTruncation::default()` the new entry points return bitwise the factors of `full_piv_lu`
+with `rank = min(m, n)`. The C API does not expose truncation yet.
+
 ## tlinalg 0.12.0
 
 This release is **breaking**. It has two independent breaking changes.

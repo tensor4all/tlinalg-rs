@@ -218,7 +218,8 @@ use num_complex::{Complex32, Complex64};
 use tcontract_exec::{BatchPolicy, BatchStrategy, Pool};
 use tlinalg::full_piv_lu::{
     full_piv_lu, full_piv_lu_into, full_piv_lu_solve, full_piv_lu_solve_into,
-    full_piv_lu_solve_workspace, full_piv_lu_workspace, FullPivLuFactors,
+    full_piv_lu_solve_workspace, full_piv_lu_truncated, full_piv_lu_truncated_into,
+    full_piv_lu_workspace, FullPivLuFactors, FullPivLuTruncatedFactors, FullPivLuTruncation,
 };
 use tlinalg::householder::{
     apply_reflectors, apply_reflectors_into, apply_reflectors_workspace, compact_factor,
@@ -810,6 +811,82 @@ macro_rules! dtype_battery {
                         bytes_of(&wpar),
                         "full_piv_lu wrapper parity"
                     );
+                }
+            }
+            // full_piv_lu_truncated: the same workspace query, a capacity below `n` when `n > 1`
+            {
+                let truncation = FullPivLuTruncation {
+                    max_rank: Some(n.div_ceil(2)),
+                    abs_tol: Some(0.0),
+                    rel_tol: Some(1e-3),
+                };
+                let cap = truncation.capacity(n, n);
+                let ws = full_piv_lu_workspace::<$t>(n, n, batch, seq).unwrap();
+                let mut workspace = scratch(ws);
+                let mut p = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut l = vec![MaybeUninit::<$t>::uninit(); n * cap * batch];
+                let mut u = vec![MaybeUninit::<$t>::uninit(); cap * n * batch];
+                let mut q = vec![MaybeUninit::<$t>::uninit(); square * batch];
+                let mut parity = vec![MaybeUninit::<$t>::uninit(); batch];
+                let mut rank = vec![MaybeUninit::<usize>::uninit(); batch];
+                zero_gate!("full_piv_lu_truncated", {
+                    full_piv_lu_truncated_into(
+                        Op::FullPivLu,
+                        view,
+                        truncation,
+                        &mut p,
+                        &mut l,
+                        &mut u,
+                        &mut q,
+                        &mut parity,
+                        &mut rank,
+                        &mut workspace[offset..offset + ws],
+                        seq,
+                    )
+                    .unwrap()
+                });
+                out.push(("full_piv_lu_truncated.p", unsafe { bytes_uninit(&p) }));
+                out.push(("full_piv_lu_truncated.l", unsafe { bytes_uninit(&l) }));
+                out.push(("full_piv_lu_truncated.u", unsafe { bytes_uninit(&u) }));
+                out.push(("full_piv_lu_truncated.q", unsafe { bytes_uninit(&q) }));
+                out.push(("full_piv_lu_truncated.parity", unsafe {
+                    bytes_uninit(&parity)
+                }));
+                out.push(("full_piv_lu_truncated.rank", unsafe { bytes_uninit(&rank) }));
+                if compare_wrapper {
+                    let (mut wp, mut wl, mut wu, mut wq, mut wpar, mut wrank) = (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    );
+                    full_piv_lu_truncated(
+                        Op::FullPivLu,
+                        view,
+                        truncation,
+                        FullPivLuTruncatedFactors {
+                            p: &mut wp,
+                            l: &mut wl,
+                            u: &mut wu,
+                            q: &mut wq,
+                            parity: &mut wpar,
+                            rank: &mut wrank,
+                        },
+                        seq,
+                    )
+                    .unwrap();
+                    for (what, got, want) in [
+                        ("P", unsafe { bytes_uninit(&p) }, bytes_of(&wp)),
+                        ("L", unsafe { bytes_uninit(&l) }, bytes_of(&wl)),
+                        ("U", unsafe { bytes_uninit(&u) }, bytes_of(&wu)),
+                        ("Q", unsafe { bytes_uninit(&q) }, bytes_of(&wq)),
+                        ("parity", unsafe { bytes_uninit(&parity) }, bytes_of(&wpar)),
+                        ("rank", unsafe { bytes_uninit(&rank) }, bytes_of(&wrank)),
+                    ] {
+                        assert_eq!(got, want, "full_piv_lu_truncated wrapper {what}");
+                    }
                 }
             }
             // full_piv_lu_solve

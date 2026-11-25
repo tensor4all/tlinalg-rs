@@ -110,7 +110,7 @@ The per-lane live scratch that moved into the borrowed region, family by family:
 | cholesky | faer `MemStack` |
 | lu (factor) | `Mat` work matrix, two `usize` permutations, faer `MemStack` |
 | lu (solve) | the factor scratch, plus the solve `MemStack` |
-| full_piv_lu | `Mat` work matrix, four `usize` permutations, faer `MemStack` (factor and solve) |
+| full_piv_lu | `Mat` work matrix, four `usize` permutations, faer `MemStack` (factor and solve; the truncated factor uses the same scratch) |
 | qr / rank_revealing_qr | `Mat` work, `Mat` block coefficients, permutation vectors, factor/apply `MemStack`s |
 | householder compact / apply | `Mat` compact-WY factor, apply `MemStack` |
 | eigh | `Diag` values, faer `MemStack` |
