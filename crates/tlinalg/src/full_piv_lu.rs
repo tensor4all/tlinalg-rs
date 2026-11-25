@@ -66,12 +66,22 @@ pub struct FullPivLuFactors<'a, T> {
 ///   `|pivot_j| > max(abs_tol, rel_tol * |pivot_0|)`, `|.|` being the modulus and an absent
 ///   tolerance counting as `0`. `rel_tol` is relative to the **first** pivot, the largest entry of
 ///   the matrix under full pivoting, not to the previous pivot. The first rejected pivot ends the
-///   factorization. A tolerance must be non-negative and finite in the scalar's real type (so at
-///   most `f32::MAX` for `f32` and `Complex32`). If `rel_tol * |pivot_0|` itself overflows, which
-///   needs `rel_tol > 1`, faer ignores that tolerance.
+///   factorization. A tolerance must be non-negative and stay finite when converted to the
+///   scalar's real type (for `f32` and `Complex32`, round to a finite `f32`). If
+///   `rel_tol * |pivot_0|` itself overflows, which needs `rel_tol > 1`, faer drops the whole
+///   threshold, `abs_tol` included, and the tolerances do not stop that item.
 /// - With any option set, an exactly zero (or subnormal) remaining block also ends the
 ///   factorization and counts as the stop.
 /// - An item that holds a NaN or an infinity ignores the tolerances: its rank is `c`.
+///
+/// The reported rank, per item:
+///
+/// - With any option set and finite input, it is the number of pivots actually accepted, whichever
+///   option stops first: a tolerance stop at `r < max_rank` reports `r`, not the capacity, and an
+///   exactly zero remaining block reports the pivots taken before it.
+/// - With no option set, it is always `min(m, n)`, as in [`full_piv_lu`], even when an exactly zero
+///   remaining block ended the factorization early (a zero matrix reports `min(m, n)`).
+/// - An item holding a NaN or an infinity reports the capacity `c`.
 ///
 /// The stopping rule is faer's (`colmat` 0.34.0,
 /// `faer::linalg::lu::full_pivoting::factor::FullPivLuParams`); this type forwards it unchanged.
@@ -142,7 +152,8 @@ pub struct FullPivLuTruncatedFactors<'a, T> {
     pub q: &'a mut Vec<T>,
     /// The parity of `P` and `Q` together (`+1` or `-1` in the scalar type), one per item.
     pub parity: &'a mut Vec<T>,
-    /// The number of accepted pivots `r` per item.
+    /// The rank `r <= c` per item, as [`FullPivLuTruncation`] defines it (the pivots accepted when an
+    /// option is set and the input is finite).
     pub rank: &'a mut Vec<usize>,
 }
 
@@ -677,7 +688,8 @@ fn truncated_shapes<T: FaerScalar>(
 /// token; truncation does not change it. With [`FullPivLuTruncation::default`] the factors are
 /// bitwise those of [`full_piv_lu_into`] and every rank is `min(m, n)`.
 ///
-/// Truncated factors are not a valid input to [`full_piv_lu_solve`], which factors on its own.
+/// There is no route from these factors into [`full_piv_lu_solve`]: it takes the matrix `A`, not
+/// factors, and factors it itself without truncation, so a truncated factorization cannot reach it.
 ///
 /// # Errors
 ///
