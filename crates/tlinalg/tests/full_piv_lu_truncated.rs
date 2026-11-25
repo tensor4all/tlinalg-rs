@@ -60,6 +60,15 @@ fn truncated<T: TestScalar + FaerScalar>(
     Ok(out)
 }
 
+/// The bit patterns of `data` widened to `Complex64`: widening `f32` to `f64` is exact and keeps the
+/// sign of zero, so equal bits here are equal bits in `T` (`==` would accept `0.0` against `-0.0`).
+fn bits<T: TestScalar>(data: &[T]) -> Vec<(u64, u64)> {
+    widen(data)
+        .iter()
+        .map(|v| (v.re.to_bits(), v.im.to_bits()))
+        .collect()
+}
+
 /// Whether the column-major `n x n` matrix is a permutation matrix: entries in {0, 1}, exactly one
 /// `1` per row and per column.
 fn is_permutation(p: &[Complex64], n: usize) -> bool {
@@ -171,11 +180,11 @@ fn default_options_match_the_untruncated_factorization<T: TestScalar + FaerScala
         .unwrap();
         let t = truncated(view, FullPivLuTruncation::default(), &mut Exec::serial()).unwrap();
         let what = format!("{m}x{n} batch {batch}");
-        assert_eq!(widen(&t.p), widen(&p), "{what}: P");
-        assert_eq!(widen(&t.l), widen(&l), "{what}: L");
-        assert_eq!(widen(&t.u), widen(&u), "{what}: U");
-        assert_eq!(widen(&t.q), widen(&q), "{what}: Q");
-        assert_eq!(widen(&t.parity), widen(&parity), "{what}: parity");
+        assert_eq!(bits(&t.p), bits(&p), "{what}: P");
+        assert_eq!(bits(&t.l), bits(&l), "{what}: L");
+        assert_eq!(bits(&t.u), bits(&u), "{what}: U");
+        assert_eq!(bits(&t.q), bits(&q), "{what}: Q");
+        assert_eq!(bits(&t.parity), bits(&parity), "{what}: parity");
         assert_eq!(t.rank, vec![k; batch], "{what}: rank");
     }
     // A padded single matrix, through the same path.
@@ -201,8 +210,8 @@ fn default_options_match_the_untruncated_factorization<T: TestScalar + FaerScala
     )
     .unwrap();
     assert_eq!(
-        (widen(&t.p), widen(&t.l), widen(&t.u), widen(&t.q)),
-        (widen(&p), widen(&l), widen(&u), widen(&q)),
+        (bits(&t.p), bits(&t.l), bits(&t.u), bits(&t.q)),
+        (bits(&p), bits(&l), bits(&u), bits(&q)),
         "padded"
     );
     assert_eq!(t.rank, [4]);
@@ -535,5 +544,43 @@ fn a_pooled_batch_matches_the_serial_one() {
     assert_eq!(
         (pooled.p, pooled.l, pooled.u, pooled.q, pooled.parity),
         (serial.p, serial.l, serial.u, serial.q, serial.parity)
+    );
+}
+
+#[test]
+fn a_tolerance_that_overflows_f32_is_rejected_not_ignored() {
+    // `1e300` is finite as an `f64` but not as an `f32`; faer would ignore the non-finite threshold
+    // and return the untruncated rank, so the f32 and c32 calls reject it. f64 accepts it (every
+    // pivot is rejected, rank 0).
+    let truncation = FullPivLuTruncation {
+        abs_tol: Some(1e300),
+        ..Default::default()
+    };
+    let (dims, strides) = ([2, 2], [1, 2]);
+    let a32 = [1.0_f32, 2.0, 3.0, 4.0];
+    let view = RawStridedRef::new(&a32, &dims, &strides, 0).unwrap();
+    let err = truncated(view, truncation, &mut Exec::serial())
+        .err()
+        .expect("f32 rejects 1e300");
+    assert!(
+        matches!(
+            err,
+            Error::InvalidArgument {
+                role: "truncation",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    let c32: Vec<num_complex::Complex32> = narrow(&widen(&a32));
+    let view = RawStridedRef::new(&c32, &dims, &strides, 0).unwrap();
+    assert!(truncated(view, truncation, &mut Exec::serial()).is_err());
+    let a64 = [1.0_f64, 2.0, 3.0, 4.0];
+    let view = RawStridedRef::new(&a64, &dims, &strides, 0).unwrap();
+    assert_eq!(
+        truncated(view, truncation, &mut Exec::serial())
+            .unwrap()
+            .rank,
+        [0]
     );
 }

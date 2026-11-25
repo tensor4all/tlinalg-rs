@@ -66,7 +66,9 @@ pub struct FullPivLuFactors<'a, T> {
 ///   `|pivot_j| > max(abs_tol, rel_tol * |pivot_0|)`, `|.|` being the modulus and an absent
 ///   tolerance counting as `0`. `rel_tol` is relative to the **first** pivot, the largest entry of
 ///   the matrix under full pivoting, not to the previous pivot. The first rejected pivot ends the
-///   factorization. A tolerance must be finite and non-negative.
+///   factorization. A tolerance must be non-negative and finite in the scalar's real type (so at
+///   most `f32::MAX` for `f32` and `Complex32`). If `rel_tol * |pivot_0|` itself overflows, which
+///   needs `rel_tol > 1`, faer ignores that tolerance.
 /// - With any option set, an exactly zero (or subnormal) remaining block also ends the
 ///   factorization and counts as the stop.
 /// - An item that holds a NaN or an infinity ignores the tolerances: its rank is `c`.
@@ -99,15 +101,21 @@ impl FullPivLuTruncation {
         self.max_rank.map_or(k, |r| r.min(k))
     }
 
-    /// Reject a negative, NaN or infinite tolerance.
-    fn validate(&self, op: Op) -> Result<()> {
+    /// Reject a negative or NaN tolerance, and one that is not finite in the real type `R` of the
+    /// scalar. faer converts each tolerance to `R` and ignores a non-finite threshold, so an
+    /// `abs_tol` of `1e300` for `f32` would otherwise silently disable truncation.
+    fn validate<R: faer::traits::RealField>(&self, op: Op) -> Result<()> {
         for (name, tol) in [("abs_tol", self.abs_tol), ("rel_tol", self.rel_tol)] {
             if let Some(tol) = tol {
-                if !(tol.is_finite() && tol >= 0.0) {
+                let in_real = <R as faer::traits::ComplexField>::from_f64_impl(tol);
+                if !(tol >= 0.0 && <R as faer::traits::ComplexField>::is_finite_impl(&in_real)) {
                     return Err(invalid(
                         op,
                         "truncation",
-                        format!("{name} is {tol}, expected a finite non-negative tolerance"),
+                        format!(
+                            "{name} is {tol}, expected a non-negative tolerance that is finite in \
+                             the scalar's real type"
+                        ),
                     ));
                 }
             }
@@ -674,7 +682,7 @@ fn truncated_shapes<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when `input` is not a batch of matrices, a tolerance is negative or
-/// not finite, an output length does not match, or a size overflows, and
+/// not finite in the scalar's real type, an output length does not match, or a size overflows, and
 /// [`crate::Error::InsufficientWorkspace`] for a short workspace.
 // INVARIANT: descriptor, six output buffers, workspace, token are distinct operands.
 #[allow(clippy::too_many_arguments)]
@@ -692,7 +700,7 @@ pub fn full_piv_lu_truncated_into<T: FaerScalar>(
     exec: &mut Exec<'_>,
 ) -> Result<()> {
     let input = BatchedRef::new(op, "input", input)?;
-    truncation.validate(op)?;
+    truncation.validate::<<T as ScalarEntity>::Real>(op)?;
     let (m, n) = (input.rows(), input.cols());
     let cap = truncation.capacity(m, n);
     let (p_len, l_len, u_len, q_len, item_muladds) = truncated_shapes::<T>(op, m, n, cap)?;
@@ -742,7 +750,7 @@ pub fn full_piv_lu_truncated_into<T: FaerScalar>(
 /// # Errors
 ///
 /// [`Error::InvalidArgument`] when `input` has rank below 2, a tolerance is negative or not
-/// finite, or an output size overflows. The outputs are empty on error.
+/// finite in the scalar's real type, or an output size overflows. The outputs are empty on error.
 ///
 /// # Examples
 ///
@@ -797,7 +805,7 @@ pub fn full_piv_lu_truncated<T: FaerScalar>(
     rank.clear();
     // The published order: operand validation before any workspace query or allocation.
     let input = BatchedRef::new(op, "input", input)?;
-    truncation.validate(op)?;
+    truncation.validate::<<T as ScalarEntity>::Real>(op)?;
     let (m, n) = (input.rows(), input.cols());
     let cap = truncation.capacity(m, n);
     let (p_len, l_len, u_len, q_len, _) = truncated_shapes::<T>(op, m, n, cap)?;
