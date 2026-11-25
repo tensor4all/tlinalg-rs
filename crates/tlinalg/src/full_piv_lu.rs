@@ -66,9 +66,10 @@ pub struct FullPivLuFactors<'a, T> {
 ///   `|pivot_j| > max(abs_tol, rel_tol * |pivot_0|)`, `|.|` being the modulus and an absent
 ///   tolerance counting as `0`. `rel_tol` is relative to the **first** pivot, the largest entry of
 ///   the matrix under full pivoting, not to the previous pivot. The first rejected pivot ends the
-///   factorization. A tolerance must be non-negative and finite in the scalar's real type (so at
-///   most `f32::MAX` for `f32` and `Complex32`). If `rel_tol * |pivot_0|` itself overflows, which
-///   needs `rel_tol > 1`, faer ignores that tolerance.
+///   factorization. A tolerance must be non-negative and stay finite when converted to the
+///   scalar's real type (for `f32` and `Complex32`, round to a finite `f32`). If
+///   `rel_tol * |pivot_0|` itself overflows, which needs `rel_tol > 1`, faer drops the whole
+///   threshold, `abs_tol` included, and the tolerances do not stop that item.
 /// - With any option set, an exactly zero (or subnormal) remaining block also ends the
 ///   factorization and counts as the stop.
 /// - An item that holds a NaN or an infinity ignores the tolerances: its rank is `c`.
