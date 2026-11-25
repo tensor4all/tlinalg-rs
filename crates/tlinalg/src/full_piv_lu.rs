@@ -74,6 +74,9 @@ pub struct FullPivLuFactors<'a, T> {
 ///   factorization and counts as the stop.
 /// - An item that holds a NaN or an infinity ignores the tolerances: its rank is `c`.
 ///
+/// The reported rank is the number of pivots actually accepted, whichever option stops first: a
+/// tolerance stop at `r < max_rank` reports `r`, not the capacity.
+///
 /// The stopping rule is faer's (`colmat` 0.34.0,
 /// `faer::linalg::lu::full_pivoting::factor::FullPivLuParams`); this type forwards it unchanged.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -143,7 +146,7 @@ pub struct FullPivLuTruncatedFactors<'a, T> {
     pub q: &'a mut Vec<T>,
     /// The parity of `P` and `Q` together (`+1` or `-1` in the scalar type), one per item.
     pub parity: &'a mut Vec<T>,
-    /// The number of accepted pivots `r` per item.
+    /// The number of pivots actually accepted per item, `r <= c`, whichever option stopped first.
     pub rank: &'a mut Vec<usize>,
 }
 
@@ -678,7 +681,8 @@ fn truncated_shapes<T: FaerScalar>(
 /// token; truncation does not change it. With [`FullPivLuTruncation::default`] the factors are
 /// bitwise those of [`full_piv_lu_into`] and every rank is `min(m, n)`.
 ///
-/// Truncated factors are not a valid input to [`full_piv_lu_solve`], which factors on its own.
+/// There is no route from these factors into [`full_piv_lu_solve`]: it takes the matrix `A`, not
+/// factors, and always factors it to full rank itself, so a truncated factorization cannot reach it.
 ///
 /// # Errors
 ///
