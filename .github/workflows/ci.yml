@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # macOS runs here, not on pull requests or pushes: see the macOS rows / `if:` below.
+  schedule:
+    - cron: "07 17 * * *"   # 17:07 UTC = 02:07 JST, daily; off the :00/:30 herd
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -120,12 +124,14 @@ jobs:
   test-unlinked:
     name: cargo test (macos-latest, unlinked)
     runs-on: macos-latest
+    # Daily schedule and manual dispatch only; see the `on:` comment above.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       # As on the Linux lane: the C ABI test links the built library.
       - run: cargo build --profile ci -p tlinalg-capi
       - run: cargo test --workspace --profile ci
@@ -135,12 +141,14 @@ jobs:
   test-accelerate:
     name: cargo test (macos-latest, Accelerate)
     runs-on: macos-latest
+    # Daily schedule and manual dispatch only; see the `on:` comment above.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo test -p tlinalg-blas --profile ci --features link-accelerate --test svd --lib
 
   doc:
@@ -153,3 +161,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
+
+  # Only the scheduled run has macOS rows, so a failure there is the macOS signal PR CI no longer
+  # gives. One rolling issue, found by title. Manual dispatches report in the run only.
+  report:
+    name: Report a failing night
+    needs: [test-unlinked, test-accelerate]
+    if: ${{ always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          label=ci-nightly
+          title="Scheduled macOS nightly is failing"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          printf -v body '%s\n\n%s\n' \
+            "The scheduled CI run (the only one with macOS rows) failed in [run ${GITHUB_RUN_ID}](${run_url}) on \`${GITHUB_SHA:0:8}\`." \
+            "PR CI no longer runs on macOS; dispatch \`ci.yml\` on a fix branch (\`workflow_dispatch\`) to verify it."
+          gh label create "$label" --repo "$GITHUB_REPOSITORY" --color d93f0b \
+            --description "Scheduled macOS nightly" 2>/dev/null || true
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$label" --state open \
+            --search "in:title \"$title\"" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label "$label" --title "$title" --body "$body"
+          fi

@@ -13,12 +13,13 @@ This file only records what is specific to `tlinalg-rs`:
 - **MSRV**: `rust-version = "1.89"` in the workspace `Cargo.toml`, inherited by every crate
   (`rust-version.workspace = true`). CI pins `stable` only and has no `msrv` job, so the claim is not checked by CI.
 - **Feature combinations CI builds**: default features (the faer provider, nothing linked) in the unlinked run on
-  macOS, then two linked lanes on Linux: `tlinalg-blas/link-openblas,tlinalg-parity/link-openblas`, and the same plus
+  macOS (nightly), then two linked lanes on Linux: `tlinalg-blas/link-openblas,tlinalg-parity/link-openblas`, and the same plus
   `tlinalg-blas/provider-inject` (whose symbol set exports `?gesvd` but not `?gesdd`). `clippy` lints default features
   and the `provider-inject` set. `link-openblas` builds OpenBLAS from source through `openblas-src`, so no system
   package is needed; `--all-features` is not a lane here.
 - **Platforms claimed**: `ubuntu-latest` for the linked tests (fmt, `deny`, clippy and `doc` also run there) and
-  `macos-latest` for the unlinked run, where the LAPACK tests are skipped.
+  `macos-latest` for the unlinked run, where the LAPACK tests are skipped, and for the Accelerate SVD suite. macOS is
+  validated nightly, and on demand via `workflow_dispatch`, not per PR: The `schedule` trigger of `ci.yml` (and `workflow_dispatch`) adds the macOS rows; they are not run per PR, because macOS runners are costly and limited to five concurrent jobs across the organization. A failing scheduled run files an issue.
 - **Local gate**:
 
   ```sh
